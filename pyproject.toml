@@ -1,0 +1,40 @@
+[build-system]
+requires = ["setuptools>=64", "setuptools-scm>=8"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "shapesmith"
+description = "From CROWN ntuples to histograms, background estimates, datacards, fits and ML training folds - without ROOT."
+readme = "README.md"
+requires-python = ">=3.11"
+license = {text = "MIT"}
+dynamic = ["version"]
+dependencies = [
+    "uproot>=5.3",
+    "numexpr>=2.8",
+    "pandas>=2.1",
+    "pyarrow>=15",
+    "numpy>=1.26",
+    "mplhep>=0.3.30",
+    "matplotlib>=3.8",
+    "typer>=0.12",
+    "pydantic>=2.5",
+    "pyyaml>=6",
+]
+
+[project.optional-dependencies]
+test = ["pytest>=8"]
+xrootd = ["xrootd>=5.6"]
+
+[project.scripts]
+shapesmith = "shapesmith.cli:app"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools_scm]
+fallback_version = "0.1.0"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
