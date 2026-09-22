@@ -67,6 +67,14 @@ def test_example_config(tmp_path):
     assert "analysis:" in (tmp_path / "example.yaml").read_text()
 
 
+def test_hist_regions_and_plot_region_cli(tmp_path):
+    config = _write_config(tmp_path)
+    _run("skim", "-c", str(config))
+    _run("hist", "-c", str(config), "--control", "--regions", "same_sign")
+    _run("plot", "-c", str(config), "--control", "--region", "same_sign")
+    assert (tmp_path / "out" / "plots" / "mt" / "same_sign" / "inclusive_m_vis.png").exists()
+
+
 def test_validate_reports_broken_analysis(tmp_path):
     config = _write_config(tmp_path)
     config.write_text(config.read_text().replace("tests.mini_analysis:build", "tests.mini_analysis:no_such"))

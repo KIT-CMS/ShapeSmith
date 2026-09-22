@@ -96,17 +96,28 @@ def skim(config: Path = ConfigOption, channels: Optional[str] = ChannelsOption, 
     cfg, analysis, selected = _setup(config, channels, workers=workers, overrides=overrides)
     write_versions(cfg, cfg.skim_dir)
     results = run_skim(cfg, analysis, selected, force=force, samples=samples.split(",") if samples else None)
-    typer.echo(f"{sum(1 for r in results if r.n_in)} files skimmed, {sum(1 for r in results if not r.n_in)} skipped, {sum(r.n_out for r in results)} events kept")
+    typer.echo(f"{sum(1 for r in results if not r.skipped)} files skimmed, {sum(1 for r in results if r.skipped)} reused, {sum(r.n_out for r in results)} events kept")
 
 
 @app.command()
-def hist(config: Path = ConfigOption, channels: Optional[str] = ChannelsOption, overrides: Optional[list[str]] = SetOption, control: bool = typer.Option(False, "--control", help="control variables instead of NN categories"), variables: Optional[str] = typer.Option(None, help="comma separated control variables"), skip_systematics: bool = typer.Option(False, "--skip-systematics"), processes: Optional[str] = typer.Option(None, help="comma separated process keys"), force: bool = ForceOption, workers: Optional[int] = WorkersOption):
+def hist(config: Path = ConfigOption, channels: Optional[str] = ChannelsOption, overrides: Optional[list[str]] = SetOption, control: bool = typer.Option(False, "--control", help="control variables instead of NN categories"), variables: Optional[str] = typer.Option(None, help="comma separated control variables"), regions: Optional[str] = typer.Option(None, "--regions", help="comma separated regions, or 'all' (default: nominal plus estimator regions)"), skip_systematics: bool = typer.Option(False, "--skip-systematics"), processes: Optional[str] = typer.Option(None, help="comma separated process keys"), force: bool = ForceOption, workers: Optional[int] = WorkersOption):
     """Stage 2: skims -> histograms (control_shapes.root or shapes.root)."""
     from shapesmith.histograms import run_hist
 
     cfg, analysis, selected = _setup(config, channels, workers=workers, overrides=overrides)
     write_versions(cfg, cfg.output_dir)
-    hset = run_hist(cfg, analysis, selected, control, variables.split(",") if variables else None, not skip_systematics, processes.split(",") if processes else None, _shapes_path(cfg, control), force)
+    hset = run_hist(
+        cfg,
+        analysis,
+        selected,
+        control,
+        variables.split(",") if variables else None,
+        not skip_systematics,
+        processes.split(",") if processes else None,
+        _shapes_path(cfg, control),
+        force,
+        regions.split(",") if regions else None,
+    )
     typer.echo(f"{len(hset)} histograms in {_shapes_path(cfg, control)}")
 
 
@@ -160,13 +171,13 @@ def fit(config: Path = ConfigOption, channels: Optional[str] = ChannelsOption, o
 
 
 @app.command()
-def plot(config: Path = ConfigOption, channels: Optional[str] = ChannelsOption, overrides: Optional[list[str]] = SetOption, control: bool = typer.Option(False, "--control"), category: Optional[str] = typer.Option(None), variables: Optional[str] = typer.Option(None), blind: bool = typer.Option(False, "--blind"), log: bool = typer.Option(False, "--log"), signal_scale: Optional[float] = typer.Option(None), normalize_by_bin_width: bool = typer.Option(False, "--normalize-by-bin-width")):
+def plot(config: Path = ConfigOption, channels: Optional[str] = ChannelsOption, overrides: Optional[list[str]] = SetOption, control: bool = typer.Option(False, "--control"), category: Optional[str] = typer.Option(None), variables: Optional[str] = typer.Option(None), region: str = typer.Option("nominal", "--region", help="histogram region to plot"), blind: bool = typer.Option(False, "--blind"), log: bool = typer.Option(False, "--log"), signal_scale: Optional[float] = typer.Option(None), normalize_by_bin_width: bool = typer.Option(False, "--normalize-by-bin-width")):
     """Prefit stack plots of control variables (--control) or NN categories."""
     from shapesmith.histograms import HistogramSet
     from shapesmith.plotting.stack import run_plot
 
     cfg, analysis, selected = _setup(config, channels, overrides=overrides)
-    files = run_plot(HistogramSet.load(_shapes_path(cfg, control)), analysis, selected, control, category, variables.split(",") if variables else None, cfg.output_dir / "plots", blind=blind, log=log, signal_scale=signal_scale, normalize_by_bin_width=normalize_by_bin_width)
+    files = run_plot(HistogramSet.load(_shapes_path(cfg, control)), analysis, selected, control, category, variables.split(",") if variables else None, cfg.output_dir / "plots", region=region, blind=blind, log=log, signal_scale=signal_scale, normalize_by_bin_width=normalize_by_bin_width)
     typer.echo(f"{len(files)} files written to {cfg.output_dir / 'plots'}")
 
 

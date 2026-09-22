@@ -2,8 +2,9 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
-from typing import Iterable
+from typing import Callable, Iterable
 
 import pandas as pd
 import pyarrow as pa
@@ -23,9 +24,22 @@ def manifest_path(skim_dir: Path, channel: str, nick: str) -> Path:
     return Path(skim_dir) / channel / nick / "manifest.json"
 
 
-def write_skim(frame: pd.DataFrame, path: Path) -> None:
+def _replace(path: Path, write: Callable[[Path], None]) -> None:
+    """Write through a sibling temporary file and rename it into place: readers never see a partial file,
+    and an interrupted write leaves the previous file intact."""
+    path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    pq.write_table(pa.Table.from_pandas(frame, preserve_index=False), path, compression="snappy")
+    temporary = path.with_name(path.name + ".tmp")
+    try:
+        write(temporary)
+        os.replace(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def write_skim(frame: pd.DataFrame, path: Path) -> None:
+    table = pa.Table.from_pandas(frame, preserve_index=False)
+    _replace(path, lambda temporary: pq.write_table(table, temporary, compression="snappy"))
 
 
 def read_skims(skim_dir: Path, channel: str, nicks: Iterable[str], columns: Iterable[str] | None) -> pd.DataFrame:
@@ -47,8 +61,8 @@ def read_skims(skim_dir: Path, channel: str, nicks: Iterable[str], columns: Iter
 
 
 def write_manifest(path: Path, manifest: dict) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(manifest, indent=2, sort_keys=True))
+    text = json.dumps(manifest, indent=2, sort_keys=True)
+    _replace(path, lambda temporary: temporary.write_text(text))
 
 
 def read_manifest(path: Path) -> dict:

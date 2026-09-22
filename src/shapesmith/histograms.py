@@ -121,15 +121,34 @@ class Target:
     variable: Variable
 
 
-def bookings(analysis: Analysis, channel_name: str, systematics: bool) -> list[Booking]:
+def resolve_regions(analysis: Analysis, channel_name: str, regions: list[str] | None) -> tuple[str, ...] | None:
+    """Resolve an explicit region request for one channel.
+
+    ``None`` retains the historical process-dependent booking.  ``all`` is
+    expanded per channel because channels need not define the same regions.
+    """
+    if regions is None:
+        return None
+    channel = analysis.channel(channel_name)
+    names = (NOMINAL_REGION, *(region.name for region in channel.regions)) if "all" in regions else tuple(regions)
+    resolved = tuple(dict.fromkeys(names))
+    for name in resolved:
+        channel.region(name)  # validates with a channel-specific error
+    return resolved
+
+
+def bookings(analysis: Analysis, channel_name: str, systematics: bool, regions: list[str] | None = None) -> list[Booking]:
+    requested_regions = resolve_regions(analysis, channel_name, regions)
     estimator_regions = tuple(analysis.estimator.regions.values()) if analysis.estimator else ()
     result = []
     for process in analysis.processes:
         if not analysis.samples_for(process.group, channel_name):
             continue
-        regions = (NOMINAL_REGION,) if process.kind == "signal" else (NOMINAL_REGION, *estimator_regions)
+        process_regions = requested_regions
+        if process_regions is None:
+            process_regions = (NOMINAL_REGION,) if process.kind == "signal" else tuple(dict.fromkeys((NOMINAL_REGION, *estimator_regions)))
         variations = analysis.weight_variations if systematics and process.kind not in ("data", "embedding") else ()
-        result.append(Booking(process, regions, tuple(variations)))
+        result.append(Booking(process, process_regions, tuple(variations)))
     return result
 
 
@@ -158,7 +177,8 @@ def _needed_columns(analysis: Analysis, channel_name: str, booking: Booking, tar
             columns |= columns_in(expr)
     for region_name in booking.regions:
         region = channel.region(region_name)
-        for expr in list(region.replace_cuts.values()) + list(region.add_weights.values()):
+        region_weights = [expr for name, expr in region.add_weights.items() if kinds == {"mc"} or name not in channel.baseline.weights]
+        for expr in list(region.replace_cuts.values()) + region_weights:
             columns |= columns_in(expr)
     for target in targets_:
         columns |= columns_in(target.variable.expr) | (columns_in(target.cut) if target.cut else set())
@@ -193,7 +213,7 @@ def fill_booking(config: RunConfig, analysis: Analysis, channel_name: str, booki
             weights.update(channel.baseline.weights)
         if kinds <= {"mc", "embedding"}:
             weights.update(process_selection.weights)
-        weights.update(region.add_weights)
+        weights.update({name: expr for name, expr in region.add_weights.items() if kinds == {"mc"} or name not in channel.baseline.weights})
         for variation in (None, *booking.variations):
             varied = _varied(weights, variation)
             if varied is None:
@@ -216,27 +236,33 @@ def _fill_job(args) -> dict[HistKey, Histogram]:
     return fill_booking(*args)
 
 
-def run_hist(config: RunConfig, analysis: Analysis, channels: list[str] | None, control: bool, variables: list[str] | None, systematics: bool, processes: list[str] | None, output: Path, force: bool = False) -> HistogramSet:
+def run_hist(config: RunConfig, analysis: Analysis, channels: list[str] | None, control: bool, variables: list[str] | None, systematics: bool, processes: list[str] | None, output: Path, force: bool = False, regions: list[str] | None = None) -> HistogramSet:
     """Fill every booked histogram of the requested channels and save them to `output` (+ .json index)."""
     output = Path(output)
     selected_channels = list(channels or config.channels)
+    targets_ = targets(analysis, control, variables)
+    jobs = []
+    refill_scope: set[tuple[str, str, str, str, str]] = set()
+    for channel_name in selected_channels:
+        for booking in bookings(analysis, channel_name, systematics, regions):
+            if processes and booking.process.key not in processes:
+                continue
+            jobs.append((config, analysis, channel_name, booking, targets_))
+            refill_scope.update(
+                (channel_name, booking.process.name, region, target.category, target.variable.name)
+                for region in booking.regions
+                for target in targets_
+            )
     hset = HistogramSet()
     if output.exists():
         if not force:
             logger.info(f"{output} exists, loading (use --force to refill)")
             return HistogramSet.load(output)
-        refilled = {p.name for p in analysis.processes if processes is None or p.key in processes}
         for key, h in HistogramSet.load(output).items():  # keep what this call does not refill
-            if key.channel not in selected_channels or key.process not in refilled:
+            scope = (key.channel, key.process, key.region, key.category, key.variable)
+            if scope not in refill_scope:
                 hset.add(key, h)
-        logger.info(f"{output}: refilling {sorted(selected_channels)}, keeping {len(hset)} histograms of other channels/processes")
-    targets_ = targets(analysis, control, variables)
-    jobs = []
-    for channel_name in selected_channels:
-        for booking in bookings(analysis, channel_name, systematics):
-            if processes and booking.process.key not in processes:
-                continue
-            jobs.append((config, analysis, channel_name, booking, targets_))
+        logger.info(f"{output}: refilling {len(refill_scope)} histogram scopes, keeping {len(hset)} unrelated histograms")
     logger.info(f"filling {len(jobs)} process bookings with {config.workers} workers")
     for job, result, error in run_jobs(_fill_job, jobs, config.workers):
         if error is not None:

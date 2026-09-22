@@ -15,7 +15,7 @@ YAML; ShapeSmith runs the steps. Example analysis:
 source /cvmfs/sft.cern.ch/lcg/views/LCG_108/x86_64-el9-gcc15-opt/setup.sh   # Python 3.12, uproot, pandas, mplhep, XRootD
 python3 -m venv --system-site-packages ~/.venvs/shapesmith && source ~/.venvs/shapesmith/bin/activate
 pip install -e ".[test]"          # editable: changes in this checkout are live
-pytest                            # 67 tests on synthetic ntuples, no network
+pytest                            # tests on synthetic ntuples, no network
 ```
 
 ## Steps
@@ -24,9 +24,9 @@ pytest                            # 67 tests on synthetic ntuples, no network
 shapesmith example-config run.yaml            # annotated run configuration
 shapesmith validate  -c run.yaml              # build + validate the analysis, list the columns each channel needs
 shapesmith skim      -c run.yaml [--channels mt] [--samples TT,SingleMuon] [--workers 8]   # ntuples (+ friends) -> Parquet
-shapesmith hist      -c run.yaml [--control] [--skip-systematics] [--processes ztt,data]  # histograms (ROOT + JSON index)
+shapesmith hist      -c run.yaml [--control] [--regions all] [--skip-systematics] [--processes ztt,data]  # histograms (ROOT + JSON index)
 shapesmith estimate  -c run.yaml [--control]  # data-driven processes (fake factors / ABCD), embedding variations
-shapesmith plot      -c run.yaml [--control] [--blind] [--log]
+shapesmith plot      -c run.yaml [--control] [--region nominal] [--blind] [--log]
 shapesmith sync      -c run.yaml              # combine-style shape files per channel
 shapesmith datacards -c run.yaml [--min-background 1.0] [--no-systematics]
 shapesmith fit       -c run.yaml [--final-states mt,all] [--skip-combine]
@@ -40,6 +40,24 @@ weight `norm_weight = xsec / (nevents * generator_weight) * sign(genWeight)`) in
 `<skim_dir>/<channel>/<nick>/*.parquet` plus a `manifest.json`; everything else works on the
 skims. `skim`, `hist` and `ml-export` write a `versions.json` (versions, git hashes of core,
 analysis and sample database, full run configuration) next to their outputs.
+
+For named controls, `hist --regions same_sign,anti_iso` fills those regions, including
+signal contamination; `--regions all` expands each channel's defined regions plus nominal.
+Without this option the existing nominal/estimator booking applies. Use `--force` to refill
+an existing histogram file; partial refills preserve other regions, variables, channels and
+processes. `plot --region same_sign` reads that region and writes beneath
+`plots/<channel>/same_sign/`, with the region in the plot label. A nominal background
+estimate is never substituted into another region. Unblinded plots require actual data
+histograms; only explicit `--blind` uses Asimov data.
+
+Skim manifests record cuts, required columns and normalization. Reuse after changing this
+contract fails with `skim --force` guidance; legacy manifests without recorded cuts also
+require regeneration. The manifest is written before the first file of a sample and after
+every finished file (`completed`, with per-file event counts), so an interrupted skim resumes
+with only the unfinished files; `--force` starts the record afresh. Parquet files and manifests
+are replaced atomically through temporary files. A region weight that replaces a named
+baseline weight keeps its MC-only applicability. Newly added weights, such as a fake factor,
+also apply to data.
 
 ## Run configuration
 

@@ -1,8 +1,11 @@
+import dataclasses
+
 import numpy as np
 import pytest
 
-from shapesmith.histograms import INCLUSIVE, HistKey, HistogramSet, bookings, run_hist, targets
+from shapesmith.histograms import INCLUSIVE, HistKey, HistogramSet, bookings, resolve_regions, run_hist, targets
 from shapesmith.io.skims import read_skims
+from shapesmith.model import Region, Selection
 
 
 def test_histkey_roundtrip():
@@ -19,6 +22,19 @@ def test_bookings_follow_process_kinds(mini_run):
     assert by_process["HH"].regions == ("nominal",) and [v.name for v in by_process["HH"].variations] == ["CMS_puUp", "CMS_puDown"]
     assert by_process["ZTT"].regions == ("nominal", "anti_iso") and len(by_process["ZTT"].variations) == 2
     assert all(b.variations == () for b in bookings(analysis, "mt", systematics=False))
+
+
+def test_explicit_regions_include_signal_and_all_expands_per_channel(mini_run):
+    _, analysis = mini_run
+    channel = analysis.channel("mt")
+    other = dataclasses.replace(channel, name="et", regions=channel.regions[:1])
+    analysis = dataclasses.replace(analysis, channels={"mt": channel, "et": other})
+
+    assert resolve_regions(analysis, "mt", ["all"]) == ("nominal", "same_sign", "anti_iso")
+    assert resolve_regions(analysis, "et", ["all"]) == ("nominal", "same_sign")
+    assert {b.process.name: b.regions for b in bookings(analysis, "mt", True, ["same_sign"])}["HH"] == ("same_sign",)
+    with pytest.raises(KeyError, match="channel mt: unknown region 'missing'"):
+        bookings(analysis, "mt", False, ["missing"])
 
 
 def test_targets(mini_run):
@@ -53,12 +69,83 @@ def test_run_hist_control_matches_numpy(mini_run):
     assert np.allclose(again.values, expected) and np.allclose(again.variances, h.variances) and again.edges.tolist() == [0.0, 50.0, 100.0, 200.0]
 
 
+def test_run_hist_explicit_region_uses_event_selection_for_every_process(mini_run):
+    config, analysis = mini_run
+    hset = run_hist(
+        config,
+        analysis,
+        ["mt"],
+        control=True,
+        variables=None,
+        systematics=False,
+        processes=None,
+        output=config.output_dir / "same_sign.root",
+        force=True,
+        regions=["same_sign"],
+    )
+
+    data = read_skims(config.skim_dir, "mt", ["DATA_A"], None)
+    same_sign = (data["veto"] < 0.5) & ((data["q_1"] * data["q_2"]) > 0) & (data["id_tight"] > 0.5)
+    assert hset.get(HistKey("mt", INCLUSIVE, "data", "same_sign", "Nominal", "m_vis")).sum() == pytest.approx(same_sign.sum())
+    assert hset.has(HistKey("mt", INCLUSIVE, "HH", "same_sign", "Nominal", "m_vis"))
+    assert {key.region for key in hset.keys()} == {"same_sign"}
+
+
+def test_region_replacement_of_baseline_weight_is_mc_only(mini_run):
+    config, analysis = mini_run
+    channel = analysis.channel("mt")
+    baseline = Selection(channel.baseline.cuts, {**channel.baseline.weights, "mc_only": "puweight"})
+    regions = tuple(
+        Region(region.name, region.replace_cuts, {**region.add_weights, "mc_only": "puweight_up"})
+        if region.name == "same_sign"
+        else region
+        for region in channel.regions
+    )
+    analysis = dataclasses.replace(analysis, channels={"mt": dataclasses.replace(channel, baseline=baseline, regions=regions)})
+
+    hset = run_hist(
+        config,
+        analysis,
+        ["mt"],
+        True,
+        None,
+        False,
+        ["data", "ztt"],
+        config.output_dir / "weight_replacement.root",
+        force=True,
+        regions=["same_sign"],
+    )
+
+    data = read_skims(config.skim_dir, "mt", ["DATA_A"], None)
+    selected_data = (data["veto"] < 0.5) & ((data["q_1"] * data["q_2"]) > 0) & (data["id_tight"] > 0.5)
+    assert hset.get(HistKey("mt", INCLUSIVE, "data", "same_sign", "Nominal", "m_vis")).sum() == pytest.approx(selected_data.sum())
+
+    mc = read_skims(config.skim_dir, "mt", ["ZTT_1"], None)
+    selected_mc = (mc["veto"] < 0.5) & ((mc["q_1"] * mc["q_2"]) > 0) & (mc["id_tight"] > 0.5) & (mc["gen_match"] == 5)
+    expected = mc.loc[selected_mc, "norm_weight"] * analysis.lumi_pb * mc.loc[selected_mc, "trg_wgt"] * mc.loc[selected_mc, "puweight"] * mc.loc[selected_mc, "puweight_up"]
+    assert hset.get(HistKey("mt", INCLUSIVE, "ZTT", "same_sign", "Nominal", "m_vis")).sum() == pytest.approx(expected.sum())
+
+
 def test_run_hist_force_keeps_other_processes(mini_run):
     config, analysis = mini_run
     output = config.output_dir / "partial.root"
     first = run_hist(config, analysis, ["mt"], control=True, variables=None, systematics=False, processes=None, output=output, force=True)
     again = run_hist(config, analysis, ["mt"], control=True, variables=None, systematics=False, processes=["hh"], output=output, force=True)
     assert len(again) == len(first) and set(again.keys()) == set(first.keys())
+
+
+def test_run_hist_partial_force_keeps_other_variables_and_regions(mini_run):
+    config, analysis = mini_run
+    analysis = dataclasses.replace(analysis, control_variables={**analysis.control_variables, "score": analysis.categories[0].variable})
+    output = config.output_dir / "partial_regions.root"
+    first = run_hist(config, analysis, ["mt"], True, None, False, None, output, force=True, regions=["all"])
+    kept_key = HistKey("mt", INCLUSIVE, "HH", "nominal", "Nominal", "score")
+    kept_values = first.get(kept_key).values.copy()
+
+    again = run_hist(config, analysis, ["mt"], True, ["m_vis"], False, ["hh"], output, force=True, regions=["same_sign"])
+
+    assert set(again.keys()) == set(first.keys())
+    assert np.array_equal(again.get(kept_key).values, kept_values)
 
 
 def test_run_hist_categories(mini_run):
