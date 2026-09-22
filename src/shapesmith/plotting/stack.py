@@ -92,9 +92,7 @@ def plot_stack(hset: HistogramSet, analysis: Analysis, channel: str, category: s
     else:
         ax.set_ylim(0, 1.8 * max(np.max(data / norm), np.max(background / norm)))
     ax.legend(loc="upper right", ncol=2, fontsize=16, frameon=False)
-    hep.cms.text("Private Work", ax=ax, fontsize=22)
-    if style:
-        hep.cms.lumitext(style.lumi_label, ax=ax, fontsize=18)
+    hep.cms.label(llabel="Private Work", rlabel=style.lumi_label if style else "", ax=ax, fontsize=22)
     channel_label = style.channel_labels.get(channel, channel) if style else channel
     selection_label = f"{channel_label}, {category}" if region == NOMINAL_REGION else f"{channel_label}, {category}, {region}"
     ax.text(0.04, 0.95, selection_label, transform=ax.transAxes, va="top", ha="left", fontsize=20)
