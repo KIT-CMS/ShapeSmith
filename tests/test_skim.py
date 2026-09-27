@@ -39,10 +39,38 @@ def _tighter_skim(analysis):
     return dataclasses.replace(analysis, channels={"mt": changed})
 
 
+def _with_cut(analysis, nick, cut):
+    import dataclasses
+
+    return dataclasses.replace(analysis, samples=tuple(dataclasses.replace(s, cut=cut) if s.nick == nick else s for s in analysis.samples))
+
+
+def _add_npartons(tmp_path):
+    """Give the ZTT_1 ntuples (only) a CROWN-like uint8 `npartons` column, 0 for every third event."""
+    import uproot
+
+    from shapesmith.testing import make_ntuple
+
+    for path in sorted((tmp_path / "data" / "CROWNRun" / "2018" / "ZTT_1" / "mt").glob("*.root")):
+        with uproot.open(path) as handle:
+            columns = handle["ntuple"].arrays(library="np")
+            metadata = json.loads(str(handle["metadata"]))
+        columns["npartons"] = (columns["event"] % 3).astype(np.uint8)
+        make_ntuple(path, columns, metadata)
+
+
 def test_required_columns_cover_every_expression():
     columns = required_columns(build(), "mt")
     assert {"veto", "id_loose", "q_1", "q_2", "id_tight", "trg_wgt", "fake_factor", "gen_match", "puweight", "puweight_up", "puweight_down", "score", "cls", "m_vis", "event"} <= columns
     assert "genWeight" in columns
+
+
+def test_sample_cut_columns_are_required_by_that_sample_only():
+    analysis = _with_cut(build(), "ZTT_1", "npartons == 0")
+    ztt, sig = analysis.samples[1], analysis.samples[2]
+    assert "npartons" in columns_for_sample(analysis, "mt", ztt)
+    assert "npartons" not in columns_for_sample(analysis, "mt", sig)
+    assert "npartons" not in required_columns(analysis, "mt")  # read from the files of ZTT_1 only: other samples may lack the column
 
 
 def test_region_replacement_of_baseline_weight_stays_optional_for_data(config):
@@ -98,6 +126,59 @@ def test_run_skim_writes_parquet_and_manifest(config):
     assert manifest["contract"]["selection"] == {"iso_loose": "id_loose > 0.5", "veto": "veto < 0.5"}
     assert "m_vis" in manifest["contract"]["required_columns"]
     assert manifest["contract"]["normalisation"] == manifest["normalisation"]
+
+
+def test_run_skim_applies_the_sample_cut_without_renormalising(tmp_path):
+    config = _config(tmp_path, workers=1)
+    _add_npartons(tmp_path)
+    analysis = build()
+    uncut = run_skim(config, analysis)
+    frame = read_skims(config.skim_dir, "mt", ["ZTT_1"], None)
+    cut = run_skim(config, _with_cut(analysis, "ZTT_1", "npartons == 0"), force=True)
+    kept = read_skims(config.skim_dir, "mt", ["ZTT_1"], None)
+    expected = frame[frame["event"] % 3 == 0]
+    assert 0 < len(kept) < len(frame) and (kept["npartons"] == 0).all()
+    assert kept["event"].tolist() == expected["event"].tolist()
+    assert np.array_equal(kept["norm_weight"], expected["norm_weight"])  # the whole-sample normalisation, per event
+    before, after = ({(r.nick, r.basename): r.n_out for r in results if r.nick != "ZTT_1"} for results in (uncut, cut))
+    assert after == before  # DATA_A and SIG_1 have no npartons column and are skimmed as before
+
+
+def test_sample_cut_is_part_of_the_skim_contract(tmp_path):
+    config = _config(tmp_path, workers=1)
+    analysis = build()
+    run_skim(config, analysis)
+    path = config.skim_dir / "mt" / "ZTT_1" / "manifest.json"
+    plain = read_manifest(path)["contract"]
+    assert plain == {  # unchanged for samples without a cut, so their existing skims stay reusable
+        "selection": {"iso_loose": "id_loose > 0.5", "veto": "veto < 0.5"},
+        "required_columns": sorted(required_columns(analysis, "mt")),
+        "normalisation": {"kind": "mc", "xsec": 10.0, "nevents": 100, "generator_weight": 1.0},
+    }
+    for cut in ("gen_match == 5", "gen_match == 6", None):  # set, changed, removed (gen_match is required anyway)
+        changed = _with_cut(analysis, "ZTT_1", cut)
+        with pytest.raises(ValueError, match=r"mt/ZTT_1 is incompatible \(sample cut changed\).*shapesmith skim --force"):
+            run_skim(config, changed)
+        run_skim(config, changed, force=True)
+        assert read_manifest(path)["contract"] == (plain if cut is None else {**plain, "sample_cut": cut})
+        assert all(r.skipped for r in run_skim(config, changed))
+
+
+def test_a_sample_cut_on_a_new_column_leaves_the_other_skims_reusable(tmp_path):
+    config = _config(tmp_path, workers=1)
+    _add_npartons(tmp_path)
+    analysis = build()
+    run_skim(config, analysis)
+    plain = read_manifest(config.skim_dir / "mt" / "SIG_1" / "manifest.json")["contract"]
+    changed = _with_cut(analysis, "ZTT_1", "npartons == 0")
+    with pytest.raises(ValueError, match=r"mt/ZTT_1 is incompatible \(required columns changed, sample cut changed\)"):
+        run_skim(config, changed)
+    run_skim(config, changed, samples=["ZTT_1"], force=True)
+    assert all(r.skipped for r in run_skim(config, changed))  # DATA_A and SIG_1 keep the skims made before the cut existed
+    assert read_manifest(config.skim_dir / "mt" / "SIG_1" / "manifest.json")["contract"] == plain
+    cut = read_manifest(config.skim_dir / "mt" / "ZTT_1" / "manifest.json")
+    assert cut["contract"]["required_columns"] == sorted({*plain["required_columns"], "npartons"})
+    assert "npartons" in cut["columns"]
 
 
 def test_run_skim_skips_existing_files_unless_forced(config):

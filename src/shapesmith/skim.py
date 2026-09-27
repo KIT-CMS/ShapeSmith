@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import logging
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 import numpy as np
@@ -46,7 +46,7 @@ def _columns(expressions) -> set[str]:
 def columns_for_sample(analysis: Analysis, channel_name: str, sample: Sample) -> set[str]:
     """Columns this sample must carry: the common cuts, regions, categories and variables, the cuts (and for
     MC/embedding the weights) of the processes of its own group; MC additionally the baseline weights, the
-    weight variations and the generator columns."""
+    weight variations and the generator columns. A sample cut adds its own columns."""
     channel = analysis.channel(channel_name)
     columns = _columns(channel.skim.cuts.values()) | _columns(channel.baseline.cuts.values()) | set(channel.keep_columns) | set(EVENT_COLUMNS)
     for region in channel.regions:
@@ -57,6 +57,8 @@ def columns_for_sample(analysis: Analysis, channel_name: str, sample: Sample) ->
         columns |= columns_in(category.cut) | columns_in(category.variable.expr)
     for variable in analysis.control_variables.values():
         columns |= columns_in(variable.expr)
+    if sample.cut is not None:
+        columns |= columns_in(sample.cut)
     for process in analysis.processes:
         if process.group != sample.group:
             continue
@@ -72,16 +74,17 @@ def columns_for_sample(analysis: Analysis, channel_name: str, sample: Sample) ->
 
 
 def required_columns(analysis: Analysis, channel_name: str) -> set[str]:
-    """Every column any sample of the channel needs (the skim reads this union from each file)."""
+    """Every column any sample of the channel needs (the skim reads this union from each file), except the columns of a sample
+    cut: only that sample reads them, so a cut on a new column leaves the skims and contracts of the other samples unchanged."""
     columns: set[str] = set()
     for sample in analysis.samples:
         if sample.channels is None or channel_name in sample.channels:
-            columns |= columns_for_sample(analysis, channel_name, sample)
+            columns |= columns_for_sample(analysis, channel_name, replace(sample, cut=None))
     return columns
 
 
 def skim_one(ntuple: NtupleFile, sample: Sample, channel: Channel, columns: set[str], out_path: Path, optional: set[str] = frozenset()) -> SkimResult:
-    """Read one file, apply the skim selection, add the bookkeeping columns, write Parquet.
+    """Read one file, apply the skim selection and the sample cut, add the bookkeeping columns, write Parquet.
 
     Every requested column must exist, except the `optional` ones (MC weights in data/embedding files),
     which are left out and reported at debug level. A missing column is a configuration error, not a warning.
@@ -90,7 +93,10 @@ def skim_one(ntuple: NtupleFile, sample: Sample, channel: Channel, columns: set[
     if len(frame.columns) < len(columns):
         logger.debug(f"{ntuple.basename} ({sample.nick}): optional columns not in this sample: {sorted(set(columns) - set(frame.columns))}")
     n_in = len(frame)
-    frame = frame[mask(frame, channel.skim.cuts)].reset_index(drop=True)
+    selected = mask(frame, channel.skim.cuts)
+    if sample.cut is not None:
+        selected &= mask(frame, {"sample_cut": sample.cut})  # the normalisation stays that of the whole sample
+    frame = frame[selected].reset_index(drop=True)
     sign = np.sign(frame["genWeight"].to_numpy()) if sample.kind == "mc" else np.ones(len(frame))
     sign[sign == 0] = 1.0
     frame["sample_nick"] = pd.array([sample.nick] * len(frame), dtype="string")  # typed even for empty files
@@ -122,11 +128,14 @@ def _normalisation(sample: Sample) -> dict:
 
 
 def _skim_contract(channel: Channel, columns: set[str], sample: Sample) -> dict:
-    return {
+    contract = {
         "selection": dict(channel.skim.cuts),
         "required_columns": sorted(columns),
         "normalisation": _normalisation(sample),
     }
+    if sample.cut is not None:  # recorded only when set, so that the skims of samples without a cut stay reusable
+        contract["sample_cut"] = sample.cut
+    return contract
 
 
 def _validate_reuse(path: Path, channel: Channel, columns: set[str], sample: Sample) -> dict:
@@ -158,6 +167,8 @@ def _validate_reuse(path: Path, channel: Channel, columns: set[str], sample: Sam
             problems.append("required columns changed")
         if contract.get("normalisation") != expected["normalisation"]:
             problems.append("normalisation changed")
+        if contract.get("sample_cut") != expected.get("sample_cut"):
+            problems.append("sample cut changed")
     if problems:
         raise ValueError(f"skim {channel.name}/{sample.nick} is incompatible ({', '.join(problems)}); re-run `shapesmith skim --force`")
     return manifest
@@ -204,12 +215,14 @@ def run_skim(config: RunConfig, analysis: Analysis, channels: list[str] | None =
     results: list[SkimResult] = []
     for channel_name in channels or config.channels:
         channel = analysis.channel(channel_name)
-        columns = required_columns(analysis, channel_name)
+        shared = required_columns(analysis, channel_name)
         jobs, manifests = [], {}
         chosen = [s for s in select_samples(analysis, samples) if s.channels is None or channel_name in s.channels]
         with ThreadPoolExecutor(max_workers=min(8, max(1, len(chosen)))) as listing:  # directory listings are latency bound
             discovered = list(listing.map(lambda s: discover(config.ntuples, config.era, s.nick, channel_name, s.kind), chosen))
         for sample, files in zip(chosen, discovered):
+            own = columns_for_sample(analysis, channel_name, sample)
+            columns = shared | own  # plus the columns of the sample's own cut
             path = manifest_path(config.skim_dir, channel_name, sample.nick)
             outputs = [(ntuple, skim_path(config.skim_dir, channel_name, sample.nick, ntuple.basename)) for ntuple in files]
             reuse = not force and any(out_path.exists() for _, out_path in outputs)
@@ -221,7 +234,7 @@ def run_skim(config: RunConfig, analysis: Analysis, channels: list[str] | None =
                     results.append(SkimResult(sample.nick, ntuple.basename, record["n_in"], record["n_out"], out_path, skipped=True))
                     continue
                 manifest["completed"].pop(ntuple.basename, None)  # its Parquet is gone: the record no longer counts
-                jobs.append((ntuple, sample, channel, columns, out_path, columns - columns_for_sample(analysis, channel_name, sample)))
+                jobs.append((ntuple, sample, channel, columns, out_path, columns - own))
                 pending += 1
             if pending:  # record the contract before the first file is written
                 _write_manifest(path, manifest, columns)
@@ -236,7 +249,7 @@ def run_skim(config: RunConfig, analysis: Analysis, channels: list[str] | None =
             manifest["completed"][result.basename] = {"n_in": result.n_in, "n_out": result.n_out}
             if not manifest["metadata"]:
                 manifest["metadata"] = result.metadata
-            _write_manifest(manifest_path(config.skim_dir, channel_name, result.nick), manifest, columns)
+            _write_manifest(manifest_path(config.skim_dir, channel_name, result.nick), manifest, job[3])  # the columns of this sample
         if failures:
             raise RuntimeError("skim failures:\n" + "\n".join(failures))
     return results

@@ -32,6 +32,7 @@ class Sample:
     nevents: int = 1
     generator_weight: float = 1.0
     channels: tuple[str, ...] | None = None  # None = all channels
+    cut: str | None = None  # per-sample event selection applied at skim time, e.g. to keep one generator-level part of a sample
 
     @property
     def norm_weight(self) -> float:

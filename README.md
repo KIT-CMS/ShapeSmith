@@ -50,6 +50,11 @@ processes. `plot --region same_sign` reads that region and writes beneath
 estimate is never substituted into another region. Unblinded plots require actual data
 histograms; only explicit `--blind` uses Asimov data.
 
+A sample's own `cut` (e.g. one generator-level part of an inclusive sample) is applied at skim
+time on top of the loose selection; its `norm_weight` stays that of the whole sample. Only that
+sample reads the cut's columns and only its manifest records the cut, so the skims of the other
+samples stay reusable.
+
 Skim manifests record cuts, required columns and normalization. Reuse after changing this
 contract fails with `skim --force` guidance; legacy manifests without recorded cuts also
 require regeneration. The manifest is written before the first file of a sample and after
