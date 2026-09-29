@@ -5,7 +5,6 @@ import pytest
 
 from shapesmith.fill import bookings, resolve_regions, run_hist, targets
 from shapesmith.histogram import INCLUSIVE, HistKey, HistogramSet
-from shapesmith.model import Region
 from shapesmith.store import read_skims
 
 

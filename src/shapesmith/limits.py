@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import json
-import logging
 from pathlib import Path
 
 import matplotlib
@@ -13,8 +12,6 @@ import uproot  # noqa: E402
 
 from shapesmith import cmssw  # noqa: E402
 from shapesmith.config import RunConfig  # noqa: E402
-
-logger = logging.getLogger(__name__)
 
 QUANTILES = {0.025: "exp_m2", 0.16: "exp_m1", 0.5: "exp_median", 0.84: "exp_p1", 0.975: "exp_p2", -1.0: "observed"}
 COMMON = "-m {mass} --setParameterRanges r=-40,40 -t -1"

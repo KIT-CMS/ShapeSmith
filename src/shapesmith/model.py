@@ -8,15 +8,15 @@ variations replace, so they are unique within a selection.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Literal, Mapping
+from typing import TYPE_CHECKING, Literal, Mapping, get_args
 
 if TYPE_CHECKING:
     from shapesmith.measurements import Measurement
 
 SampleKind = Literal["data", "mc", "embedding"]
 Role = Literal["data", "signal", "background", "auxiliary"]  # auxiliary: booked for an estimator, never a datacard process
-SAMPLE_KINDS = ("data", "mc", "embedding")
-ROLES = ("data", "signal", "background", "auxiliary")
+SAMPLE_KINDS = get_args(SampleKind)
+ROLES = get_args(Role)
 NOMINAL = "nominal"
 
 
