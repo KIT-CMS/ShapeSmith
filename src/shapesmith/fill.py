@@ -10,6 +10,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 from pathlib import Path
+from typing import NamedTuple
 
 import numpy as np
 
@@ -86,10 +87,41 @@ def targets(channel: Channel, control: bool, variables: list[str] | None) -> lis
     return [Target(c.name, c.cut, c.variable) for c in channel.categories]
 
 
+class Fill(NamedTuple):
+    """The histograms of one region and variation of a booking: its cuts and weights, and per target the category
+    cut and the variable expression."""
+
+    region: str
+    variation: Variation | None
+    cuts: list[str]
+    weights: list[str]
+    targets: list[tuple[Target, str | None, str]]
+
+
 def _target_exprs(target: Target, variation: Variation | None, available: set[str]) -> tuple[str | None, str]:
     if not isinstance(variation, ColumnVariation):
         return target.cut, target.variable.expr
     return (shift(target.cut, variation, available) if target.cut else None), shift(target.variable.expr, variation, available)
+
+
+def plan_booking(channel: Channel, booking: Booking, targets_: list[Target], available: set[str]) -> list[Fill]:
+    """What to fill: every region with its applicable variations; a column variation only for the targets whose
+    cuts, weights, category or variable it changes."""
+    fills = []
+    for region_name in booking.regions:
+        region = channel.region(region_name)
+        nominal = select(channel, booking.process, region)
+        for variation in (None, *(v for v in booking.variations if v.regions is None or region_name in v.regions)):
+            selection = select(channel, booking.process, region, variation, available)
+            if selection is None:
+                logger.debug(f"{booking.process.name}: variation {variation.name} not applicable, skipped")
+                continue
+            exprs = [(target, *_target_exprs(target, variation, available)) for target in targets_]
+            if isinstance(variation, ColumnVariation) and selection == nominal:
+                exprs = [(target, cut, expr) for target, cut, expr in exprs if (cut, expr) != (target.cut, target.variable.expr)]
+            if exprs:
+                fills.append(Fill(region_name, variation, *selection, exprs))
+    return fills
 
 
 def fill_booking(config: RunConfig, analysis: Analysis, channel_name: str, booking: Booking, targets_: list[Target]) -> dict[HistKey, Histogram]:
@@ -97,39 +129,24 @@ def fill_booking(config: RunConfig, analysis: Analysis, channel_name: str, booki
     channel = analysis.channel(channel_name)
     process = booking.process
     nicks = [s.nick for s in channel.samples_of(process.group)]
-    available = schema(config.skim_dir, channel_name, nicks)
-    plan = []  # (region, variation, cuts, weights, [(target, cut, expression)])
-    for region_name in booking.regions:
-        region = channel.region(region_name)
-        nominal = select(channel, process, region)
-        for variation in (None, *(v for v in booking.variations if v.regions is None or region_name in v.regions)):
-            selection = select(channel, process, region, variation, available)
-            if selection is None:
-                logger.debug(f"{process.name}: variation {variation.name} not applicable, skipped")
-                continue
-            exprs = [(target, *_target_exprs(target, variation, available)) for target in targets_]
-            if isinstance(variation, ColumnVariation):
-                unchanged = selection == nominal
-                exprs = [(target, cut, expr) for target, cut, expr in exprs if not unchanged or (cut, expr) != (target.cut, target.variable.expr)]
-            if exprs:
-                plan.append((region_name, variation, *selection, exprs))
-    read = []
-    for _, _, cuts, weights, exprs in plan:
-        read += cuts + weights + [e for _, cut, expr in exprs for e in (cut, expr) if e]
-    frame = read_skims(config.skim_dir, channel_name, nicks, set(SKIM_COLUMNS) | columns_of(read))
+    fills = plan_booking(channel, booking, targets_, schema(config.skim_dir, channel_name, nicks))
+    exprs = []
+    for f in fills:
+        exprs += f.cuts + f.weights + [e for _, cut, var in f.targets for e in (cut, var) if e]
+    frame = read_skims(config.skim_dir, channel_name, nicks, set(SKIM_COLUMNS) | columns_of(exprs))
     lumi_pb = lumi(analysis, channel, process)
     result: dict[HistKey, Histogram] = {}
-    for region_name, variation, cuts, weights, exprs in plan:
-        selected = frame[mask(frame, cuts)]
-        w = event_weights(selected, weights, lumi_pb)
-        for target, cut, expr in exprs:
+    for f in fills:
+        selected = frame[mask(frame, f.cuts)]
+        w = event_weights(selected, f.weights, lumi_pb)
+        for target, cut, expr in f.targets:
             in_category = mask(selected, [cut]) if cut else np.ones(len(selected), dtype=bool)
             values = evaluate(selected, expr).astype(np.float64)
             finite = np.isfinite(values) & np.isfinite(w)
             if (in_category & ~finite).any():
-                logger.warning(f"{process.name}/{region_name}/{target.variable.name}: {(in_category & ~finite).sum()} events with NaN/inf skipped")
+                logger.warning(f"{process.name}/{f.region}/{target.variable.name}: {(in_category & ~finite).sum()} events with NaN/inf skipped")
             keep = in_category & finite
-            key = HistKey(channel_name, target.category, process.name, region_name, variation.name if variation else NOMINAL_VARIATION, target.variable.name)
+            key = HistKey(channel_name, target.category, process.name, f.region, f.variation.name if f.variation else NOMINAL_VARIATION, target.variable.name)
             result[key] = Histogram.fill(target.variable.edges, values[keep], w[keep])
     return result
 
