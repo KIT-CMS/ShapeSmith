@@ -32,7 +32,6 @@ shapesmith datacards -c run.yaml [--min-background 1.0] [--no-systematics]
 shapesmith fit       -c run.yaml [--final-states mt,all] [--skip-combine]
 shapesmith ml-export -c run.yaml              # Feather training folds
 shapesmith inspect   output/shapes.root       # what a histogram file contains
-shapesmith inventory datasets.json nicks.txt inventory.txt   # production inventory (nick + DBS path)
 ```
 
 Two stages: `skim` reads the ntuples once (loose selection, all needed columns, normalisation

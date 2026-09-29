@@ -54,16 +54,6 @@ def example_config(path: Path = typer.Argument(..., help="where to write the exa
 
 
 @app.command()
-def inventory(database: Path = typer.Argument(..., help="KingMaker datasets.json that still knows the nicks by name"), nicks: Path = typer.Argument(..., help="text file, one produced nick per line"), output: Path = typer.Argument(..., help="inventory to write: nick and DBS path per line")):
-    """Write a production inventory: for every produced nick its DBS dataset path, the key that survives database renames."""
-    from shapesmith.samples import write_inventory
-
-    names = [line.strip() for line in nicks.read_text().splitlines() if line.strip()]
-    entries = write_inventory(output, database, names)
-    typer.echo(f"wrote {len(entries)} entries to {output}")
-
-
-@app.command()
 def validate(config: Path = ConfigOption, channels: Optional[str] = ChannelsOption, overrides: Optional[list[str]] = SetOption):
     """Load and validate the analysis; report the columns every channel needs."""
     from shapesmith.skim import required_columns
