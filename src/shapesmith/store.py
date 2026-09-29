@@ -1,4 +1,4 @@
-"""Parquet skims and their manifests (Spec §7 steps 5-6)."""
+"""Parquet skims and their manifests: <skim_dir>/<channel>/<nick>/{*.parquet, manifest.json}."""
 from __future__ import annotations
 
 import json
@@ -10,6 +10,9 @@ import pandas as pd
 import pyarrow as pa
 import pyarrow.dataset as ds
 import pyarrow.parquet as pq
+
+
+SKIM_COLUMNS = ("sample_nick", "norm_weight", "is_data", "is_mc", "is_embedding")  # added to every skim
 
 
 class SkimMissingError(FileNotFoundError):
@@ -42,19 +45,32 @@ def write_skim(frame: pd.DataFrame, path: Path) -> None:
     _replace(path, lambda temporary: pq.write_table(table, temporary, compression="snappy"))
 
 
+def _files(skim_dir: Path, channel: str, nick: str) -> list[Path]:
+    directory = Path(skim_dir) / channel / nick
+    files = sorted(directory.glob("*.parquet")) if directory.is_dir() else []
+    if not files:
+        raise SkimMissingError(f"no skims for {nick} in {directory} (run `shapesmith skim`)")
+    return files
+
+
+def schema(skim_dir: Path, channel: str, nicks: Iterable[str]) -> set[str]:
+    """The columns every skim of the given nicks holds."""
+    columns = None
+    for nick in nicks:
+        names = set(pq.read_schema(_files(skim_dir, channel, nick)[0]).names)
+        columns = names if columns is None else columns & names
+    return columns or set()
+
+
 def read_skims(skim_dir: Path, channel: str, nicks: Iterable[str], columns: Iterable[str] | None) -> pd.DataFrame:
-    """All skim rows of the given nicks in one DataFrame (only `columns` if given)."""
+    """All skim rows of the given nicks in one DataFrame, in nick and file order (only `columns` if given)."""
     frames = []
     for nick in nicks:
-        directory = Path(skim_dir) / channel / nick
-        files = sorted(directory.glob("*.parquet")) if directory.is_dir() else []
-        if not files:
-            raise SkimMissingError(f"no skims for {nick} in {directory} (run `shapesmith skim`)")
-        dataset = ds.dataset([str(f) for f in files], format="parquet")
+        dataset = ds.dataset([str(f) for f in _files(skim_dir, channel, nick)], format="parquet")
         if columns is not None:
             missing = sorted(set(columns) - set(dataset.schema.names))
             if missing:
-                raise SkimMissingError(f"skims of {nick} in {directory} lack columns {missing} (re-run `shapesmith skim --force` after changing the analysis)")
+                raise SkimMissingError(f"skims of {nick} in {Path(skim_dir) / channel / nick} lack columns {missing} (re-run `shapesmith skim --force` after changing the analysis)")
         table = dataset.to_table(columns=list(columns) if columns is not None else None)
         frames.append(table.to_pandas())
     return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()

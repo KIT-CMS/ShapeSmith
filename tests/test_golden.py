@@ -14,11 +14,12 @@ import uproot
 
 from shapesmith.config import FriendConfig, NtupleConfig, RunConfig
 from shapesmith.datacards import run_datacards
-from shapesmith.estimators import run_estimate
-from shapesmith.histograms import run_hist
+from shapesmith.estimates import run_estimates
+from shapesmith.fill import run_hist
 from shapesmith.ml_export import run_ml_export
-from shapesmith.model import Estimator, Region
+from shapesmith.model import ABCD, Region
 from shapesmith.skim import run_skim
+from shapesmith.store import read_manifest, write_manifest
 from shapesmith.testing import make_mini_dataset
 from tests.mini_analysis import build
 
@@ -36,8 +37,8 @@ def _abcd_variant(analysis):
         Region("abcd_anti_iso", replace_cuts={"tau_iso": anti}),
         Region("abcd_same_sign_anti_iso", replace_cuts={"os": "(q_1 * q_2) > 0", "tau_iso": anti}),
     )
-    estimator = Estimator("abcd", {"B": "abcd_anti_iso", "C": "same_sign", "D": "abcd_same_sign_anti_iso"}, ("ZTT", "ZL"), "QCD")
-    return dataclasses.replace(analysis, channels={"mt": dataclasses.replace(channel, regions=regions)}, estimator=estimator)
+    estimators = (ABCD("QCD", "abcd_anti_iso", "same_sign", "abcd_same_sign_anti_iso", ("ZTT", "ZL")),)
+    return dataclasses.replace(analysis, channels={"mt": dataclasses.replace(channel, regions=regions, estimators=estimators)})
 
 
 def _produce(tmp: Path) -> tuple[dict, str]:
@@ -50,15 +51,15 @@ def _produce(tmp: Path) -> tuple[dict, str]:
     analysis = build(config)
     run_skim(config, analysis)
     result = {}
-    control = run_hist(config, analysis, ["mt"], True, None, True, None, tmp / "out" / "control_shapes.root", force=True)
+    control = run_hist(config, analysis, ["mt"], True, None, True, None, tmp / "out" / "control_shapes.root")
     result["control_hist"] = _digest(control)
-    run_estimate(control, analysis, ["mt"])
+    run_estimates(control, analysis, ["mt"])
     result["control_estimate"] = _digest(control)
-    regions = run_hist(config, analysis, ["mt"], True, None, True, None, tmp / "out" / "regions.root", force=True, regions=["all"])
+    regions = run_hist(config, analysis, ["mt"], True, None, True, None, tmp / "out" / "regions.root", regions=["all"])
     result["control_regions_all"] = _digest(regions)
-    shapes = run_hist(config, analysis, ["mt"], False, None, True, None, tmp / "out" / "shapes.root", force=True)
+    shapes = run_hist(config, analysis, ["mt"], False, None, True, None, tmp / "out" / "shapes.root")
     result["shapes_hist"] = _digest(shapes)
-    run_estimate(shapes, analysis, ["mt"])
+    run_estimates(shapes, analysis, ["mt"])
     result["shapes_estimate"] = _digest(shapes)
     card = run_datacards(shapes, analysis, {"mt": ["mt"]}, tmp / "out" / "datacards", True, 1.0)["mt"].read_text()
     with uproot.open(tmp / "out" / "datacards" / "mt" / "common" / "htt_input_2018.root") as f:
@@ -68,14 +69,27 @@ def _produce(tmp: Path) -> tuple[dict, str]:
             if cls.startswith("TH1")
         }
     abcd = _abcd_variant(analysis)
-    abcd_hset = run_hist(config, abcd, ["mt"], True, None, False, None, tmp / "out" / "abcd.root", force=True)
-    run_estimate(abcd_hset, abcd, ["mt"])
+    abcd_hset = run_hist(config, abcd, ["mt"], True, None, False, None, tmp / "out" / "abcd.root")
+    run_estimates(abcd_hset, abcd, ["mt"])
     result["abcd_control_estimate"] = _digest(abcd_hset)
     result["ml_export"] = {}
     for path in run_ml_export(config, analysis, ["mt"]):
         frame = pd.read_feather(path)
         result["ml_export"][path.name] = {"|".join(column): np.asarray(frame[column]).astype(np.float64).tolist() for column in frame.columns}
+    result["reused_old_contracts"] = _reuse_old_contracts(config, analysis)
     return result, card
+
+
+def _reuse_old_contracts(config, analysis) -> bool:
+    """Skims whose manifests carry the contracts written by aa5daa5 (no friends recorded) are reused without
+    --force when no friend is configured, as for the v4 skims; a configured friend makes them incompatible."""
+    for nick, contract in json.loads((GOLDEN / "mini_golden.json").read_text())["skim_contracts"].items():
+        path = config.skim_dir / "mt" / nick / "manifest.json"
+        write_manifest(path, {**read_manifest(path), "contract": contract})
+    with pytest.raises(ValueError, match="friends missing"):
+        run_skim(config, analysis)
+    without_friends = config.model_copy(update={"ntuples": config.ntuples.model_copy(update={"friends": []})})
+    return all(r.skipped for r in run_skim(without_friends, analysis))
 
 
 def _bitwise_equal(a, b) -> bool:
@@ -94,6 +108,10 @@ def test_histograms_match_the_golden_outputs(produced, part):
     assert sorted(result) == sorted(golden)
     different = [name for name in golden if not all(_bitwise_equal(r, g) for r, g in zip(result[name], golden[name]))]
     assert not different
+
+
+def test_skims_with_the_old_contracts_are_reused(produced):
+    assert produced[0]["reused_old_contracts"]
 
 
 def test_datacard_text_matches_the_golden_card(produced):

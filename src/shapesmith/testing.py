@@ -3,6 +3,7 @@
 The mini dataset mimics the CROWN layout:
     <root>/CROWNRun/<era>/<nick>/<channel>/<nick>_<i>.root          main ntuples
     <root>/CROWNFriends/nn/<era>/<nick>/<channel>/<nick>_<i>.root   friend trees (score, cls, fake_factor)
+With `variations`, it also has an embedded sample and CROWN shifts (`<column>__<shift>`) in main and friend trees.
 """
 from __future__ import annotations
 
@@ -13,6 +14,7 @@ import numpy as np
 import uproot
 
 MINI_NICKS = ["DATA_A", "ZTT_1", "SIG_1"]
+EMBEDDING_NICK = "EMB_A"
 
 
 def make_ntuple(path: Path, columns: dict[str, np.ndarray], metadata: dict | None = None, tree: str = "ntuple") -> Path:
@@ -54,14 +56,33 @@ def _friend_columns(rng: np.random.Generator, n: int) -> dict[str, np.ndarray]:
     }
 
 
-def make_mini_dataset(root: Path, era: str = "2018", channel: str = "mt", n_files: int = 2, n_events: int = 1000, seed: int = 1) -> dict:
-    """Create main ntuples and friend trees for three nicks (data, DY, signal) below `root`."""
+def _shifts(columns: dict[str, np.ndarray], column: str, name: str, factors: tuple[float, float]) -> dict[str, np.ndarray]:
+    """CROWN-style shifted copies `<column>__<name>Up/Down` of one column, scaled by the given factors."""
+    return {f"{column}__{name}{direction}": (columns[column] * factor).astype(columns[column].dtype) for direction, factor in zip(("Up", "Down"), factors)}
+
+
+def make_mini_dataset(root: Path, era: str = "2018", channel: str = "mt", n_files: int = 2, n_events: int = 1000, seed: int = 1, variations: bool = False) -> dict:
+    """Create main ntuples and friend trees for three nicks (data, DY, signal) below `root`.
+
+    With `variations`, an embedded nick EMB_A (with `emb_genweight`) is added, the simulated and embedded main trees
+    carry the shift `m_vis__tesUp/Down` and every friend tree `fake_factor__ffStatUp/Down`. The columns of the three
+    nicks without variations stay exactly those of the plain dataset."""
     root = Path(root)
     rng = np.random.default_rng(seed)
-    for nick in MINI_NICKS:
+    nicks = MINI_NICKS + ([EMBEDDING_NICK] if variations else [])
+    for nick in nicks:
+        sample_type = {"DATA_A": "data", EMBEDDING_NICK: "embedding"}.get(nick, "mc")
         for i in range(n_files):
             name = f"{nick}_{i}.root"
-            metadata = {"analysis": "mini", "era": era, "sample_type": "data" if nick == "DATA_A" else "mc"}
-            make_ntuple(root / "CROWNRun" / era / nick / channel / name, _main_columns(rng, n_events, i * n_events, nick == "DATA_A"), metadata)
-            make_ntuple(root / "CROWNFriends" / "nn" / era / nick / channel / name, _friend_columns(rng, n_events))
-    return {"ntuples": root / "CROWNRun", "friends": root / "CROWNFriends" / "nn", "nicks": list(MINI_NICKS)}
+            main = _main_columns(rng, n_events, i * n_events, sample_type == "data")
+            friend = _friend_columns(rng, n_events)
+            if variations:
+                if sample_type == "embedding":
+                    main["emb_genweight"] = np.ones(n_events, dtype=np.float32)
+                if sample_type != "data":
+                    main.update(_shifts(main, "m_vis", "tes", (1.03, 0.97)))
+                friend.update(_shifts(friend, "fake_factor", "ffStat", (1.2, 0.8)))
+            metadata = {"analysis": "mini", "era": era, "sample_type": sample_type}
+            make_ntuple(root / "CROWNRun" / era / nick / channel / name, main, metadata)
+            make_ntuple(root / "CROWNFriends" / "nn" / era / nick / channel / name, friend)
+    return {"ntuples": root / "CROWNRun", "friends": root / "CROWNFriends" / "nn", "nicks": nicks}

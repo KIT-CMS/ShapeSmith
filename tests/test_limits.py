@@ -1,7 +1,12 @@
+from pathlib import Path
+
 import numpy as np
+import pytest
 import uproot
 
-from shapesmith.fit import collect, combine_script, write_summary
+from shapesmith import cmssw
+from shapesmith.config import CombineConfig
+from shapesmith.limits import collect, limit_commands, write_summary
 
 
 def _limit_tree(path, quantiles, limits, r=None):
@@ -12,10 +17,21 @@ def _limit_tree(path, quantiles, limits, r=None):
         f["limit"] = data
 
 
-def test_combine_script_contents():
-    script = combine_script("/cmssw/CMSSW_14_1_9", "el9_amd64_gcc12", __import__("pathlib").Path("/cards/mt"))
-    assert "export SCRAM_ARCH=el9_amd64_gcc12" in script
-    assert "cd /cmssw/CMSSW_14_1_9/src" in script and "eval $(scramv1 runtime -sh)" in script
+def test_cmssw_script_sets_up_the_environment_before_the_commands():
+    script = cmssw.script(CombineConfig(cmssw_dir="/cmssw/CMSSW_14_1_9"), Path("/cards/mt"), ["echo one", "echo two"])
+    lines = script.splitlines()
+    assert lines[:2] == ["set -e", "export SCRAM_ARCH=el9_amd64_gcc12"]
+    assert "cd /cmssw/CMSSW_14_1_9/src" in lines and "eval $(scramv1 runtime -sh)" in lines
+    assert lines[-3:] == ["cd /cards/mt", "echo one", "echo two"]
+
+
+def test_cmssw_run_needs_a_combine_configuration(tmp_path):
+    with pytest.raises(ValueError, match="needs `combine`"):
+        cmssw.run(["true"], None, tmp_path)
+
+
+def test_limit_commands():
+    script = "\n".join(limit_commands())
     assert "text2workspace.py combined.txt -o workspace.root -m 125" in script
     assert "-M AsymptoticLimits" in script and "--expectSignal 0" in script and "-n .Limit" in script
     assert "-M Significance" in script and "-n .Significance" in script

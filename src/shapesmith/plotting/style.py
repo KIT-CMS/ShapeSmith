@@ -4,15 +4,13 @@ from __future__ import annotations
 from shapesmith.model import Analysis
 
 
-def grouped_backgrounds(analysis: Analysis) -> list[tuple[str, list[str]]]:
-    """[(group, [process names]), ...] in Style.group_order; the estimator output forms its own group."""
+def grouped_backgrounds(analysis: Analysis, channel: str) -> list[tuple[str, list[str]]]:
+    """[(group, [process names]), ...] of the channel's backgrounds in Style.group_order; an estimator output forms its own group."""
+    ch = analysis.channel(channel)
+    estimated = set(ch.backgrounds()) - {p.name for p in ch.processes}
     groups: dict[str, list[str]] = {}
-    for process in analysis.processes:
-        if process.kind in ("data", "signal"):
-            continue
-        groups.setdefault(process.plot_group, []).append(process.name)
-    if analysis.estimator is not None:
-        groups.setdefault(analysis.estimator.output, []).append(analysis.estimator.output)
+    for name in ch.backgrounds():
+        groups.setdefault(name if name in estimated else ch.process(name).plot_group, []).append(name)
     order = list(analysis.style.group_order) if analysis.style else sorted(groups)
     ordered = [(g, groups[g]) for g in order if g in groups]
     ordered += [(g, members) for g, members in groups.items() if g not in order]

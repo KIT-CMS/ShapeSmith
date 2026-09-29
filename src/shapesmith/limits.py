@@ -1,9 +1,8 @@
-"""Run combine inside the CMSSW environment and collect expected limits, significance and best-fit r (Spec §10.3)."""
+"""The limit chain: combine on the datacards (expected limits, significance, best-fit r) and its summary."""
 from __future__ import annotations
 
 import json
 import logging
-import subprocess
 from pathlib import Path
 
 import matplotlib
@@ -12,6 +11,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # noqa: E402
 import uproot  # noqa: E402
 
+from shapesmith import cmssw  # noqa: E402
 from shapesmith.config import RunConfig  # noqa: E402
 
 logger = logging.getLogger(__name__)
@@ -20,29 +20,14 @@ QUANTILES = {0.025: "exp_m2", 0.16: "exp_m1", 0.5: "exp_median", 0.84: "exp_p1",
 COMMON = "-m {mass} --setParameterRanges r=-40,40 -t -1"
 
 
-def combine_script(cmssw_dir: str, scram_arch: str, card_dir: Path, mass: str = "125") -> str:
-    return "\n".join(
-        [
-            "set -e",
-            f"export SCRAM_ARCH={scram_arch}",
-            "source /cvmfs/cms.cern.ch/cmsset_default.sh",
-            f"cd {cmssw_dir}/src",
-            "eval $(scramv1 runtime -sh)",
-            f"cd {Path(card_dir).resolve()}",
-            f"text2workspace.py combined.txt -o workspace.root -m {mass}",
-            f"combine -M AsymptoticLimits -d workspace.root {COMMON.format(mass=mass)} --expectSignal 0 -n .Limit",
-            f"combine -M Significance -d workspace.root {COMMON.format(mass=mass)} --expectSignal 1 -n .Significance",
-            f"combine -M MultiDimFit --algo singles -d workspace.root {COMMON.format(mass=mass)} --expectSignal 1 -n .Fit",
-        ]
-    )
-
-
-def run_combine(config: RunConfig, card_dir: Path) -> None:
-    if config.combine is None:
-        raise ValueError("RunConfig.combine (cmssw_dir) is required to run combine")
-    script = combine_script(config.combine.cmssw_dir, config.combine.scram_arch, card_dir)
-    logger.info(f"running combine in {card_dir}")
-    subprocess.run(["bash", "-c", script], check=True)
+def limit_commands(mass: str = "125") -> list[str]:
+    common = COMMON.format(mass=mass)
+    return [
+        f"text2workspace.py combined.txt -o workspace.root -m {mass}",
+        f"combine -M AsymptoticLimits -d workspace.root {common} --expectSignal 0 -n .Limit",
+        f"combine -M Significance -d workspace.root {common} --expectSignal 1 -n .Significance",
+        f"combine -M MultiDimFit --algo singles -d workspace.root {common} --expectSignal 1 -n .Fit",
+    ]
 
 
 def _read(path: Path) -> list[tuple[float, float, float | None]]:
@@ -107,13 +92,13 @@ def write_summary(results: dict[str, dict], output_dir: Path) -> tuple[Path, Pat
     return json_path, md_path, pdf_path
 
 
-def run_fit(config: RunConfig, datacard_dir: Path, final_states: list[str], skip_combine: bool = False) -> dict:
+def run_limits(config: RunConfig, datacard_dir: Path, final_states: list[str], skip_combine: bool = False) -> dict:
     datacard_dir = Path(datacard_dir)
     results = {}
     for name in final_states:
         card_dir = datacard_dir / name
         if not skip_combine:
-            run_combine(config, card_dir)
+            cmssw.run(limit_commands(), config.combine, card_dir)
         results[name] = collect(card_dir)
     write_summary(results, datacard_dir)
     return results

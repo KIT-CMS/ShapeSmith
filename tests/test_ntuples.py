@@ -2,8 +2,7 @@ import numpy as np
 import pytest
 
 from shapesmith.config import FriendConfig, NtupleConfig
-from shapesmith.io.discovery import discover, join_url, list_root_files
-from shapesmith.io.ntuples import MissingColumnsError, available_columns, num_entries, read_columns, read_metadata
+from shapesmith.ntuples import MissingColumnsError, NtupleFile, discover, friend_bases, join_url, list_root_files, read_ntuple
 from shapesmith.testing import make_mini_dataset, make_ntuple
 
 
@@ -43,32 +42,35 @@ def test_missing_friend_is_an_error(dataset):
         discover(_config(root), "2018", "ZTT_1", "mt", "mc")
 
 
-def test_read_columns_joins_friends(dataset):
+def test_friend_bases_follow_applies_to(dataset):
+    _, root = dataset
+    assert friend_bases(_config(root, applies_to=("mc",)), "mc") == [str(root / "CROWNFriends" / "nn")]
+    assert friend_bases(_config(root, applies_to=("mc",)), "data") == []
+
+
+def test_read_ntuple_joins_friends(dataset):
     info, root = dataset
     ntuple = discover(_config(root), "2018", "ZTT_1", "mt", "mc")[0]
-    columns = available_columns(ntuple)
-    assert columns["m_vis"].endswith("CROWNRun/2018/ZTT_1/mt/ZTT_1_0.root") and columns["score"].endswith("CROWNFriends/nn/2018/ZTT_1/mt/ZTT_1_0.root")
-    frame = read_columns(ntuple, {"m_vis", "score", "event"})
+    frame, metadata, branches = read_ntuple(ntuple, {"m_vis", "score", "event"}, {"not_there"})
     assert list(sorted(frame.columns)) == ["event", "m_vis", "score"] and len(frame) == 50
     assert frame["m_vis"].dtype == np.float32
-    assert num_entries(ntuple.path) == 50
-    assert read_metadata(ntuple.path)["sample_type"] == "mc"
+    assert metadata["sample_type"] == "mc"
+    assert {"m_vis", "score", "fake_factor", "genWeight"} <= branches
 
 
 def test_missing_columns_are_listed(dataset):
     info, root = dataset
     ntuple = discover(_config(root), "2018", "ZTT_1", "mt", "mc")[0]
     with pytest.raises(MissingColumnsError) as excinfo:
-        read_columns(ntuple, {"m_vis", "nope", "also_nope"})
+        read_ntuple(ntuple, {"m_vis", "nope", "also_nope"})
     assert excinfo.value.missing == ["also_nope", "nope"]
 
 
 def test_friend_length_mismatch_is_an_error(tmp_path):
     main = make_ntuple(tmp_path / "main.root", {"a": np.zeros(3, dtype=np.float32)})
     friend = make_ntuple(tmp_path / "friend.root", {"b": np.zeros(2, dtype=np.float32)})
-    from shapesmith.io.discovery import NtupleFile
     with pytest.raises(ValueError, match="entries"):
-        read_columns(NtupleFile(str(main), (str(friend),), "X", "mt", "main.root"), {"a", "b"})
+        read_ntuple(NtupleFile(str(main), (str(friend),), "X", "mt", "main.root"), {"a", "b"})
 
 
 def test_missing_columns_error_is_picklable():
