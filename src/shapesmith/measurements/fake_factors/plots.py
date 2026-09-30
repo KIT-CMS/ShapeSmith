@@ -39,8 +39,9 @@ def _plot_fit(name: str, entry: dict, path: Path) -> Path:
     top.set_title(f"{name} {entry['split']}" + (" (reset to 1)" if entry["reset"] else ""), fontsize=14)
     top.legend(fontsize=12)
     bin_edges = entry["edges"]
+    closure = not name.endswith("_fake_factors")  # a correction's denominator is the prediction from the AR-like region
     bottom.stairs(entry["numerator"], bin_edges, color="black", label="SR-like")
-    bottom.stairs(entry["denominator"], bin_edges, color="#e42536", label="AR-like (weighted)")
+    bottom.stairs(entry["denominator"], bin_edges, color="#e42536", label="AR-like x fake factors" if closure else "AR-like")
     bottom.set_ylabel("yield")
     bottom.set_xlabel(entry["variable"])
     bottom.legend(fontsize=12)
