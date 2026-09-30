@@ -60,8 +60,13 @@ categories, control variables, variations and estimators.
   groups (a CROWN shift produced for some samples only). Names ending in `Up`/`Down` need their
   partner and become datacard shapes; other names are templates.
 - Estimators, run in order by `estimate`: `DataMinus(output, region, subtract, scale,
-  clip_negative)`, `ABCD(output, b, c, d, subtract)` and `TemplateShift(name, process, template,
-  fraction)`, which also varies every template variation `t` of the process (as `<name>Up@t`).
+  clip_negative)`, `ABCD(output, b, c, d, subtract)`, `TemplateShift(name, process, template,
+  fraction)`, which also varies every template variation `t` of the process (as `<name>Up@t`),
+  and `VariationSum(name, parts)`: `<name>Up/Down` = nominal + the sum of (part - nominal) for
+  every histogram with a part, the part `p` being the column variation `<name>Up%p` /
+  `<name>Down%p` (`histogram.part_of`), e.g. one nuisance from CROWN shifts produced per decay
+  mode (exact where no event is changed by two parts). Parts never become datacard shapes; place
+  the sum after the estimators whose outputs should carry it.
 
 **The event rule** (`shapesmith.events`, used by hist, the ML export and measurements): cuts are
 the channel cuts with the region's replacements, the process cuts and the skim cuts; weights are

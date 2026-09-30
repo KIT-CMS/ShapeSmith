@@ -175,7 +175,18 @@ class TemplateShift:
     fraction: float
 
 
-Estimator = DataMinus | ABCD | TemplateShift
+@dataclass(frozen=True)
+class VariationSum:
+    """Variation `name`Up/Down of every process with a histogram of one of its parts: the nominal plus the sum over
+    `parts` of the part's difference to the nominal, e.g. one nuisance from CROWN shifts produced per decay mode.
+    The part `p` of a direction is the column variation `histogram.part_of(f"{name}{direction}", p)`. Exact where no
+    event is changed by two parts; a process without a part histogram gets no variation."""
+
+    name: str
+    parts: tuple[str, ...]
+
+
+Estimator = DataMinus | ABCD | TemplateShift | VariationSum
 
 
 @dataclass(frozen=True)

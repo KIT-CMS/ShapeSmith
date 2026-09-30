@@ -6,13 +6,18 @@ is unchanged). Weight variations are not propagated. Optionally negative bins ar
 ABCD: (data - MC)(B) * (data - MC)(C).sum() / (data - MC)(D).sum(), nominal only, negative bins clipped.
 TemplateShift: `process` +/- `fraction` * `template`, e.g. the ttbar contamination of the embedded sample; also on top of
 every template variation of `process`.
+VariationSum: `name`Up/Down = nominal + the sum of (part - nominal) over its parts, for every histogram with a part;
+place it after the estimators whose outputs should get the summed variation (DataMinus builds its output for the
+parts as for any column variation).
 """
 from __future__ import annotations
 
 import logging
 
-from shapesmith.histogram import NOMINAL_VARIATION, HistKey, Histogram, HistogramSet, is_template, on_template
-from shapesmith.model import ABCD, NOMINAL, Analysis, Channel, ColumnVariation, DataMinus, TemplateShift
+from dataclasses import replace
+
+from shapesmith.histogram import NOMINAL_VARIATION, HistKey, Histogram, HistogramSet, is_template, on_template, part_of
+from shapesmith.model import ABCD, NOMINAL, Analysis, Channel, ColumnVariation, DataMinus, TemplateShift, VariationSum
 
 logger = logging.getLogger(__name__)
 
@@ -109,7 +114,27 @@ def estimate_template_shift(hset: HistogramSet, channel: Channel, estimator: Tem
     return added
 
 
-ESTIMATES = {DataMinus: estimate_data_minus, ABCD: estimate_abcd, TemplateShift: estimate_template_shift}
+def estimate_variation_sum(hset: HistogramSet, channel: Channel, estimator: VariationSum) -> list[HistKey]:
+    """The summed variation of every nominal histogram of the channel that has a part; the variances stay the
+    nominal ones."""
+    added = []
+    for key in hset.select(channel=channel.name, variation=NOMINAL_VARIATION):
+        for direction in ("Up", "Down"):
+            name = f"{estimator.name}{direction}"
+            parts = [replace(key, variation=part_of(name, part)) for part in estimator.parts]
+            parts = [part for part in parts if part in hset]
+            if not parts:
+                continue
+            nominal = hset[key]
+            varied = nominal.copy()
+            for part in parts:
+                varied.values += hset[part].values - nominal.values
+            hset[replace(key, variation=name)] = varied
+            added.append(replace(key, variation=name))
+    return added
+
+
+ESTIMATES = {DataMinus: estimate_data_minus, ABCD: estimate_abcd, TemplateShift: estimate_template_shift, VariationSum: estimate_variation_sum}
 
 
 def run_estimates(hset: HistogramSet, analysis: Analysis, channels: list[str]) -> list[HistKey]:
