@@ -16,6 +16,7 @@ from typing import Sequence
 from shapesmith.config import CombineConfig
 
 logger = logging.getLogger(__name__)
+KEPT_VARIABLES = ("HOME", "USER", "LOGNAME", "TMPDIR", "X509_USER_PROXY")  # the environment a CMSSW subshell starts with, besides PATH
 
 
 def script(combine: CombineConfig, cwd: Path, commands: Sequence[str]) -> str:
@@ -31,9 +32,6 @@ def script(combine: CombineConfig, cwd: Path, commands: Sequence[str]) -> str:
             *commands,
         ]
     )
-
-
-KEPT_VARIABLES = ("HOME", "USER", "LOGNAME", "TMPDIR", "X509_USER_PROXY")
 
 
 def clean_environment() -> dict[str, str]:
