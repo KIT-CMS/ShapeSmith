@@ -44,6 +44,11 @@ def part_of(variation: str, part: str) -> str:
     return f"{variation}{PART_SEPARATOR}{part}"
 
 
+def is_part(variation: str) -> bool:
+    """A part of a summed variation: an input of the VariationSum, never written to a shapes file."""
+    return PART_SEPARATOR in variation
+
+
 @dataclass
 class Histogram:
     edges: np.ndarray

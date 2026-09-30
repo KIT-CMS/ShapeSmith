@@ -6,7 +6,7 @@ from typing import Callable, Iterable
 
 import uproot
 
-from shapesmith.histogram import NOMINAL_VARIATION, HistKey, Histogram, HistogramSet
+from shapesmith.histogram import NOMINAL_VARIATION, HistKey, Histogram, HistogramSet, is_part
 from shapesmith.model import NOMINAL, Analysis
 
 
@@ -29,8 +29,8 @@ def _synced_name(category: str, process: str, variation: str) -> str:
 
 
 def synced_entries(hset: HistogramSet, analysis: Analysis, channel_name: str, name: Callable[[str, str, str], str] = _synced_name) -> list[tuple[str, str, Histogram]]:
-    """data_obs and every nominal-region histogram of the signal and the backgrounds, per category, each named
-    `name(category, process, variation)`."""
+    """data_obs and every nominal-region histogram of the signal and the backgrounds but the parts of summed
+    variations, per category, each named `name(category, process, variation)`."""
     channel = analysis.channel(channel_name)
     entries = []
     for category in channel.categories:
@@ -41,6 +41,8 @@ def synced_entries(hset: HistogramSet, analysis: Analysis, channel_name: str, na
             entries.append((folder, "data_obs", hset[data_key]))
         for process in (*channel.backgrounds(), analysis.signal):
             for key in hset.select(channel=channel_name, category=category.name, process=process, region=NOMINAL, variable=variable):
+                if is_part(key.variation):
+                    continue
                 entries.append((folder, name(category.name, process, key.variation), hset[key]))
     return entries
 

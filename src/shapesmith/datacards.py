@@ -2,14 +2,15 @@
 
 One card per final state lists every bin (channel x category); processes with a non-positive rate in a bin are left
 out of that bin. Systematics: lnN from Analysis.lnn, `shape` for every Up/Down pair of variations present (names
-without a direction are templates and never become shape lines), `* autoMCStats 0`.
+without a direction are templates and never become shape lines; parts of summed variations are left out of the shapes
+file), `* autoMCStats 0`.
 """
 from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
 
-from shapesmith.histogram import NOMINAL_VARIATION, HistKey, Histogram, HistogramSet
+from shapesmith.histogram import NOMINAL_VARIATION, HistKey, Histogram, HistogramSet, is_part
 from shapesmith.model import NOMINAL, Analysis, Category, LnN
 from shapesmith.shapes import shape_name, write_shapes
 
@@ -68,7 +69,7 @@ def collect_bin(hset: HistogramSet, analysis: Analysis, channel_name: str, index
             continue
         result.processes[process] = rebinned
         keys = hset.select(channel=channel_name, category=category.name, process=process, region=NOMINAL, variable=variable)
-        result.variations[process] = {key.variation: hset[key].rebin(edges) for key in keys if key.variation != NOMINAL_VARIATION}
+        result.variations[process] = {key.variation: hset[key].rebin(edges) for key in keys if key.variation != NOMINAL_VARIATION and not is_part(key.variation)}
     return result
 
 
