@@ -170,6 +170,11 @@ combine: {cmssw_dir: /work/USER/CMSSW_14_1_9, scram_arch: el9_amd64_gcc12}
 
 - Expressions (cuts, weights, variables) are pandas `eval` syntax on ntuple columns, evaluated
   with numexpr: `(pt_1 > 25) & (abs(eta_1) < 2.1)`, `id_wgt_tau_1 * trg_wgt`.
+- The edges of a variable are numbers or `EqualData(n_bins, low, high)`: `n_bins` bins with equal
+  data counts in (low, high), as smhtt_ul `gof/build_binning.py` (`binning.py`). Every fill
+  (`hist`, a measurement) computes them from the data of the category in the nominal region, uses
+  them for every region and variation, and records them in `binning.json` next to the histogram
+  file.
 - Histograms are the small numpy `shapesmith.histogram.Histogram`; ROOT files are written and
   read through uproot (`boost-histogram`/`hist` are broken in LCG_108, their axis edges come out
   constant).

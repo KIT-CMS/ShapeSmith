@@ -14,7 +14,7 @@ from shapesmith.measurements.tau_id_es.combine import Interval, Profile, Scan
 from shapesmith.measurements.tau_id_es.grid import CATEGORIES, factor, grid, grid_name, mass, shift_of
 from shapesmith.measurements.tau_id_es.payload import correction_set
 from shapesmith.measurements.tau_id_es.synced import shapes_path, signal_name, write_synced
-from shapesmith.model import Analysis, Category, Channel, ColumnVariation, DataMinus, Process, Sample, Variable
+from shapesmith.model import Analysis, Category, Channel, ColumnVariation, DataMinus, EqualData, Process, Sample, Variable
 
 GRID = grid(-200, 200, 2)  # the predecessor's grid: +-20 % in steps of 0.2 %
 M_VIS = Variable("m_vis", "m_vis", (30.0, 60.0, 90.0))
@@ -204,6 +204,10 @@ def test_plots_are_written(tmp_path):
     for process, variation, value in (("data", "Nominal", 3.0), ("EMB", "Nominal", 2.0), ("EMB", "es-2", 1.8), ("ZL", "Nominal", 1.0)):
         hset[HistKey("mt", "DM0", process, "nominal", variation, "m_vis")] = _h(value)
     assert plots.plot_control(hset, _analysis(), "DM0", tmp_path / "control")[0].exists()
+    analysis = _analysis()
+    equal_data = Variable("m_vis", "m_vis", EqualData(2, 30.0, 90.0))  # the edges come from the histograms
+    mt = dataclasses.replace(analysis.channel("mt"), categories=(Category("DM0", "tau_decaymode_2 == 0", equal_data),))
+    assert plots.plot_control(hset, dataclasses.replace(analysis, channels={**analysis.channels, "mt": mt}), "DM0", tmp_path / "equal_data")[0].exists()
     with uproot.recreate(tmp_path / "postfit_shapes.root") as f:
         for name, value in (("data_obs", 3.0), ("EMB_DM0", 2.0), ("ZL", 1.0), ("TotalProcs", 3.0)):
             f[f"htt_mt_7_Run2018_postfit/{name}"] = _h(value).to_root(name)

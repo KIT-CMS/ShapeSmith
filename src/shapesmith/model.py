@@ -87,10 +87,20 @@ NOMINAL_REGION = Region(NOMINAL)
 
 
 @dataclass(frozen=True)
+class EqualData:
+    """Edges from the data of the run (binning.py): `n_bins` bins with equal data counts in (low, high), computed from
+    the data of the category in the nominal region whenever histograms are filled."""
+
+    n_bins: int
+    low: float
+    high: float
+
+
+@dataclass(frozen=True)
 class Variable:
     name: str
     expr: str
-    edges: tuple[float, ...]
+    edges: tuple[float, ...] | EqualData
 
 
 @dataclass(frozen=True)
