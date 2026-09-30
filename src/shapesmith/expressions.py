@@ -30,7 +30,7 @@ def columns_in(expr: str) -> set[str]:
 
 def columns_of(exprs: Iterable[str]) -> set[str]:
     columns: set[str] = set()
-    for expr in exprs:
+    for expr in set(exprs):  # the selections of many regions and variations repeat the same expressions
         columns |= columns_in(expr)
     return columns
 
