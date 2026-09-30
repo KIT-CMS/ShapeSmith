@@ -40,8 +40,14 @@ def correction(name: str, inputs: Sequence[cs.Variable], data: Node, version: in
     return cs.Correction(name=name, version=version, inputs=list(inputs), output=output or variable("weight"), data=data, **fields)
 
 
-def correction_set(corrections: Sequence[cs.Correction], provenance: Mapping) -> cs.CorrectionSet:
-    return cs.CorrectionSet(schema_version=2, description=json.dumps(provenance, sort_keys=True), corrections=list(corrections))
+def compound(name: str, inputs: Sequence[cs.Variable], stack: Sequence[str], output: cs.Variable | None = None) -> cs.CompoundCorrection:
+    """The product of the corrections in `stack`, each evaluated on its own inputs (taken from `inputs` by name)."""
+    return cs.CompoundCorrection(name=name, inputs=list(inputs), output=output or variable("weight"), inputs_update=[], input_op="*", output_op="*", stack=list(stack))
+
+
+def correction_set(corrections: Sequence[cs.Correction], provenance: Mapping, compound_corrections: Sequence[cs.CompoundCorrection] = ()) -> cs.CorrectionSet:
+    fields = {"compound_corrections": list(compound_corrections)} if compound_corrections else {}
+    return cs.CorrectionSet(schema_version=2, description=json.dumps(provenance, sort_keys=True), corrections=list(corrections), **fields)
 
 
 def provenance(cset: cs.CorrectionSet) -> dict:
