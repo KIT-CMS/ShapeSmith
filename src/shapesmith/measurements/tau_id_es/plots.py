@@ -22,6 +22,11 @@ ES_FAMILY = (-200, -100, 100, 200)  # grid points drawn in the control plots, if
 LEVELS = {2.30: "68 % CL", 5.99: "95 % CL"}  # 2 delta NLL of two parameters
 
 
+def _colors(n: int) -> list:
+    """Distinct fill colours for up to 20 stacked processes (the default cycle repeats after 10)."""
+    return [plt.cm.tab20(index % 20) for index in range(n)]
+
+
 def _save(fig, path: Path) -> list[Path]:
     path.parent.mkdir(parents=True, exist_ok=True)
     paths = [path.with_suffix(ext) for ext in (".pdf", ".png")]
@@ -58,10 +63,11 @@ def plot_postfit(shapes: Path, output_dir: Path) -> list[Path]:
             data = f[f"{directory}/data_obs"]
             total = f[f"{directory}/TotalProcs"]
             fig, (ax, rax) = plt.subplots(2, 1, figsize=(10, 10), gridspec_kw={"height_ratios": [3, 1], "hspace": 0.06}, sharex=True)
-            hep.histplot(stack, bins=edges, stack=True, histtype="fill", label=processes, ax=ax)
+            hep.histplot(stack, bins=edges, stack=True, histtype="fill", label=processes, color=_colors(len(stack)), ax=ax)
             hep.histplot(data.values(), bins=edges, yerr=np.sqrt(data.variances()), histtype="errorbar", color="black", label="Data", ax=ax)
             ax.set_ylabel("Events")
-            ax.legend(ncol=2, fontsize=14, frameon=False)
+            ax.set_ylim(0, 1.6 * data.values().max())
+            ax.legend(ncol=3, fontsize=14, frameon=False, loc="upper right")
             ax.text(0.04, 0.95, directory, transform=ax.transAxes, va="top", fontsize=16)
             with np.errstate(divide="ignore", invalid="ignore"):
                 rax.errorbar(0.5 * (edges[1:] + edges[:-1]), data.values() / total.values(), yerr=np.sqrt(data.variances()) / total.values(), fmt="o", color="black")
@@ -87,7 +93,7 @@ def plot_control(hset: HistogramSet, analysis: Analysis, category: str, path: Pa
     total = np.sum([h.values for _, h in backgrounds], axis=0)
     signal = get(SIGNAL)
     fig, ax = plt.subplots(figsize=(10, 8))
-    hep.histplot([h.values / widths for _, h in backgrounds], bins=edges, stack=True, histtype="fill", label=[name for name, _ in backgrounds], ax=ax)
+    hep.histplot([h.values / widths for _, h in backgrounds], bins=edges, stack=True, histtype="fill", label=[name for name, _ in backgrounds], color=_colors(len(backgrounds)), ax=ax)
     for shift in ES_FAMILY:
         shifted = get(SIGNAL, grid_name(shift))
         if shifted is not None:
