@@ -3,8 +3,8 @@ tau_id_es_measurement/emb_tau_id_sfs_ul.sh): MorphingTauID2017 datacards plus th
 multiSignalModel workspace, the 2D likelihood scan over (r_EMB, ES), the close-up 1D scans of each POI with the other
 profiled and the MultiDimFit singles fit, which is the result. As in the predecessor (plot_2D_scan.py), each step
 starts at the lowest grid point of the previous one and its ranges are the 2 sigma intervals of that step, widened
-by a margin: the 2D scan gives the close-up ranges (the predecessor used coarse 1D scans and hand-tuned margins for
-them), the close-up scans give the singles ranges.
+by a margin: the profiles of the 2D scan give the close-up ranges (the predecessor took them from 1D scans over the
+full range, some with margins set by hand), the close-up scans give the singles ranges.
 
 The POIs: r_EMB_<category> (the scale factor) and ES_<category> (the energy scale in percent).
 """
