@@ -1,6 +1,6 @@
 import uproot
 
-from shapesmith.histogram import HistKey, Histogram, HistogramSet
+from shapesmith.histogram import HistKey, Histogram, HistogramSet, part_of
 from shapesmith.shapes import run_sync, write_shapes
 from tests.mini_analysis import build
 
@@ -23,6 +23,7 @@ def test_run_sync_layout(tmp_path):
         hset[HistKey("mt", category, "data", "anti_iso", "Nominal", "score")] = _hist(1.0)
         hset[HistKey("mt", category, "ZTT", "nominal", "Nominal", "score")] = _hist(2.0)
         hset[HistKey("mt", category, "ZTT", "nominal", "CMS_puUp", "score")] = _hist(2.1)
+        hset[HistKey("mt", category, "ZTT", "nominal", part_of("CMS_tesUp", "dm10"), "score")] = _hist(2.2)  # a part, never synced
         hset[HistKey("mt", category, "ZTT", "anti_iso", "Nominal", "score")] = _hist(0.2)
         hset[HistKey("mt", category, "HH", "nominal", "Nominal", "score")] = _hist(0.1)
         hset[HistKey("mt", category, "jetFakes", "nominal", "Nominal", "score")] = _hist(0.8)

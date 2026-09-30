@@ -18,17 +18,35 @@ from uproot.writing.identify import to_TAxis, to_TH1x
 NOMINAL_VARIATION = "Nominal"
 INCLUSIVE = "inclusive"  # the category of control-variable histograms
 TEMPLATE_SEPARATOR = "@"
+PART_SEPARATOR = "%"
 
 
 def is_template(variation: str) -> bool:
-    """A variation without a direction (e.g. one point of an energy-scale grid), not one on top of a template."""
-    return variation != NOMINAL_VARIATION and not variation.endswith(("Up", "Down")) and TEMPLATE_SEPARATOR not in variation
+    """A variation without a direction (e.g. one point of an energy-scale grid), not one on top of a template and
+    not a part of a summed variation."""
+    return (
+        variation != NOMINAL_VARIATION
+        and not variation.endswith(("Up", "Down"))
+        and TEMPLATE_SEPARATOR not in variation
+        and PART_SEPARATOR not in variation
+    )
 
 
 def on_template(variation: str, template: str) -> str:
     """The name of `variation` applied on top of the template variation `template`. It ends in the template's name,
     so datacards never read it as a shape."""
     return f"{variation}{TEMPLATE_SEPARATOR}{template}"
+
+
+def part_of(variation: str, part: str) -> str:
+    """The name of the part `part` of the summed variation `variation` (a VariationSum). It ends in the part's name,
+    so datacards and template shifts never read it."""
+    return f"{variation}{PART_SEPARATOR}{part}"
+
+
+def is_part(variation: str) -> bool:
+    """A part of a summed variation: an input of the VariationSum, never written to a shapes file."""
+    return PART_SEPARATOR in variation
 
 
 @dataclass

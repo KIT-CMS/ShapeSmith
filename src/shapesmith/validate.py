@@ -1,7 +1,8 @@
 """Consistency checks of an Analysis; every problem is collected and reported at once."""
 from __future__ import annotations
 
-from shapesmith.model import NOMINAL, ROLES, SAMPLE_KINDS, Analysis, AnalysisError, Channel, ColumnVariation, DataMinus, TemplateShift, WeightVariation
+from shapesmith.histogram import part_of
+from shapesmith.model import NOMINAL, ROLES, SAMPLE_KINDS, Analysis, AnalysisError, Channel, ColumnVariation, DataMinus, TemplateShift, VariationSum, WeightVariation
 
 
 def _duplicates(what: str, names: list[str]) -> list[str]:
@@ -68,9 +69,18 @@ def _variation_problems(channel: Channel, region_names: set[str]) -> list[str]:
 def _estimator_problems(channel: Channel, region_names: set[str]) -> list[str]:
     roles = {p.name: p.role for p in channel.processes}
     problems = []
+    column_variations = {v.name for v in channel.variations if isinstance(v, ColumnVariation)}
     for estimator in channel.estimators:
         if isinstance(estimator, TemplateShift):
             problems += [f"template shift {estimator.name}: unknown process {name}" for name in (estimator.process, estimator.template) if name not in roles]
+            continue
+        if isinstance(estimator, VariationSum):
+            if _partner(estimator.name) is not None:
+                problems.append(f"variation sum {estimator.name}: the name carries a direction")
+            if not estimator.parts:
+                problems.append(f"variation sum {estimator.name}: no parts")
+            parts = [part_of(f"{estimator.name}{d}", p) for p in estimator.parts for d in ("Up", "Down")]
+            problems += [f"variation sum {estimator.name}: part {part} is not a column variation" for part in parts if part not in column_variations]
             continue
         regions = (estimator.region,) if isinstance(estimator, DataMinus) else (estimator.b, estimator.c, estimator.d)
         problems += [f"estimator {estimator.output}: region {r} does not exist" for r in regions if r not in region_names]

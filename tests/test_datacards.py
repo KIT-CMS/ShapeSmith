@@ -1,7 +1,7 @@
 import uproot
 
 from shapesmith.datacards import bin_name, rebin_edges, run_datacards, write_datacard
-from shapesmith.histogram import HistKey, Histogram, HistogramSet
+from shapesmith.histogram import HistKey, Histogram, HistogramSet, part_of
 from tests.mini_analysis import build, build_embedding
 
 
@@ -78,3 +78,19 @@ def test_auxiliary_processes_and_templates_stay_out_of_the_card(tmp_path):
     processes = [line for line in text.splitlines() if line.startswith("process")][0].split()[1:]
     assert "ZTT" not in processes and "EMB" in processes  # ZTT is the auxiliary template of the embedding
     assert "emb1p002" not in text
+
+
+def test_parts_of_a_summed_variation_stay_out_of_the_card_and_the_shapes(tmp_path):
+    hset = _hset()
+    for category in ("sig", "bkg"):
+        hset[HistKey("mt", category, "EMB", "nominal", "Nominal", "score")] = _hist([3, 2, 1, 0.5])
+        for d in ("Up", "Down"):
+            hset[HistKey("mt", category, "EMB", "nominal", part_of(f"CMS_tes{d}", "dm10"), "score")] = _hist([3, 2, 1, 0.6])
+            hset[HistKey("mt", category, "EMB", "nominal", f"CMS_tes{d}", "score")] = _hist([3, 2, 1, 0.6])
+    card = write_datacard(hset, build_embedding(), ["mt"], tmp_path / "mt")
+    text = card.read_text()
+    assert "CMS_tes shape" in " ".join(text.split()) and "%" not in text
+    with uproot.open(card.parent / "common" / "htt_input_2018.root") as f:
+        names = f.keys(recursive=True, cycle=False)
+        assert "htt_mt_1_2018/EMB_CMS_tesUp" in names and not [name for name in names if "%" in name]
+

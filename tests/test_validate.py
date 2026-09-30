@@ -3,6 +3,7 @@ import dataclasses
 import pytest
 
 from shapesmith import model
+from shapesmith.histogram import part_of
 from shapesmith.validate import validate
 from tests.mini_analysis import build, build_embedding
 
@@ -105,3 +106,19 @@ def test_the_signal_is_a_process_with_the_signal_role():
 def test_dataclasses_are_frozen():
     with pytest.raises(dataclasses.FrozenInstanceError):
         build().signal = "other"
+
+
+def test_validate_checks_variation_sums():
+    analysis = build_embedding()
+    channel = analysis.channel("mt")
+    parts = tuple(model.ColumnVariation(part_of(f"CMS_tes{d}", "dm10"), f"__tes_dm10{d}") for d in ("Up", "Down"))
+    ok = model.VariationSum("CMS_tes", ("dm10",))
+    validate(_with_channel(analysis, variations=channel.variations + parts, estimators=(ok,)))
+    for estimator, problem in (
+        (model.VariationSum("CMS_tesUp", ("dm10",)), "the name carries a direction"),
+        (model.VariationSum("CMS_tes", ()), "no parts"),
+        (model.VariationSum("CMS_tes", ("dm11",)), r"part CMS_tesUp%dm11 is not a column variation"),
+    ):
+        with pytest.raises(model.AnalysisError, match=problem):
+            validate(_with_channel(analysis, variations=channel.variations + parts, estimators=(estimator,)))
+
