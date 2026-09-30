@@ -2,7 +2,9 @@
 smooth_function, FF_Updated helper/ff_functions.py sha256 31f89add...).
 
 The variations are StatShift (the statistical band), SystMCShift (the ratio with every subtracted process shifted by
-+-1 sigma, fitted the same way), SystBandHigh/Low (the curve with bandwidth x1.5/x0.5, Down its mirror around the
++-1 sigma, fitted the same way: both sides smoothed at their own centres of mass, user decision U13; TauFakeFactors
+smooths the Down side of the corrections at the bin centres, because a deepcopy drops the centres of mass),
+SystBandHigh/Low (the curve with bandwidth x1.5/x0.5, Down its mirror around the
 nominal) and SystBandAsym (Up the x1.5 and Down the x0.5 curve). A smoothed ratio that is compatible with 1
 (statistical_check) is reset to 1; smoothed curves are then sparsified. The spec's "Algorithm reference" states
 every rule.
