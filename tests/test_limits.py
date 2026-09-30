@@ -1,3 +1,4 @@
+import logging
 import subprocess
 import time
 from pathlib import Path
@@ -43,6 +44,17 @@ def test_cmssw_run_stops_the_commands_at_the_timeout(tmp_path, monkeypatch):
     assert not Path(f"/proc/{child}").exists() or "Z" in Path(f"/proc/{child}/stat").read_text().split()[2]  # killed with its group
     with pytest.raises(subprocess.CalledProcessError):
         cmssw.run(["exit 3"], CombineConfig(cmssw_dir="/unused"), tmp_path)
+
+
+def test_cmssw_run_logs_the_output(tmp_path, monkeypatch, caplog):
+    monkeypatch.setattr(cmssw, "script", lambda combine, cwd, commands: "; ".join([f"cd {cwd}", *commands]))
+    with caplog.at_level(logging.DEBUG, logger="shapesmith"):
+        cmssw.run(["echo hello"], CombineConfig(cmssw_dir="/unused"), tmp_path)
+        with pytest.raises(subprocess.CalledProcessError):
+            cmssw.run(["echo broken >&2", "exit 3"], CombineConfig(cmssw_dir="/unused"), tmp_path)
+    assert "cmssw: hello" in caplog.text
+    [error] = [record for record in caplog.records if record.levelno == logging.ERROR]
+    assert "exit code 3" in error.getMessage() and error.getMessage().endswith("last output:\nbroken")
 
 
 def test_cmssw_run_needs_a_combine_configuration(tmp_path):

@@ -8,12 +8,14 @@ an expression of the histogram (elsewhere it equals the nominal, and consumers f
 from __future__ import annotations
 
 import logging
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import NamedTuple
 
 import numpy as np
 
+from shapesmith import logs
 from shapesmith.binning import RECORD, resolve, write_record
 from shapesmith.config import RunConfig
 from shapesmith.events import event_weights, lumi, select
@@ -130,6 +132,7 @@ def fill_booking(config: RunConfig, analysis: Analysis, channel_name: str, booki
     unresolved = [t.variable.name for t in targets_ if isinstance(t.variable.edges, EqualData)]
     if unresolved:
         raise ValueError(f"{channel_name}: the equal-data binning of {', '.join(unresolved)} is not resolved (fill through run_hist)")
+    start = time.monotonic()
     channel = analysis.channel(channel_name)
     process = booking.process
     nicks = [s.nick for s in channel.samples_of(process.group)]
@@ -152,6 +155,10 @@ def fill_booking(config: RunConfig, analysis: Analysis, channel_name: str, booki
             keep = in_category & finite
             key = HistKey(channel_name, target.category, process.name, f.region, f.variation.name if f.variation else NOMINAL_VARIATION, target.variable.name)
             result[key] = Histogram.fill(target.variable.edges, values[keep], w[keep])
+    logger.debug(
+        f"{channel_name}/{process.name}: {len(result)} histograms from {len(frame)} events of {len(nicks)} samples "
+        f"({len(fills)} fills in {len(booking.regions)} regions), {logs.duration(time.monotonic() - start)}"
+    )
     return result
 
 
@@ -170,23 +177,27 @@ def run_hist(config: RunConfig, analysis: Analysis, channels: list[str] | None, 
     for channel_name in channels or config.channels:
         channel = analysis.channel(channel_name)
         targets_, record[channel_name] = resolve(config, analysis, channel_name, targets(channel, control, variables))
-        for booking in bookings(channel, systematics, regions):
-            if processes and booking.process.name not in processes:
-                continue
+        chosen = [b for b in bookings(channel, systematics, regions) if not processes or b.process.name in processes]
+        for booking in chosen:
             jobs.append((config, analysis, channel_name, booking, targets_))
             scopes |= {(channel_name, booking.process.name, region, t.category, t.variable.name) for region in booking.regions for t in targets_}
+        logger.info(
+            f"{channel_name}: {len(chosen)} processes, {len(targets_)} {'control variables' if control else 'categories'}, "
+            f"regions {', '.join(dict.fromkeys(r for b in chosen for r in b.regions))}, {'with' if systematics else 'without'} systematics"
+        )
     hset = HistogramSet()
     if output.exists():
         previous = HistogramSet.load(output)
         hset.update((key, h) for key, h in previous.items() if (key.channel, key.process, key.region, key.category, key.variable) not in scopes)
         logger.info(f"{output}: filling {len(scopes)} histogram scopes, keeping {len(hset)} other histograms")
     logger.info(f"filling {len(jobs)} process bookings with {config.workers} workers")
-    for job, result, error in run_jobs(_fill_job, jobs, config.workers):
+    for job, result, error in run_jobs(_fill_job, jobs, config.workers, label="hist"):
         if error is not None:
             raise RuntimeError(f"{job[2]}/{job[3].process.name}: {error}") from error
         hset.update(result)
     hset.save(output)
+    logger.info(f"{len(hset)} histograms written to {output}")
     record = {channel: entries for channel, entries in record.items() if entries}
     if record:
-        write_record(output.parent / RECORD, record)
+        logger.info(f"equal-data bin edges recorded in {write_record(output.parent / RECORD, record)}")
     return hset

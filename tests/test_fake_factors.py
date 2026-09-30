@@ -2,6 +2,7 @@
 the chaining of the corrections and the payload conventions of the CROWN fake-factor friend."""
 import gzip
 import json
+import logging
 
 import correctionlib
 import numpy as np
@@ -155,12 +156,12 @@ def test_the_payloads_follow_the_friend_conventions(measured):
     assert (output / "FF_for_DRtoSR_mt.json.gz").exists() and list((output / "plots" / "mt").glob("*.png"))
 
 
-def test_suggest_binning_writes_nothing(measured, capsys, tmp_path):
+def test_suggest_binning_writes_nothing(measured, caplog, tmp_path):
     config, analysis, _, _, _ = measured
     config = config.model_copy(update={"output_dir": tmp_path / "suggest"})
-    run_measure(config, analysis, ["mt"], suggest_binning=True)
-    printed = capsys.readouterr().out
-    assert "mt QCD_fake_factors category 0: suggested [30.0," in printed and not (tmp_path / "suggest").exists()
+    with caplog.at_level(logging.INFO, logger="shapesmith"):
+        run_measure(config, analysis, ["mt"], suggest_binning=True)
+    assert "mt QCD_fake_factors category 0: suggested [30.0," in caplog.text and not (tmp_path / "suggest").exists()
 
 
 def test_merge_is_refused(measured, tmp_path):

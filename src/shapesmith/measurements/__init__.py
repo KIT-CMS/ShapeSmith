@@ -6,6 +6,7 @@ itself (`context.events`), possibly in several passes, and writes its results th
 """
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, Protocol
@@ -14,6 +15,8 @@ from shapesmith.config import RunConfig
 from shapesmith.events import Events, Query, load
 from shapesmith.model import Analysis
 from shapesmith.provenance import record, write_versions
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -45,6 +48,8 @@ def run_measure(config: RunConfig, analysis: Analysis, channels: list[str], sugg
     if analysis.measurement is None:
         raise ValueError(f"analysis {analysis.name} defines no measurement")
     output = Path(config.output_dir) / analysis.measurement.name / analysis.era
+    mode = "suggest-binning" if suggest_binning else "merge" if merge else "measure"
+    logger.info(f"measurement {analysis.measurement.name} ({mode}) of channels {', '.join(channels)} -> {output}")
     if not suggest_binning:
         write_versions(config, analysis.name, output)
     analysis.measurement.run(MeasureContext(config, analysis, channels, output, suggest_binning, merge))

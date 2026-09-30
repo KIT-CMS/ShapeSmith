@@ -1,37 +1,85 @@
 """Command-line interface: one sub-command per analysis step."""
 from __future__ import annotations
 
+import functools
+import json
 import logging
+import time
 from pathlib import Path
 from typing import Optional
 
 import typer
 from rich.console import Console
-from rich.logging import RichHandler
 from rich.table import Table
 
-from shapesmith import __version__
+from shapesmith import __version__, logs
 from shapesmith.config import RunConfig, load_analysis, load_config
-from shapesmith.provenance import write_versions
+from shapesmith.ntuples import join_url
+from shapesmith.provenance import record, write_versions
 
 app = typer.Typer(help=f"ShapeSmith {__version__}: CROWN ntuples -> skims -> histograms -> datacards, fits, plots, ML folds, measurements.", no_args_is_help=True)
+logger = logging.getLogger("shapesmith.cli")  # also under `python -m shapesmith.cli`, where __name__ is __main__
+_command = {"name": "shapesmith"}  # the running sub-command, set by _logged (log file name and first log line)
 
 ConfigOption = typer.Option(..., "--config", "-c", help="run configuration YAML")
 ChannelsOption = typer.Option(None, "--channels", help="comma separated subset of the configured channels")
 WorkersOption = typer.Option(None, "--workers", help="override `workers` of the configuration (1 = inline, best for debugging)")
-SetOption = typer.Option(None, "--set", "-s", help="override a configuration entry, e.g. -s switches.jet_fakes=ff -s workers=4 (repeatable, values parsed as YAML)")
+SetOption = typer.Option(None, "--set", "-s", help="override a configuration entry, e.g. -s switches.jet_fakes=ff -s workers=4 -s log_level=DEBUG (repeatable, values parsed as YAML)")
 
 
-def _setup(config_path: Path, channels: Optional[str], log_level: str = "INFO", workers: Optional[int] = None, overrides: Optional[list[str]] = None):
-    logging.basicConfig(level=log_level, format="%(message)s", handlers=[RichHandler(show_path=False)], force=True)
+def _logged(command):
+    """Log the end of a command: its duration, or its error (with the traceback in the log file); then close the log."""
+
+    @functools.wraps(command)
+    def wrapper(*args, **kwargs):
+        _command["name"] = command.__name__.replace("_", "-")
+        start = time.monotonic()
+        try:
+            result = command(*args, **kwargs)
+        except Exception as error:
+            if logs.active():
+                logger.error(f"failed after {logs.duration(time.monotonic() - start)}: {type(error).__name__}: {error}", exc_info=True)
+            raise
+        else:
+            if logs.active():
+                logger.info(f"done in {logs.duration(time.monotonic() - start)}")
+            return result
+        finally:
+            logs.reset()
+
+    return wrapper
+
+
+def _git(entry: dict | None) -> str:
+    return f" (git {entry['git'][:10]})" if entry and entry.get("git") else ""
+
+
+def _log_start(config: RunConfig, config_path: Path, overrides: list[str], selected: list[str], log_file: Path | None) -> None:
+    """What runs: command, configuration, overrides, analysis, versions and git hashes (provenance.record)."""
+    versions = record(config)
+    logger.info(f"ShapeSmith {__version__} {_command['name']}: {Path(config_path).absolute()}" + (f", overrides {' '.join(overrides)}" if overrides else ""))
+    logger.info(f"analysis {config.analysis}{_git(versions['analysis'])}, era {config.era}, channels {','.join(selected)}, {config.workers} workers, log level {config.log_level}")
+    database = f", sample database {config.sample_database}{_git(versions['sample_database'])}" if config.sample_database else ""
+    logger.info(f"shapesmith{_git(versions['shapesmith'])}{database}, ntuples {join_url(config.ntuples.server, config.ntuples.base)}")
+    if log_file is not None:
+        logger.info(f"log file {log_file}")
+    logger.debug(f"resolved configuration: {json.dumps(versions['config'], sort_keys=True)}")
+
+
+def _setup(config_path: Path, channels: Optional[str], workers: Optional[int] = None, overrides: Optional[list[str]] = None, log_file: bool = True):
+    """The configuration (+ overrides), the logging of the command (console, and <output_dir>/logs/ unless `log_file`
+    is False) and the validated analysis with the selected channels."""
     config = load_config(config_path, overrides or [])
     if workers is not None:
         config = config.model_copy(update={"workers": workers})
-    analysis = load_analysis(config)
+    path = logs.log_path(config.output_dir, _command["name"]) if log_file else None
+    logs.configure(config.log_level, path, [config.analysis.partition(":")[0].split(".")[0]])
     selected = channels.split(",") if channels else list(config.channels)
+    _log_start(config, config_path, overrides or [], selected, path)
     unknown = set(selected) - set(config.channels)
     if unknown:
         raise typer.BadParameter(f"channels {sorted(unknown)} are not in the configuration")
+    analysis = load_analysis(config)
     return config, analysis, selected
 
 
@@ -51,11 +99,12 @@ def _split(value: Optional[str]) -> Optional[list[str]]:
 
 
 @app.command()
+@_logged
 def validate(config: Path = ConfigOption, channels: Optional[str] = ChannelsOption, overrides: Optional[list[str]] = SetOption):
     """Load and validate the analysis; report processes, selections and the columns every channel needs."""
     from shapesmith.skim import needed_columns
 
-    cfg, analysis, selected = _setup(config, channels, overrides=overrides)
+    cfg, analysis, selected = _setup(config, channels, overrides=overrides, log_file=False)
     console = Console()
     console.print(f"[bold]{analysis.name}[/bold]  era {analysis.era}, {analysis.lumi_pb:g} pb^-1, switches {dict(cfg.switches)}")
     for name in selected:
@@ -77,6 +126,7 @@ def validate(config: Path = ConfigOption, channels: Optional[str] = ChannelsOpti
 
 
 @app.command()
+@_logged
 def skim(config: Path = ConfigOption, channels: Optional[str] = ChannelsOption, overrides: Optional[list[str]] = SetOption, force: bool = typer.Option(False, "--force", help="skim again, ignoring stored skims"), samples: Optional[str] = typer.Option(None, "--samples", help="comma separated sample groups or nick prefixes (default: all)"), workers: Optional[int] = WorkersOption):
     """Stage 1: ntuples (+ friends) -> Parquet skims."""
     from shapesmith.skim import run_skim
@@ -84,10 +134,11 @@ def skim(config: Path = ConfigOption, channels: Optional[str] = ChannelsOption, 
     cfg, analysis, selected = _setup(config, channels, workers=workers, overrides=overrides)
     write_versions(cfg, analysis.name, cfg.skim_dir)
     results = run_skim(cfg, analysis, selected, force=force, samples=_split(samples))
-    typer.echo(f"{sum(1 for r in results if not r.skipped)} files skimmed, {sum(1 for r in results if r.skipped)} reused, {sum(r.n_out for r in results)} events kept")
+    logger.info(f"{sum(1 for r in results if not r.skipped)} files skimmed, {sum(1 for r in results if r.skipped)} reused, {sum(r.n_out for r in results)} events kept")
 
 
 @app.command()
+@_logged
 def hist(config: Path = ConfigOption, channels: Optional[str] = ChannelsOption, overrides: Optional[list[str]] = SetOption, control: bool = typer.Option(False, "--control", help="control variables instead of NN categories"), variables: Optional[str] = typer.Option(None, help="comma separated control variables"), regions: Optional[str] = typer.Option(None, "--regions", help="comma separated regions, or 'all' (default: nominal plus estimator regions)"), skip_systematics: bool = typer.Option(False, "--skip-systematics", help="no weight or column variations"), processes: Optional[str] = typer.Option(None, help="comma separated process names"), workers: Optional[int] = WorkersOption):
     """Stage 2: skims -> histograms (control_shapes.root or shapes.root); other histograms in the file are kept."""
     from shapesmith.fill import run_hist
@@ -95,11 +146,11 @@ def hist(config: Path = ConfigOption, channels: Optional[str] = ChannelsOption, 
     cfg, analysis, selected = _setup(config, channels, workers=workers, overrides=overrides)
     write_versions(cfg, analysis.name, cfg.output_dir)
     output = _shapes_path(cfg, control)
-    hset = run_hist(cfg, analysis, selected, control, _split(variables), not skip_systematics, _split(processes), output, _split(regions))
-    typer.echo(f"{len(hset)} histograms in {output}")
+    run_hist(cfg, analysis, selected, control, _split(variables), not skip_systematics, _split(processes), output, _split(regions))
 
 
 @app.command()
+@_logged
 def estimate(config: Path = ConfigOption, channels: Optional[str] = ChannelsOption, overrides: Optional[list[str]] = SetOption, control: bool = typer.Option(False, "--control")):
     """Stage 3: add the estimated processes and variations of every channel to the histogram file."""
     from shapesmith.estimates import run_estimates
@@ -110,19 +161,21 @@ def estimate(config: Path = ConfigOption, channels: Optional[str] = ChannelsOpti
     hset = HistogramSet.load(path)
     added = run_estimates(hset, analysis, selected)
     hset.save(path)
-    typer.echo(f"{len(added)} histograms added to {path}")
+    logger.info(f"{len(added)} histograms added to {path}")
 
 
 @app.command()
-def measure(config: Path = ConfigOption, channels: Optional[str] = ChannelsOption, overrides: Optional[list[str]] = SetOption, suggest_binning: bool = typer.Option(False, "--suggest-binning", help="print proposed bin edges instead of measuring"), merge: bool = typer.Option(False, "--merge", help="combine the results of the earlier runs (e.g. one per working point) into one payload"), workers: Optional[int] = WorkersOption):
+@_logged
+def measure(config: Path = ConfigOption, channels: Optional[str] = ChannelsOption, overrides: Optional[list[str]] = SetOption, suggest_binning: bool = typer.Option(False, "--suggest-binning", help="log proposed bin edges instead of measuring"), merge: bool = typer.Option(False, "--merge", help="combine the results of the earlier runs (e.g. one per working point) into one payload"), workers: Optional[int] = WorkersOption):
     """Run the analysis's measurement; results in <output_dir>/<measurement>/<era>/."""
     from shapesmith.measurements import run_measure
 
     cfg, analysis, selected = _setup(config, channels, workers=workers, overrides=overrides)
-    typer.echo(f"measurement output: {run_measure(cfg, analysis, selected, suggest_binning, merge)}")
+    logger.info(f"measurement output: {run_measure(cfg, analysis, selected, suggest_binning, merge)}")
 
 
 @app.command()
+@_logged
 def sync(config: Path = ConfigOption, channels: Optional[str] = ChannelsOption, overrides: Optional[list[str]] = SetOption):
     """Write combine-style shape files per channel."""
     from shapesmith.histogram import HistogramSet
@@ -130,10 +183,11 @@ def sync(config: Path = ConfigOption, channels: Optional[str] = ChannelsOption, 
 
     cfg, analysis, selected = _setup(config, channels, overrides=overrides)
     for path in run_sync(HistogramSet.load(_shapes_path(cfg, False)), analysis, selected, cfg.output_dir):
-        typer.echo(f"wrote {path}")
+        logger.info(f"wrote {path}")
 
 
 @app.command()
+@_logged
 def datacards(config: Path = ConfigOption, channels: Optional[str] = ChannelsOption, overrides: Optional[list[str]] = SetOption, systematics: bool = typer.Option(True, "--systematics/--no-systematics"), min_background: Optional[float] = typer.Option(1.0, help="merge bins below this background yield; negative disables")):
     """Write text datacards and their shapes file per final state (each channel and the combination)."""
     from shapesmith.datacards import run_datacards
@@ -142,10 +196,11 @@ def datacards(config: Path = ConfigOption, channels: Optional[str] = ChannelsOpt
     cfg, analysis, selected = _setup(config, channels, overrides=overrides)
     threshold = None if min_background is None or min_background < 0 else min_background
     for name, path in run_datacards(HistogramSet.load(_shapes_path(cfg, False)), analysis, _final_states(selected), cfg.output_dir / "datacards", systematics, threshold).items():
-        typer.echo(f"{name}: {path}")
+        logger.info(f"datacard {name}: {path}")
 
 
 @app.command()
+@_logged
 def fit(config: Path = ConfigOption, channels: Optional[str] = ChannelsOption, overrides: Optional[list[str]] = SetOption, final_states: Optional[str] = typer.Option(None, help="comma separated; default: each channel and 'all'"), skip_combine: bool = typer.Option(False, "--skip-combine", help="only collect existing combine outputs")):
     """Run combine (expected limits, significance, best fit) and summarise the results."""
     from shapesmith.limits import run_limits
@@ -154,10 +209,11 @@ def fit(config: Path = ConfigOption, channels: Optional[str] = ChannelsOption, o
     states = _split(final_states) or list(_final_states(selected))
     results = run_limits(cfg, cfg.output_dir / "datacards", states, skip_combine)
     typer.echo((cfg.output_dir / "datacards" / "limits.md").read_text())
-    typer.echo(f"{len(results)} final states summarised")
+    logger.info(f"{len(results)} final states summarised")
 
 
 @app.command()
+@_logged
 def plot(config: Path = ConfigOption, channels: Optional[str] = ChannelsOption, overrides: Optional[list[str]] = SetOption, control: bool = typer.Option(False, "--control"), category: Optional[str] = typer.Option(None), variables: Optional[str] = typer.Option(None), region: str = typer.Option("nominal", "--region", help="histogram region to plot"), blind: bool = typer.Option(False, "--blind"), log: bool = typer.Option(False, "--log"), signal_scale: Optional[float] = typer.Option(None), normalize_by_bin_width: bool = typer.Option(False, "--normalize-by-bin-width")):
     """Prefit stack plots of control variables (--control) or NN categories."""
     from shapesmith.histogram import HistogramSet
@@ -165,10 +221,11 @@ def plot(config: Path = ConfigOption, channels: Optional[str] = ChannelsOption, 
 
     cfg, analysis, selected = _setup(config, channels, overrides=overrides)
     files = run_plot(HistogramSet.load(_shapes_path(cfg, control)), analysis, selected, control, category, _split(variables), cfg.output_dir / "plots", region=region, blind=blind, log=log, signal_scale=signal_scale, normalize_by_bin_width=normalize_by_bin_width)
-    typer.echo(f"{len(files)} files written to {cfg.output_dir / 'plots'}")
+    logger.info(f"{len(files)} files written to {cfg.output_dir / 'plots'}")
 
 
 @app.command("ml-export")
+@_logged
 def ml_export(config: Path = ConfigOption, channels: Optional[str] = ChannelsOption, overrides: Optional[list[str]] = SetOption, workers: Optional[int] = WorkersOption):
     """Training folds (Feather) from the skims."""
     from shapesmith.ml_export import run_ml_export
@@ -177,7 +234,7 @@ def ml_export(config: Path = ConfigOption, channels: Optional[str] = ChannelsOpt
     if cfg.ml_dir is not None:
         write_versions(cfg, analysis.name, cfg.ml_dir)
     for path in run_ml_export(cfg, analysis, selected):
-        typer.echo(f"wrote {path}")
+        logger.info(f"wrote {path}")
 
 
 @app.command()

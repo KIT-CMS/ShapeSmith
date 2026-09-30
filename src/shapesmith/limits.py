@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from pathlib import Path
 
 import matplotlib
@@ -15,6 +16,8 @@ from shapesmith.config import RunConfig  # noqa: E402
 
 QUANTILES = {0.025: "exp_m2", 0.16: "exp_m1", 0.5: "exp_median", 0.84: "exp_p1", 0.975: "exp_p2", -1.0: "observed"}
 COMMON = "-m {mass} --setParameterRanges r=-40,40 -t -1"
+
+logger = logging.getLogger(__name__)
 
 
 def limit_commands(mass: str = "125") -> list[str]:
@@ -39,17 +42,21 @@ def collect(card_dir: Path, mass: str = "125") -> dict:
     card_dir = Path(card_dir)
     result: dict = {}
     limit_file = card_dir / f"higgsCombine.Limit.AsymptoticLimits.mH{mass}.root"
+    significance_file = card_dir / f"higgsCombine.Significance.Significance.mH{mass}.root"
+    fit_file = card_dir / f"higgsCombine.Fit.MultiDimFit.mH{mass}.root"
+    for path in (limit_file, significance_file, fit_file):
+        if not path.exists():
+            logger.warning(f"{card_dir.name}: {path.name} missing")
     if limit_file.exists():
         result["limit"] = {QUANTILES[q]: limit for q, limit, _ in _read(limit_file) if q in QUANTILES}
-    significance_file = card_dir / f"higgsCombine.Significance.Significance.mH{mass}.root"
     if significance_file.exists():
         result["significance"] = _read(significance_file)[0][1]
-    fit_file = card_dir / f"higgsCombine.Fit.MultiDimFit.mH{mass}.root"
     if fit_file.exists():
         entries = _read(fit_file)
         best = [r for q, _, r in entries if q == -1.0]
         others = [r for q, _, r in entries if q != -1.0]
         result["r"] = {"best": best[0] if best else None, "low": min(others) if others else None, "high": max(others) if others else None}
+    logger.debug(f"{card_dir.name}: {json.dumps(result)}")
     return result
 
 
@@ -86,6 +93,7 @@ def write_summary(results: dict[str, dict], output_dir: Path) -> tuple[Path, Pat
     fig.tight_layout()
     fig.savefig(pdf_path)
     plt.close(fig)
+    logger.info(f"summary of {len(results)} final states: {json_path}, {md_path.name}, {pdf_path.name}")
     return json_path, md_path, pdf_path
 
 
@@ -95,6 +103,7 @@ def run_limits(config: RunConfig, datacard_dir: Path, final_states: list[str], s
     for name in final_states:
         card_dir = datacard_dir / name
         if not skip_combine:
+            logger.info(f"{name}: combine in {card_dir}")
             cmssw.run(limit_commands(), config.combine, card_dir)
         results[name] = collect(card_dir)
     write_summary(results, datacard_dir)

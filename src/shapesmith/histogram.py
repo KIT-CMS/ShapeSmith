@@ -8,12 +8,15 @@ uproot's low-level TH1 constructor gives correct variable bins and Sumw2 for com
 from __future__ import annotations
 
 import json
+import logging
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
 import numpy as np
 import uproot
 from uproot.writing.identify import to_TAxis, to_TH1x
+
+logger = logging.getLogger(__name__)
 
 NOMINAL_VARIATION = "Nominal"
 INCLUSIVE = "inclusive"  # the category of control-variable histograms
@@ -161,6 +164,7 @@ class HistogramSet(dict):
                 f[key.path] = h.to_root(key.object_name)
         index = [{**asdict(key), "sum": h.sum(), "bins": len(h.values)} for key, h in items]
         path.with_suffix(".json").write_text(json.dumps(index, indent=1))
+        logger.debug(f"{len(items)} histograms saved to {path} (+ {path.with_suffix('.json').name})")
 
     @classmethod
     def load(cls, path: Path) -> "HistogramSet":
@@ -169,6 +173,7 @@ class HistogramSet(dict):
             for name, classname in f.classnames(recursive=True, cycle=False).items():
                 if classname.startswith("TH1"):
                     hset[HistKey.parse(name)] = Histogram.from_root(f[name])
+        logger.debug(f"{len(hset)} histograms loaded from {path}")
         return hset
 
 

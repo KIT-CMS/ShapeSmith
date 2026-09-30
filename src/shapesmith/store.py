@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 from pathlib import Path
 from typing import Callable, Iterable
@@ -13,6 +14,8 @@ import pyarrow.parquet as pq
 
 
 SKIM_COLUMNS = ("sample_nick", "norm_weight", "is_data", "is_mc", "is_embedding")  # added to every skim
+
+logger = logging.getLogger(__name__)
 
 
 class SkimMissingError(FileNotFoundError):
@@ -65,6 +68,7 @@ def schema(skim_dir: Path, channel: str, nicks: Iterable[str]) -> set[str]:
 def read_skims(skim_dir: Path, channel: str, nicks: Iterable[str], columns: Iterable[str] | None) -> pd.DataFrame:
     """All skim rows of the given nicks in one DataFrame, in nick and file order (only `columns` if given)."""
     frames = []
+    nicks = list(nicks)
     for nick in nicks:
         dataset = ds.dataset([str(f) for f in _files(skim_dir, channel, nick)], format="parquet")
         if columns is not None:
@@ -73,7 +77,9 @@ def read_skims(skim_dir: Path, channel: str, nicks: Iterable[str], columns: Iter
                 raise SkimMissingError(f"skims of {nick} in {Path(skim_dir) / channel / nick} lack columns {missing} (re-run `shapesmith skim --force` after changing the analysis)")
         table = dataset.to_table(columns=list(columns) if columns is not None else None)
         frames.append(table.to_pandas())
-    return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
+    frame = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
+    logger.debug(f"{channel}: {len(frame)} skim rows, {len(frame.columns)} columns of {len(nicks)} samples read")
+    return frame
 
 
 def write_manifest(path: Path, manifest: dict) -> None:

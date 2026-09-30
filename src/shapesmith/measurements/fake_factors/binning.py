@@ -8,6 +8,7 @@ orthogonal SR-like region for the DR->SR correction and its non-closures, the fr
 """
 from __future__ import annotations
 
+import logging
 from typing import TYPE_CHECKING, Iterator
 
 import numpy as np
@@ -15,6 +16,8 @@ import numpy as np
 if TYPE_CHECKING:
     from shapesmith.measurements.fake_factors.measure import EventSource
     from shapesmith.measurements.fake_factors.model import Binned, Equipopulated, FakeFactorMeasurement, Split
+
+logger = logging.getLogger(__name__)
 
 
 def equipopulated(x: np.ndarray, weights: np.ndarray, options: Equipopulated, n_bins: int) -> list[float]:
@@ -55,6 +58,6 @@ def suggestions(measurement: FakeFactorMeasurement, source: EventSource) -> list
     return result
 
 
-def print_suggestions(measurement: FakeFactorMeasurement, source: EventSource) -> None:
+def log_suggestions(measurement: FakeFactorMeasurement, source: EventSource) -> None:
     for name, category, suggested, current in suggestions(measurement, source):
-        print(f"{source.channel} {name} category {category}: suggested {suggested}, current {current}")
+        logger.info(f"{source.channel} {name} category {category}: suggested {suggested}, current {current}")

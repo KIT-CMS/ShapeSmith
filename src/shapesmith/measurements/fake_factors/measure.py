@@ -24,7 +24,7 @@ import numpy as np
 from shapesmith import payloads
 from shapesmith.events import Events, Query
 from shapesmith.measurements.fake_factors import payload, plots
-from shapesmith.measurements.fake_factors.binning import print_suggestions
+from shapesmith.measurements.fake_factors.binning import log_suggestions
 from shapesmith.measurements.fake_factors.fit import Fitted, fit
 from shapesmith.measurements.fake_factors.hist import Hist
 
@@ -59,6 +59,7 @@ class EventSource:
     def events(self, process: str, region: str) -> Events:
         if (process, region) not in self._events:
             self._events[process, region] = self._context.events(Query(self.channel, process, region), self._columns)
+            logger.debug(f"{self.channel}: {process} in {region}, {len(self._events[process, region].weights)} events, sum of weights {self._events[process, region].weights.sum():.4g}")
         return self._events[process, region]
 
     def hist(self, process: str, region: str, variable: str, edges, split: Split, category: int, weights: np.ndarray | None = None) -> Hist:
@@ -127,6 +128,7 @@ class ChannelMeasurement:
         MC fake factor."""
         scale = None if process.scale is None else self.data_scale(process)
         if scale is not None:
+            logger.info(f"{self.source.channel} {stage}{name}: data/MC scale factor {scale:.4f}")
             self.record[f"{stage}{name}_data_scale"] = [{"factor": scale}]
 
         def measure(category: int) -> Ratio:
@@ -238,6 +240,12 @@ class ChannelMeasurement:
         for category in split.categories:
             ratio = measure(category)
             fitted = fit(ratio.nominal, binned.fits[category], ratio.mc_shifted, self.measurement.stat_sigma)
+            logger.debug(
+                f"{self.source.channel} {name} category {category} ({split.variable} {split.edges[category]}-{split.edges[category + 1]}): {binned.variable} fit {binned.fits[category]}, "
+                f"ratio {', '.join(f'{v:.3g}' for v in ratio.nominal.values)}" + (f", p-value {fitted.p_value:.3g}" if fitted.p_value is not None else "")
+            )
+            if fitted.reset:
+                logger.info(f"{self.source.channel} {name} category {category}: compatible with 1 (p-value {fitted.p_value:.3g}), set to 1")
             self.record.setdefault(name, []).append(_record(binned.variable, split, category, ratio, fitted))
             result.append(fitted)
         return result
@@ -247,11 +255,12 @@ def run(measurement: FakeFactorMeasurement, context: MeasureContext) -> None:
     for channel in context.channels:
         source = EventSource(context, channel, measurement.columns(channel))
         if context.suggest_binning:
-            print_suggestions(measurement, source)
+            log_suggestions(measurement, source)
             continue
-        logger.info(f"{channel}: measuring the fake factors")
+        logger.info(f"{channel}: measuring the fake factors of {len(measurement.legs[channel])} legs")
         result = ChannelMeasurement(measurement, source)
         result.measure(measurement.legs[channel])
+        logger.info(f"{channel}: {len(result.fake_factors)} fake factors and fractions, {len(result.corrections)} corrections, {len(result.intermediate)} intermediate corrections")
         provenance, output = context.provenance(channel=channel), context.output
         payloads.write(payloads.correction_set(result.fake_factors, provenance), output / f"fake_factors_{channel}.json.gz")
         payloads.write(payloads.correction_set(result.corrections, provenance, result.compounds), output / f"FF_corrections_{channel}.json.gz")

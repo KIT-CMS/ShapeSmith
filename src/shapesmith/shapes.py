@@ -1,6 +1,7 @@
 """combine-style shape files: one writer, and the synced layout <channel>_<category>/{data_obs, <process>, <process>_<variation>}."""
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 from typing import Callable, Iterable
 
@@ -9,14 +10,19 @@ import uproot
 from shapesmith.histogram import NOMINAL_VARIATION, HistKey, Histogram, HistogramSet, is_part
 from shapesmith.model import NOMINAL, Analysis
 
+logger = logging.getLogger(__name__)
+
 
 def write_shapes(path: Path, entries: Iterable[tuple[str, str, Histogram]]) -> Path:
     """Write (folder, name, histogram) entries as TH1D `folder/name` into a new ROOT file."""
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
+    count = 0
     with uproot.recreate(path) as f:
         for folder, name, h in entries:
             f[f"{folder}/{name}"] = h.to_root(name)
+            count += 1
+    logger.debug(f"{count} histograms written to {path}")
     return path
 
 
