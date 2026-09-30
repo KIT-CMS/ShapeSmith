@@ -150,6 +150,8 @@ class FakeFactorMeasurement:
         return columns
 
     def run(self, context) -> None:
+        if context.merge:
+            raise ValueError("fake_factors: --merge is not supported, one run measures every channel")
         from shapesmith.measurements.fake_factors.measure import run  # plots and correctionlib load only for a run
 
         run(self, context)

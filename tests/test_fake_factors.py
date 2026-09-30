@@ -161,3 +161,10 @@ def test_suggest_binning_writes_nothing(measured, capsys, tmp_path):
     run_measure(config, analysis, ["mt"], suggest_binning=True)
     printed = capsys.readouterr().out
     assert "mt QCD_fake_factors category 0: suggested [30.0," in printed and not (tmp_path / "suggest").exists()
+
+
+def test_merge_is_refused(measured, tmp_path):
+    config, analysis, _, _, _ = measured
+    config = config.model_copy(update={"output_dir": tmp_path / "merge"})
+    with pytest.raises(ValueError, match="--merge is not supported"):
+        run_measure(config, analysis, ["mt"], merge=True)
