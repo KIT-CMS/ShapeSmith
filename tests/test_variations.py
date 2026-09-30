@@ -79,6 +79,16 @@ def test_a_declared_shift_without_branches_fails_the_skim(config):
         run_skim(config, analysis)
 
 
+def test_a_shift_restricted_to_groups_belongs_to_their_samples_only(config):
+    analysis = build_embedding()
+    jes = tuple(ColumnVariation(f"CMS_jes{d}", f"__jes{d}", groups=("HH",)) for d in ("Up", "Down"))
+    channel = dataclasses.replace(analysis.channel("mt"), variations=analysis.channel("mt").variations + jes)
+    assert [b.process.name for b in bookings(channel, True) if jes[0] in b.variations] == ["HH"]
+    with pytest.raises(RuntimeError, match=r"declared shift CMS_jesUp \(__jesUp\) has no shifted branch") as excinfo:
+        run_skim(config, dataclasses.replace(analysis, channels={"mt": channel}))
+    assert "SIG_1" in str(excinfo.value) and "ZTT_1" not in str(excinfo.value)
+
+
 def test_an_undeclared_shift_branch_fails_the_skim_of_kinds_with_declared_shifts(config):
     with pytest.raises(RuntimeError, match=r"ZTT_1_0.root: undeclared shift __ffStatDown; undeclared shift __ffStatUp") as excinfo:
         run_skim(config, _analysis(keep=TES))

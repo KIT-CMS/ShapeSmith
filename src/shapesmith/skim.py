@@ -6,8 +6,8 @@ every CROWN shift of its kind (a ColumnVariation with a suffix) the shifted bran
 they exist.
 Rows: an event is kept if the skim cuts pass nominally or under a column variation of its kind; then the sample cut
 applies (the normalisation stays that of the whole sample).
-Checks, per file, where the channel declares CROWN shifts for the sample kind: every declared shift has a shifted
-branch, and every shifted branch `c__X` of a needed column has a declared suffix `__X`.
+Checks, per file, where the channel declares CROWN shifts for the sample (its kind and group): every declared shift
+has a shifted branch, and every shifted branch `c__X` of a needed column has a declared suffix `__X`.
 Reuse: a stored skim serves when its skim cuts, normalisation and sample cut are equal, its column variations and
 friends contain the current ones and its Parquet schema holds the needed columns; see reuse_problems.
 """
@@ -25,7 +25,7 @@ from shapesmith import __version__
 from shapesmith.config import RunConfig
 from shapesmith.events import select
 from shapesmith.expressions import columns_in, columns_of, mask, shift
-from shapesmith.model import NOMINAL_REGION, Analysis, Channel, ColumnVariation, Sample, WeightVariation
+from shapesmith.model import NOMINAL_REGION, Analysis, Channel, ColumnVariation, Sample, WeightVariation, applies
 from shapesmith.ntuples import NtupleFile, discover, friend_bases, read_ntuple
 from shapesmith.parallel import run_jobs
 from shapesmith.store import SKIM_COLUMNS, manifest_path, read_manifest, schema, skim_path, write_manifest, write_skim
@@ -46,8 +46,8 @@ class SkimResult:
     skipped: bool = False  # reused from a previous run; the counts come from its manifest record
 
 
-def column_variations(channel: Channel, kind: str) -> list[ColumnVariation]:
-    return [v for v in channel.variations if isinstance(v, ColumnVariation) and kind in v.applies_to]
+def column_variations(channel: Channel, sample: Sample) -> list[ColumnVariation]:
+    return [v for v in channel.variations if isinstance(v, ColumnVariation) and applies(v, sample.kind, sample.group)]
 
 
 def needed_columns(channel: Channel, sample: Sample) -> set[str]:
@@ -55,7 +55,7 @@ def needed_columns(channel: Channel, sample: Sample) -> set[str]:
     weight_variations = [v for v in channel.variations if isinstance(v, WeightVariation) and sample.kind in v.applies_to]
     exprs = [*channel.skim.values(), *(c.cut for c in channel.categories), *(c.variable.expr for c in channel.categories)]
     exprs += [variable.expr for variable in channel.variables.values()]
-    exprs += [expr for variation in column_variations(channel, sample.kind) for expr in variation.derived.values()]
+    exprs += [expr for variation in column_variations(channel, sample) for expr in variation.derived.values()]
     for process in channel.processes:
         if process.group != sample.group:
             continue
@@ -72,9 +72,9 @@ def needed_columns(channel: Channel, sample: Sample) -> set[str]:
     return columns
 
 
-def check_shifts(channel: Channel, kind: str, columns: set[str], branches: set[str]) -> None:
-    """Both directions of the declared CROWN shifts, on one file; nothing is checked for a kind without any."""
-    declared = {v.suffix: v.name for v in column_variations(channel, kind) if v.suffix}
+def check_shifts(channel: Channel, sample: Sample, columns: set[str], branches: set[str]) -> None:
+    """Both directions of the declared CROWN shifts, on one file; nothing is checked for a sample without any."""
+    declared = {v.suffix: v.name for v in column_variations(channel, sample) if v.suffix}
     if not declared:
         return
     problems = [f"declared shift {name} ({suffix}) has no shifted branch" for suffix, name in declared.items() if not any(c + suffix in branches for c in columns)]
@@ -87,10 +87,10 @@ def check_shifts(channel: Channel, kind: str, columns: set[str], branches: set[s
 def skim_one(ntuple: NtupleFile, sample: Sample, channel: Channel, columns: set[str], out_path: Path, optional: set[str] = frozenset()) -> SkimResult:
     """Read one file, keep the events that pass the skim cuts under any variation and the sample cut, add the
     bookkeeping columns and write Parquet. Every column in `columns` must exist; `optional` ones may be absent."""
-    variations = column_variations(channel, sample.kind)
+    variations = column_variations(channel, sample)
     shifted = {column + v.suffix for v in variations if v.suffix for column in columns}
     frame, metadata, branches = read_ntuple(ntuple, columns | shifted, set(optional) | shifted)
-    check_shifts(channel, sample.kind, columns, branches)
+    check_shifts(channel, sample, columns, branches)
     n_in = len(frame)
     nominal = list(channel.skim.values())
     selected = mask(frame, nominal)
@@ -134,7 +134,7 @@ def contract(config: RunConfig, channel: Channel, sample: Sample, columns: set[s
     result = {"selection": dict(channel.skim), "required_columns": sorted(columns), "normalisation": normalisation(sample)}
     if sample.cut is not None:
         result["sample_cut"] = sample.cut
-    variations = {v.name: v.suffix or dict(v.derived) for v in column_variations(channel, sample.kind)}
+    variations = {v.name: v.suffix or dict(v.derived) for v in column_variations(channel, sample)}
     if variations:
         result["column_variations"] = variations
     friends = friend_bases(config.ntuples, sample.kind)

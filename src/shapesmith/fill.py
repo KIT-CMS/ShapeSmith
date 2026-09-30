@@ -18,7 +18,7 @@ from shapesmith.config import RunConfig
 from shapesmith.events import event_weights, lumi, select
 from shapesmith.expressions import columns_of, evaluate, mask, shift
 from shapesmith.histogram import INCLUSIVE, NOMINAL_VARIATION, HistKey, Histogram, HistogramSet
-from shapesmith.model import ABCD, NOMINAL, Analysis, Channel, ColumnVariation, DataMinus, Process, Variable, Variation
+from shapesmith.model import ABCD, NOMINAL, Analysis, Channel, ColumnVariation, DataMinus, Process, Variable, Variation, applies
 from shapesmith.parallel import run_jobs
 from shapesmith.store import SKIM_COLUMNS, read_skims, schema
 
@@ -75,7 +75,7 @@ def bookings(channel: Channel, systematics: bool, regions: list[str] | None = No
         else:
             process_regions = tuple(dict.fromkeys((NOMINAL, *estimator_regions(channel))))
         kind = channel.kind_of(process)
-        variations = tuple(v for v in channel.variations if kind in v.applies_to) if systematics else ()
+        variations = tuple(v for v in channel.variations if applies(v, kind, process.group)) if systematics else ()
         result.append(Booking(process, process_regions, variations))
     return result
 
