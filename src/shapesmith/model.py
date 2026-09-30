@@ -134,12 +134,14 @@ Variation = WeightVariation | ColumnVariation
 
 @dataclass(frozen=True)
 class DataMinus:
-    """output = scale * (data - sum of `subtract`) in `region`, per column variation of its inputs."""
+    """output = scale * (data - sum of `subtract`) in `region`, per column variation of its inputs; with
+    `clip_negative`, negative bins are set to zero keeping the integral."""
 
     output: str
     region: str
     subtract: tuple[str, ...]
     scale: float = 1.0
+    clip_negative: bool = False
 
 
 @dataclass(frozen=True)
@@ -155,7 +157,8 @@ class ABCD:
 
 @dataclass(frozen=True)
 class TemplateShift:
-    """Variation `name`Up/Down of `process`: its nominal plus/minus `fraction` times the `template` process."""
+    """Variation `name`Up/Down of `process`: its nominal plus/minus `fraction` times the (nominal) `template` process.
+    Every template variation of `process` (e.g. an energy-scale grid point) gets the same variation on top of it."""
 
     name: str
     process: str

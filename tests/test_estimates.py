@@ -85,3 +85,25 @@ def test_estimate_skips_categories_without_data_input():
     hset = HistogramSet()
     hset[_key("ZTT", "anti_iso")] = _hist([1.0, 2.0])
     assert run_estimates(hset, build(), ["mt"]) == []
+
+
+def test_data_minus_can_clip_negative_bins():
+    analysis = build()
+    estimator = dataclasses.replace(analysis.channel("mt").estimators[0], clip_negative=True)
+    hset = HistogramSet()
+    hset[_key("data", "anti_iso")] = _hist([2.0, 10.0])
+    hset[_key("ZTT", "anti_iso")] = _hist([3.0, 1.0])
+    run_estimates(hset, _with_estimators(analysis, estimator), ["mt"])
+    assert hset[_key("jetFakes", "nominal")].values.tolist() == pytest.approx([0.0, 8.0])  # (-1, 9) keeps the integral 8
+
+
+def test_template_shift_also_shifts_every_template_variation():
+    hset = HistogramSet()
+    hset[_key("EMB", "nominal")] = _hist([10.0, 10.0])
+    hset[_key("EMB", "nominal", variation="es+2")] = _hist([11.0, 9.0])
+    hset[_key("EMB", "nominal", variation="CMS_tesUp")] = _hist([12.0, 8.0])  # a shape variation: not shifted
+    hset[_key("ZTT", "nominal")] = _hist([2.0, 4.0])
+    run_estimates(hset, build_embedding(), ["mt"])
+    assert hset[_key("EMB", "nominal", variation="CMS_htt_emb_ttbar_2018Up@es+2")].values.tolist() == pytest.approx([11.2, 9.4])
+    assert hset[_key("EMB", "nominal", variation="CMS_htt_emb_ttbar_2018Down@es+2")].values.tolist() == pytest.approx([10.8, 8.6])
+    assert not hset.select(process="EMB", variation="CMS_htt_emb_ttbar_2018Up@CMS_tesUp")

@@ -17,6 +17,18 @@ from uproot.writing.identify import to_TAxis, to_TH1x
 
 NOMINAL_VARIATION = "Nominal"
 INCLUSIVE = "inclusive"  # the category of control-variable histograms
+TEMPLATE_SEPARATOR = "@"
+
+
+def is_template(variation: str) -> bool:
+    """A variation without a direction (e.g. one point of an energy-scale grid), not one on top of a template."""
+    return variation != NOMINAL_VARIATION and not variation.endswith(("Up", "Down")) and TEMPLATE_SEPARATOR not in variation
+
+
+def on_template(variation: str, template: str) -> str:
+    """The name of `variation` applied on top of the template variation `template`. It ends in the template's name,
+    so datacards never read it as a shape."""
+    return f"{variation}{TEMPLATE_SEPARATOR}{template}"
 
 
 @dataclass
