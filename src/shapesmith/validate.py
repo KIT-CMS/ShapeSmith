@@ -91,8 +91,8 @@ def validate(analysis: Analysis) -> None:
     """Raise AnalysisError listing every problem of the analysis."""
     problems = [problem for channel in analysis.channels.values() for problem in channel_problems(channel)]
     processes = {p.name: p.role for channel in analysis.channels.values() for p in channel.processes}
-    if analysis.signal is not None and analysis.signal not in processes:
-        problems.append(f"signal {analysis.signal} is not a process")
+    if analysis.signal is not None and processes.get(analysis.signal) != "signal":
+        problems.append(f"signal {analysis.signal} is not a process with the role signal")
     if analysis.ml is not None:
         problems += [f"ML export: {name} is an auxiliary process" for name in analysis.ml.processes if processes.get(name) == "auxiliary"]
     if problems:

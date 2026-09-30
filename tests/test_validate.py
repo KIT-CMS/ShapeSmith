@@ -93,6 +93,15 @@ def test_validate_checks_estimators_and_auxiliary_processes():
         validate(_with_channel(analysis, samples=mixed))
 
 
+def test_the_signal_is_a_process_with_the_signal_role():
+    analysis = build()
+    with pytest.raises(model.AnalysisError, match="signal ZTT is not a process with the role signal"):
+        validate(dataclasses.replace(analysis, signal="ZTT"))
+    with pytest.raises(model.AnalysisError, match="signal nope is not a process"):
+        validate(dataclasses.replace(analysis, signal="nope"))
+    validate(dataclasses.replace(analysis, signal=None))
+
+
 def test_dataclasses_are_frozen():
     with pytest.raises(dataclasses.FrozenInstanceError):
         build().signal = "other"
