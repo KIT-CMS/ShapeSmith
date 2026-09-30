@@ -25,6 +25,13 @@ def test_cmssw_script_sets_up_the_environment_before_the_commands():
     assert lines[-3:] == ["cd /cards/mt", "echo one", "echo two"]
 
 
+def test_cmssw_commands_run_in_a_clean_environment(monkeypatch):
+    monkeypatch.setenv("PYTHONPATH", "/lcg/python")
+    monkeypatch.setenv("HOME", "/home/someone")
+    environment = cmssw.clean_environment()
+    assert "PYTHONPATH" not in environment and environment["HOME"] == "/home/someone" and environment["PATH"] == "/usr/bin:/bin"
+
+
 def test_cmssw_run_needs_a_combine_configuration(tmp_path):
     with pytest.raises(ValueError, match="needs `combine`"):
         cmssw.run(["true"], None, tmp_path)
