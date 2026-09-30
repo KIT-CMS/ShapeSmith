@@ -2,7 +2,7 @@ import numpy as np
 import pytest
 import uproot
 
-from shapesmith.histogram import HistKey, Histogram, HistogramSet, unchanged_variations
+from shapesmith.histogram import HistKey, Histogram, HistogramSet, is_template, on_template, unchanged_variations
 
 
 def test_fill_add_scale_sum():
@@ -48,3 +48,9 @@ def test_unchanged_variations():
     hset[HistKey("mt", "inclusive", "EMB", "nominal", "CMS_tesUp", "m_vis")] = nominal.copy()
     hset[HistKey("mt", "inclusive", "EMB", "nominal", "CMS_tesDown", "m_vis")] = Histogram([0.0, 1.0], [1.9], [1.0])
     assert unchanged_variations(hset) == [HistKey("mt", "inclusive", "EMB", "nominal", "CMS_tesUp", "m_vis")]
+
+
+def test_template_names():
+    assert is_template("es+2") and is_template("es-198")
+    assert not is_template("Nominal") and not is_template("CMS_tesUp") and not is_template("CMS_tesDown")
+    assert on_template("CMS_ttbarUp", "es-2") == "CMS_ttbarUp@es-2" and not is_template("CMS_ttbarUp@es-2")

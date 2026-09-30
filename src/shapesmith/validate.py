@@ -1,7 +1,7 @@
 """Consistency checks of an Analysis; every problem is collected and reported at once."""
 from __future__ import annotations
 
-from shapesmith.model import NOMINAL, ROLES, SAMPLE_KINDS, Analysis, AnalysisError, Channel, DataMinus, TemplateShift, WeightVariation
+from shapesmith.model import NOMINAL, ROLES, SAMPLE_KINDS, Analysis, AnalysisError, Channel, ColumnVariation, DataMinus, TemplateShift, WeightVariation
 
 
 def _duplicates(what: str, names: list[str]) -> list[str]:
@@ -43,6 +43,7 @@ def _region_problems(channel: Channel) -> list[str]:
 
 def _variation_problems(channel: Channel, region_names: set[str]) -> list[str]:
     weights = {name for p in channel.processes for name in p.selection.weights}
+    groups = {s.group for s in channel.samples}
     names = [v.name for v in channel.variations]
     problems = _duplicates("variation", names)
     for variation in channel.variations:
@@ -51,6 +52,8 @@ def _variation_problems(channel: Channel, region_names: set[str]) -> list[str]:
             problems.append(f"variation {variation.name}: its partner {partner} is missing")
         problems += [f"variation {variation.name}: unknown sample kind {k}" for k in variation.applies_to if k not in SAMPLE_KINDS]
         problems += [f"variation {variation.name}: unknown region {r}" for r in variation.regions or () if r not in region_names]
+        if isinstance(variation, ColumnVariation):
+            problems += [f"variation {variation.name}: unknown sample group {g}" for g in variation.groups or () if g not in groups]
         if isinstance(variation, WeightVariation):
             problems += [f"variation {variation.name}: replaces unknown weight {w}" for w in variation.replace_weights if w not in weights]
         elif bool(variation.suffix) == bool(variation.derived):

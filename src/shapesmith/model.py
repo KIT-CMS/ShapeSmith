@@ -117,13 +117,15 @@ class WeightVariation:
 class ColumnVariation:
     """Columns read shifted: `c + suffix` wherever that branch exists (a CROWN shift), or `derived[c]`, an expression
     of nominal columns (a shift computed in ShapeSmith). A name ending in Up/Down is one side of a shape nuisance;
-    any other name is a template that datacards never turn into a shape line."""
+    any other name is a template that datacards never turn into a shape line. `groups` restricts it to the samples of
+    some groups, e.g. a CROWN shift produced for some samples only."""
 
     name: str
     suffix: str = ""
     derived: Mapping[str, str] = field(default_factory=dict)
     applies_to: tuple[SampleKind, ...] = ("mc",)
     regions: tuple[str, ...] | None = None  # None: every booked region where the rewrite changes an expression
+    groups: tuple[str, ...] | None = None  # None: the samples of every group of those kinds
 
     def __post_init__(self):
         object.__setattr__(self, "derived", _frozen(self.derived))
@@ -132,14 +134,23 @@ class ColumnVariation:
 Variation = WeightVariation | ColumnVariation
 
 
+def applies(variation: Variation, kind: str, group: str) -> bool:
+    """Whether a variation belongs to the samples of a kind and group."""
+    if kind not in variation.applies_to:
+        return False
+    return not isinstance(variation, ColumnVariation) or variation.groups is None or group in variation.groups
+
+
 @dataclass(frozen=True)
 class DataMinus:
-    """output = scale * (data - sum of `subtract`) in `region`, per column variation of its inputs."""
+    """output = scale * (data - sum of `subtract`) in `region`, per column variation of its inputs; with
+    `clip_negative`, negative bins are set to zero keeping the integral."""
 
     output: str
     region: str
     subtract: tuple[str, ...]
     scale: float = 1.0
+    clip_negative: bool = False
 
 
 @dataclass(frozen=True)
@@ -155,7 +166,8 @@ class ABCD:
 
 @dataclass(frozen=True)
 class TemplateShift:
-    """Variation `name`Up/Down of `process`: its nominal plus/minus `fraction` times the `template` process."""
+    """Variation `name`Up/Down of `process`: its nominal plus/minus `fraction` times the (nominal) `template` process.
+    Every template variation of `process` (e.g. an energy-scale grid point) gets the same variation on top of it."""
 
     name: str
     process: str

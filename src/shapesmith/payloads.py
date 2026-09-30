@@ -15,7 +15,7 @@ import correctionlib
 import correctionlib.schemav2 as cs
 import numpy as np
 
-Node = cs.Binning | cs.Category | float
+Node = cs.Binning | cs.Category | cs.Transform | float
 
 
 def variable(name: str, type: str = "real", description: str | None = None) -> cs.Variable:
@@ -33,6 +33,12 @@ def category(input: str, content: Mapping[str | int, Node], default: Node | None
     items = [cs.CategoryItem(key=key, value=float(value) if isinstance(value, (int, float, np.number)) else value) for key, value in content.items()]
     fields = {"default": float(default) if isinstance(default, (int, float, np.number)) else default} if default is not None else {}
     return cs.Category(nodetype="category", input=input, content=items, **fields)
+
+
+def transform(input: str, expression: str, content: Node) -> cs.Transform:
+    """`content` evaluated with `input` replaced by the TFormula `expression` of it (x), e.g. "abs(x)"."""
+    rule = cs.Formula(nodetype="formula", expression=expression, parser="TFormula", variables=[input])
+    return cs.Transform(nodetype="transform", input=input, rule=rule, content=content)
 
 
 def correction(name: str, inputs: Sequence[cs.Variable], data: Node, version: int = 1, description: str | None = None, output: cs.Variable | None = None) -> cs.Correction:

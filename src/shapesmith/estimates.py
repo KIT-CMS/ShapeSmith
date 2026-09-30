@@ -2,15 +2,16 @@
 
 DataMinus: data minus the subtracted processes in its region, for the nominal and every column variation filled on
 data or a subtracted process there; an input without that variation contributes its nominal (under the fill rule it
-is unchanged). Weight variations are not propagated.
+is unchanged). Weight variations are not propagated. Optionally negative bins are clipped.
 ABCD: (data - MC)(B) * (data - MC)(C).sum() / (data - MC)(D).sum(), nominal only, negative bins clipped.
-TemplateShift: `process` +/- `fraction` * `template`, e.g. the ttbar contamination of the embedded sample.
+TemplateShift: `process` +/- `fraction` * `template`, e.g. the ttbar contamination of the embedded sample; also on top of
+every template variation of `process`.
 """
 from __future__ import annotations
 
 import logging
 
-from shapesmith.histogram import NOMINAL_VARIATION, HistKey, Histogram, HistogramSet
+from shapesmith.histogram import NOMINAL_VARIATION, HistKey, Histogram, HistogramSet, is_template, on_template
 from shapesmith.model import ABCD, NOMINAL, Analysis, Channel, ColumnVariation, DataMinus, TemplateShift
 
 logger = logging.getLogger(__name__)
@@ -50,9 +51,9 @@ def estimate_data_minus(hset: HistogramSet, channel: Channel, estimator: DataMin
     for category, variable in categories_and_variables(hset, channel, estimator.region):
         present = {k.variation for process in inputs for k in hset.select(channel=channel.name, category=category, process=process, region=estimator.region, variable=variable)}
         for variation in (NOMINAL_VARIATION, *sorted(present & column_variations)):
-            h = data_minus(hset, channel, category, variable, estimator.region, estimator.subtract, variation)
+            h = data_minus(hset, channel, category, variable, estimator.region, estimator.subtract, variation).scale(estimator.scale)
             key = HistKey(channel.name, category, estimator.output, NOMINAL, variation, variable)
-            hset[key] = h.scale(estimator.scale)
+            hset[key] = clip_negative_bins(h) if estimator.clip_negative else h
             added.append(key)
     return added
 
@@ -92,13 +93,17 @@ def estimate_abcd(hset: HistogramSet, channel: Channel, estimator: ABCD) -> list
 
 def estimate_template_shift(hset: HistogramSet, channel: Channel, estimator: TemplateShift) -> list[HistKey]:
     added = []
-    for key in hset.select(channel=channel.name, process=estimator.process, region=NOMINAL, variation=NOMINAL_VARIATION):
+    for key in hset.select(channel=channel.name, process=estimator.process, region=NOMINAL):
+        if key.variation != NOMINAL_VARIATION and not is_template(key.variation):
+            continue
         template = HistKey(channel.name, key.category, estimator.template, NOMINAL, NOMINAL_VARIATION, key.variable)
         if template not in hset:
             logger.warning(f"{template.path} missing, no {estimator.name} variation")
             continue
         for direction, sign in (("Up", 1.0), ("Down", -1.0)):
-            varied = HistKey(channel.name, key.category, estimator.process, NOMINAL, f"{estimator.name}{direction}", key.variable)
+            name = f"{estimator.name}{direction}"
+            variation = name if key.variation == NOMINAL_VARIATION else on_template(name, key.variation)
+            varied = HistKey(channel.name, key.category, estimator.process, NOMINAL, variation, key.variable)
             hset[varied] = hset[key].copy().add(hset[template], sign * estimator.fraction)
             added.append(varied)
     return added

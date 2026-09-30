@@ -67,6 +67,7 @@ def test_validate_checks_variations():
         ((model.ColumnVariation("xUp", "__xUp", {"m_vis": "m_vis"}), model.ColumnVariation("xDown", "")), "needs exactly one of suffix and derived"),
         ((model.ColumnVariation("CMS_puUp", "__puUp"),), "duplicate variation CMS_puUp"),
         ((model.ColumnVariation("aUp", "__aUp", applies_to=("simulation",)), model.ColumnVariation("aDown", "__aDown")), "unknown sample kind simulation"),
+        ((model.ColumnVariation("bUp", "__bUp", groups=("TT",)), model.ColumnVariation("bDown", "__bDown")), "unknown sample group TT"),
     ):
         with pytest.raises(model.AnalysisError, match=problem):
             validate(_with_channel(build(), variations=channel.variations + variations))
