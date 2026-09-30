@@ -1,4 +1,4 @@
-"""Training folds from the skims, in the Feather layout of the previous smhtt_ul export (Spec §12).
+"""Training folds from the skims, in the Feather layout of the previous smhtt_ul export.
 
 Columns are 5-level tuples: ("Event","id"), ("Event","event"), ("Labels",<label>),
 ("Nominal","variables",<var>), ("Nominal","weight"), ("Nominal","cut"), ("Nominal","class_weight").
@@ -16,10 +16,9 @@ import pyarrow as pa
 import pyarrow.feather as feather
 
 from shapesmith.config import RunConfig
-from shapesmith.expressions import apply_region, columns_in, evaluate, mask, weight
-from shapesmith.io.skims import read_skims
-from shapesmith.model import Analysis
-from shapesmith.skim import SKIM_COLUMNS
+from shapesmith.events import Query, load
+from shapesmith.expressions import columns_of, evaluate
+from shapesmith.model import NOMINAL, Analysis, Channel
 
 logger = logging.getLogger(__name__)
 PATTERN = np.array([True, True, False, False])
@@ -50,41 +49,23 @@ def class_weights(weights: np.ndarray, labels: np.ndarray) -> np.ndarray:
     return result * weights
 
 
-def _variable_expr(analysis: Analysis, name: str) -> str:
-    if name in analysis.control_variables:
-        return analysis.control_variables[name].expr
-    for category in analysis.categories:
+def _variable_expr(channel: Channel, name: str) -> str:
+    if name in channel.variables:
+        return channel.variables[name].expr
+    for category in channel.categories:
         if category.variable.name == name:
             return category.variable.expr
     return name
 
 
 def export_process(config: RunConfig, analysis: Analysis, channel_name: str, name: str) -> pd.DataFrame:
+    """The events of one exported process; an estimator output is exported as the data of its region."""
     ml = analysis.ml
     channel = analysis.channel(channel_name)
-    region = channel.region(ml.region_of.get(name, "nominal"))
-    if analysis.estimator is not None and name == analysis.estimator.output:
-        samples = analysis.samples_for("data", channel_name)
-        cuts = apply_region(channel.baseline, region).cuts
-        weights = dict(region.add_weights)
-        lumi = 1.0
-    else:
-        process = analysis.process(name)
-        process_selection = process.selection_for(channel_name)
-        samples = analysis.samples_for(process.group, channel_name)
-        kinds = {s.kind for s in samples}
-        cuts = {**apply_region(channel.baseline, region).cuts, **process_selection.cuts}
-        weights = {}
-        if kinds == {"mc"}:
-            weights.update(channel.baseline.weights)
-        if kinds <= {"mc", "embedding"}:
-            weights.update(process_selection.weights)
-        weights.update(region.add_weights)
-        lumi = analysis.lumi_pb if kinds == {"mc"} else 1.0
-    exprs = {v: _variable_expr(analysis, v) for v in ml.variables}
-    columns = set(SKIM_COLUMNS) | {ml.fold_column} | set().union(*(columns_in(e) for e in list(cuts.values()) + list(weights.values()) + list(exprs.values())))
-    frame = read_skims(config.skim_dir, channel_name, [s.nick for s in samples], columns)
-    selected = frame[mask(frame, cuts)].reset_index(drop=True)
+    process = name if name in {p.name for p in channel.processes} else channel.data()  # an estimator output: data in its region
+    exprs = {v: _variable_expr(channel, v) for v in ml.variables}
+    events = load(config, analysis, Query(channel_name, process, ml.region_of.get(name, NOMINAL)), {ml.fold_column} | columns_of(exprs.values()))
+    selected = events.frame
     out = pd.DataFrame(index=selected.index)
     out[tuple_column("Event", "id")] = np.arange(len(selected))
     out[tuple_column("Event", ml.fold_column)] = selected[ml.fold_column].to_numpy()
@@ -92,7 +73,7 @@ def export_process(config: RunConfig, analysis: Analysis, channel_name: str, nam
         out[tuple_column("Labels", label)] = np.int32(label == ml.label_of[name])
     for variable, expr in exprs.items():
         out[tuple_column("Nominal", "variables", variable)] = evaluate(selected, expr).astype(np.float32)
-    out[tuple_column("Nominal", "weight")] = (selected["norm_weight"].to_numpy() * lumi * weight(selected, weights)).astype(np.float32)
+    out[tuple_column("Nominal", "weight")] = events.weights.astype(np.float32)
     out[tuple_column("Nominal", "cut")] = np.float32(1.0)
     out.columns = pd.MultiIndex.from_tuples(out.columns)
     return out

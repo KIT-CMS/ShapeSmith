@@ -1,21 +1,27 @@
-"""The analysis data model (Spec §5).
+"""The analysis data model.
 
-An analysis repository builds one `Analysis` object; every ShapeSmith step reads it. Expressions
-are strings in pandas.eval syntax (see expressions.py). Cut and weight *names* are the handles that
-regions and variations replace, so they must be unique within a selection.
+An analysis repository builds one `Analysis`; every ShapeSmith stage reads it. Everything that differs by channel
+(samples, processes, regions, categories, variables, variations, estimators) lives in its `Channel`. Expressions are
+strings in pandas.eval syntax (see expressions.py). Cut and weight *names* are the handles that regions and
+variations replace, so they are unique within a selection.
 """
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Literal, Mapping
+from typing import TYPE_CHECKING, Literal, Mapping, get_args
 
-Kind = Literal["data", "signal", "true_tau", "lepton_fake", "jet_fake", "single_higgs", "other", "embedding"]
+if TYPE_CHECKING:
+    from shapesmith.measurements import Measurement
+
 SampleKind = Literal["data", "mc", "embedding"]
-KINDS = ("data", "signal", "true_tau", "lepton_fake", "jet_fake", "single_higgs", "other", "embedding")
+Role = Literal["data", "signal", "background", "auxiliary"]  # auxiliary: booked for an estimator, never a datacard process
+SAMPLE_KINDS = get_args(SampleKind)
+ROLES = get_args(Role)
+NOMINAL = "nominal"
 
 
 class AnalysisError(ValueError):
-    """Raised by Analysis.validate() with every problem found, one per line."""
+    """An inconsistent analysis; validate() lists every problem found, one per line."""
 
 
 def _frozen(mapping: Mapping | None) -> dict:
@@ -31,7 +37,6 @@ class Sample:
     xsec: float = 1.0
     nevents: int = 1
     generator_weight: float = 1.0
-    channels: tuple[str, ...] | None = None  # None = all channels
     cut: str | None = None  # per-sample event selection applied at skim time, e.g. to keep one generator-level part of a sample
 
     @property
@@ -54,32 +59,31 @@ class Selection:
 
 @dataclass(frozen=True)
 class Process:
-    key: str
-    group: str
-    name: str
-    kind: Kind
-    plot_group: str
-    selection: Selection | Mapping[str, Selection] = field(default_factory=Selection)  # one Selection or {channel: Selection}
+    """A process owns its whole weight set: the analysis puts the common weights first, then the specific ones."""
 
-    def selection_for(self, channel: str) -> Selection:
-        """The process selection in `channel` (a single Selection applies to every channel)."""
-        if isinstance(self.selection, Selection):
-            return self.selection
-        return self.selection[channel]
+    name: str
+    group: str  # the sample group it is made of
+    role: Role
+    plot_group: str
+    selection: Selection = field(default_factory=Selection)
 
 
 @dataclass(frozen=True)
 class Region:
+    """A selection derived from the nominal one: cuts replaced by name, weights replaced where a process carries
+    them, weights added to every process."""
+
     name: str
     replace_cuts: Mapping[str, str] = field(default_factory=dict)
     add_weights: Mapping[str, str] = field(default_factory=dict)
+    replace_weights: Mapping[str, str] = field(default_factory=dict)
 
     def __post_init__(self):
-        object.__setattr__(self, "replace_cuts", _frozen(self.replace_cuts))
-        object.__setattr__(self, "add_weights", _frozen(self.add_weights))
+        for name in ("replace_cuts", "add_weights", "replace_weights"):
+            object.__setattr__(self, name, _frozen(getattr(self, name)))
 
 
-NOMINAL = Region("nominal")
+NOMINAL_REGION = Region(NOMINAL)
 
 
 @dataclass(frozen=True)
@@ -98,8 +102,12 @@ class Category:
 
 @dataclass(frozen=True)
 class WeightVariation:
+    """Weights replaced by name; a process lacking one of them does not get the variation."""
+
     name: str
     replace_weights: Mapping[str, str]
+    applies_to: tuple[SampleKind, ...] = ("mc",)
+    regions: tuple[str, ...] | None = None  # None: every booked region
 
     def __post_init__(self):
         object.__setattr__(self, "replace_weights", _frozen(self.replace_weights))
@@ -107,8 +115,67 @@ class WeightVariation:
 
 @dataclass(frozen=True)
 class ColumnVariation:
+    """Columns read shifted: `c + suffix` wherever that branch exists (a CROWN shift), or `derived[c]`, an expression
+    of nominal columns (a shift computed in ShapeSmith). A name ending in Up/Down is one side of a shape nuisance;
+    any other name is a template that datacards never turn into a shape line. `groups` restricts it to the samples of
+    some groups, e.g. a CROWN shift produced for some samples only."""
+
     name: str
-    suffix: str
+    suffix: str = ""
+    derived: Mapping[str, str] = field(default_factory=dict)
+    applies_to: tuple[SampleKind, ...] = ("mc",)
+    regions: tuple[str, ...] | None = None  # None: every booked region where the rewrite changes an expression
+    groups: tuple[str, ...] | None = None  # None: the samples of every group of those kinds
+
+    def __post_init__(self):
+        object.__setattr__(self, "derived", _frozen(self.derived))
+
+
+Variation = WeightVariation | ColumnVariation
+
+
+def applies(variation: Variation, kind: str, group: str) -> bool:
+    """Whether a variation belongs to the samples of a kind and group."""
+    if kind not in variation.applies_to:
+        return False
+    return not isinstance(variation, ColumnVariation) or variation.groups is None or group in variation.groups
+
+
+@dataclass(frozen=True)
+class DataMinus:
+    """output = scale * (data - sum of `subtract`) in `region`, per column variation of its inputs; with
+    `clip_negative`, negative bins are set to zero keeping the integral."""
+
+    output: str
+    region: str
+    subtract: tuple[str, ...]
+    scale: float = 1.0
+    clip_negative: bool = False
+
+
+@dataclass(frozen=True)
+class ABCD:
+    """output = (data - MC)(b) * (data - MC)(c).sum() / (data - MC)(d).sum(), nominal only."""
+
+    output: str
+    b: str
+    c: str
+    d: str
+    subtract: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class TemplateShift:
+    """Variation `name`Up/Down of `process`: its nominal plus/minus `fraction` times the (nominal) `template` process.
+    Every template variation of `process` (e.g. an energy-scale grid point) gets the same variation on top of it."""
+
+    name: str
+    process: str
+    template: str
+    fraction: float
+
+
+Estimator = DataMinus | ABCD | TemplateShift
 
 
 @dataclass(frozen=True)
@@ -122,29 +189,51 @@ class LnN:
 @dataclass(frozen=True)
 class Channel:
     name: str
-    skim: Selection
-    baseline: Selection
+    samples: tuple[Sample, ...]
+    skim: Mapping[str, str]  # cuts applied when skimming; re-applied (under each variation) when filling
+    cuts: Mapping[str, str]  # the nominal selection
+    processes: tuple[Process, ...]
     regions: tuple[Region, ...] = ()
+    categories: tuple[Category, ...] = ()
+    variables: Mapping[str, Variable] = field(default_factory=dict)  # control variables
+    variations: tuple[Variation, ...] = ()
+    estimators: tuple[Estimator, ...] = ()
     keep_columns: tuple[str, ...] = ()
 
+    def __post_init__(self):
+        for name in ("skim", "cuts", "variables"):
+            object.__setattr__(self, name, _frozen(getattr(self, name)))
+
     def region(self, name: str) -> Region:
-        if name == NOMINAL.name:
-            return NOMINAL
+        if name == NOMINAL:
+            return NOMINAL_REGION
         for region in self.regions:
             if region.name == name:
                 return region
         raise KeyError(f"channel {self.name}: unknown region {name!r}")
 
+    def process(self, name: str) -> Process:
+        for process in self.processes:
+            if process.name == name:
+                return process
+        raise KeyError(f"channel {self.name}: unknown process {name!r}")
 
-@dataclass(frozen=True)
-class Estimator:
-    name: Literal["fake_factors", "abcd"]
-    regions: Mapping[str, str]
-    subtract: tuple[str, ...]
-    output: str
+    def samples_of(self, group: str) -> tuple[Sample, ...]:
+        return tuple(s for s in self.samples if s.group == group)
 
-    def __post_init__(self):
-        object.__setattr__(self, "regions", _frozen(self.regions))
+    def kind_of(self, process: Process) -> str:
+        """The sample kind of a process (validate() makes sure its samples share one)."""
+        return self.samples_of(process.group)[0].kind
+
+    def data(self) -> str:
+        """Name of the data process."""
+        return next(p.name for p in self.processes if p.role == "data")
+
+    def backgrounds(self) -> tuple[str, ...]:
+        """The background processes followed by the estimator outputs: plots, sync, datacards and the ML export."""
+        names = [p.name for p in self.processes if p.role == "background"]
+        names += [e.output for e in self.estimators if isinstance(e, (DataMinus, ABCD))]
+        return tuple(names)
 
 
 @dataclass(frozen=True)
@@ -173,74 +262,12 @@ class Analysis:
     name: str
     era: str
     lumi_pb: float
+    signal: str | None  # the signal process of datacards and plots (None: a measurement analysis without one)
     channels: Mapping[str, Channel]
-    samples: tuple[Sample, ...]
-    processes: tuple[Process, ...]
-    signal: str
-    categories: tuple[Category, ...] = ()
-    control_variables: Mapping[str, Variable] = field(default_factory=dict)
-    weight_variations: tuple[WeightVariation, ...] = ()
-    column_variations: tuple[ColumnVariation, ...] = ()
     lnn: tuple[LnN, ...] = ()
-    estimator: Estimator | None = None
     style: Style | None = None
     ml: MLExportConfig | None = None
+    measurement: Measurement | None = None  # run by `shapesmith measure`
 
     def channel(self, name: str) -> Channel:
         return self.channels[name]
-
-    def process(self, name: str) -> Process:
-        for process in self.processes:
-            if process.name == name:
-                return process
-        raise KeyError(f"unknown process {name!r}")
-
-    def processes_of_kind(self, *kinds: str) -> tuple[Process, ...]:
-        return tuple(p for p in self.processes if p.kind in kinds)
-
-    def backgrounds(self) -> tuple[str, ...]:
-        names = [p.name for p in self.processes if p.kind not in ("data", "signal")]
-        if self.estimator is not None:
-            names.append(self.estimator.output)
-        return tuple(names)
-
-    def samples_for(self, group: str, channel: str) -> tuple[Sample, ...]:
-        return tuple(s for s in self.samples if s.group == group and (s.channels is None or channel in s.channels))
-
-    def validate(self) -> None:
-        problems: list[str] = []
-        names = [p.name for p in self.processes]
-        problems += [f"duplicate process name {n}" for n in sorted({n for n in names if names.count(n) > 1})]
-        keys = [p.key for p in self.processes]
-        problems += [f"duplicate process key {k}" for k in sorted({k for k in keys if keys.count(k) > 1})]
-        groups = {s.group for s in self.samples}
-        problems += [f"process {p.name}: no samples for group {p.group}" for p in self.processes if p.group not in groups]
-        if self.signal not in names:
-            problems.append(f"signal {self.signal} is not a process")
-        for kind in {p.kind for p in self.processes}:
-            if kind not in KINDS:
-                problems.append(f"unknown process kind {kind}")
-        category_names = [c.name for c in self.categories]
-        problems += [f"duplicate category {n}" for n in sorted({n for n in category_names if category_names.count(n) > 1})]
-        for channel in self.channels.values():
-            cut_names, weight_names = set(channel.baseline.cuts), set(channel.baseline.weights)
-            for region in channel.regions:
-                for cut in region.replace_cuts:
-                    if cut not in cut_names:
-                        problems.append(f"channel {channel.name}, region {region.name}: replaces unknown cut {cut}")
-            if self.estimator is not None:
-                region_names = {r.name for r in channel.regions}
-                for region in self.estimator.regions.values():
-                    if region not in region_names:
-                        problems.append(f"channel {channel.name}: estimator region {region} does not exist")
-            all_weights = weight_names | {w for p in self.processes for w in p.selection_for(channel.name).weights}
-            for variation in self.weight_variations:
-                for weight in variation.replace_weights:
-                    if weight not in all_weights:
-                        problems.append(f"variation {variation.name}: replaces unknown weight {weight} (channel {channel.name})")
-        if self.estimator is not None:
-            for name in self.estimator.subtract:
-                if name not in names:
-                    problems.append(f"estimator subtracts unknown process {name}")
-        if problems:
-            raise AnalysisError("\n".join(sorted(set(problems))))

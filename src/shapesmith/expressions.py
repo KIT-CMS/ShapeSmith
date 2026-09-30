@@ -1,22 +1,20 @@
-"""Evaluation of cut and weight expressions (pandas.eval syntax, numexpr engine), Spec §6."""
+"""Evaluation of cut and weight expressions (pandas.eval syntax, numexpr engine) and their column variations."""
 from __future__ import annotations
 
-import re
-from typing import Mapping
-
 import logging
+import re
+from typing import Iterable
 
 import numpy as np
 import pandas as pd
 
-from shapesmith.model import Region, Selection, WeightVariation
+from shapesmith.model import ColumnVariation
 
 FUNCTIONS = frozenset(
     "abs sqrt exp log log10 sin cos tan arctan2 arcsin arccos arctan sinh cosh tanh expm1 log1p".split()
 )
 KEYWORDS = frozenset({"and", "or", "not", "True", "False", "inf", "nan"})
 _IDENTIFIER = re.compile(r"(?<![\w.])[A-Za-z_][A-Za-z0-9_]*")
-
 
 logger = logging.getLogger(__name__)
 
@@ -28,6 +26,13 @@ class ExpressionError(ValueError):
 def columns_in(expr: str) -> set[str]:
     """Column names referenced by an expression (functions, keywords and numbers excluded)."""
     return {token for token in _IDENTIFIER.findall(expr) if token not in FUNCTIONS and token not in KEYWORDS}
+
+
+def columns_of(exprs: Iterable[str]) -> set[str]:
+    columns: set[str] = set()
+    for expr in set(exprs):  # the selections of many regions and variations repeat the same expressions
+        columns |= columns_in(expr)
+    return columns
 
 
 def evaluate(frame: pd.DataFrame, expr: str) -> np.ndarray:
@@ -50,57 +55,31 @@ def evaluate(frame: pd.DataFrame, expr: str) -> np.ndarray:
     return np.asarray(result)
 
 
-def mask(frame: pd.DataFrame, cuts: Mapping[str, str]) -> np.ndarray:
-    """Logical AND of all cuts (all True for an empty mapping)."""
+def mask(frame: pd.DataFrame, cuts: Iterable[str]) -> np.ndarray:
+    """Logical AND of all cuts (all True for none)."""
     result = np.ones(len(frame), dtype=bool)
-    for expr in cuts.values():
+    for expr in cuts:
         result &= evaluate(frame, expr).astype(bool)
     return result
 
 
-def weight(frame: pd.DataFrame, weights: Mapping[str, str]) -> np.ndarray:
-    """Product of all weights as float64 (all 1.0 for an empty mapping)."""
+def product(frame: pd.DataFrame, weights: Iterable[str]) -> np.ndarray:
+    """Product of all weights as float64, in the given order (all 1.0 for none)."""
     result = np.ones(len(frame), dtype=np.float64)
-    for expr in weights.values():
+    for expr in weights:
         result *= evaluate(frame, expr).astype(np.float64)
     return result
 
 
-def apply_region(selection: Selection, region: Region) -> Selection:
-    """Replace the named cuts of `selection` and append the region weights."""
-    cuts = dict(selection.cuts)
-    for name, expr in region.replace_cuts.items():
-        if name not in cuts:
-            raise KeyError(f"region {region.name}: cut {name!r} not in selection {sorted(cuts)}")
-        cuts[name] = expr
-    weights = dict(selection.weights)
-    weights.update(region.add_weights)
-    return Selection(cuts=cuts, weights=weights)
-
-
-def apply_weight_variation(selection: Selection, variation: WeightVariation) -> Selection:
-    """Replace the named weights of `selection` (weights not present are an error)."""
-    weights = dict(selection.weights)
-    for name, expr in variation.replace_weights.items():
-        if name not in weights:
-            raise KeyError(f"variation {variation.name}: weight {name!r} not in selection {sorted(weights)}")
-        weights[name] = expr
-    return Selection(cuts=dict(selection.cuts), weights=weights)
-
-
-def apply_column_variation(expr: str, suffix: str, available: set[str]) -> str:
-    """Rename every column `c` in `expr` to `c + suffix` if that shifted column exists."""
+def shift(expr: str, variation: ColumnVariation, available: set[str]) -> str:
+    """`expr` under a column variation: a derived column becomes its expression, a column `c` whose shifted branch
+    `c + suffix` is in `available` is read shifted, and every other column stays nominal."""
 
     def rename(match: re.Match) -> str:
         name = match.group(0)
-        shifted = name + suffix
-        return shifted if name in available and shifted in available else name
+        if name in variation.derived:
+            return f"({variation.derived[name]})"
+        shifted = name + variation.suffix
+        return shifted if variation.suffix and shifted in available else name
 
     return _IDENTIFIER.sub(rename, expr)
-
-
-def selection_columns(selection: Selection) -> set[str]:
-    columns: set[str] = set()
-    for expr in list(selection.cuts.values()) + list(selection.weights.values()):
-        columns |= columns_in(expr)
-    return columns

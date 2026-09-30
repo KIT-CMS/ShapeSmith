@@ -12,20 +12,20 @@ import mplhep as hep  # noqa: E402
 import numpy as np  # noqa: E402
 
 from shapesmith.histogram import Histogram  # noqa: E402
-from shapesmith.histograms import INCLUSIVE, NOMINAL_REGION, NOMINAL_VARIATION, HistKey, HistogramSet  # noqa: E402
-from shapesmith.model import Analysis  # noqa: E402
+from shapesmith.histogram import INCLUSIVE, NOMINAL_VARIATION, HistKey, HistogramSet  # noqa: E402
+from shapesmith.model import NOMINAL, Analysis  # noqa: E402
 from shapesmith.plotting.style import axis_label, color, grouped_backgrounds, label  # noqa: E402
 
 logger = logging.getLogger(__name__)
 hep.style.use("CMS")
 
 
-def _nominal(hset: HistogramSet, channel: str, category: str, process: str, variable: str, region: str = NOMINAL_REGION) -> Histogram | None:
+def _nominal(hset: HistogramSet, channel: str, category: str, process: str, variable: str, region: str = NOMINAL) -> Histogram | None:
     key = HistKey(channel, category, process, region, NOMINAL_VARIATION, variable)
-    return hset.get(key) if hset.has(key) else None
+    return hset.get(key)
 
 
-def _group_histogram(hset: HistogramSet, channel: str, category: str, members: list[str], variable: str, region: str = NOMINAL_REGION) -> Histogram | None:
+def _group_histogram(hset: HistogramSet, channel: str, category: str, members: list[str], variable: str, region: str = NOMINAL) -> Histogram | None:
     total = None
     for process in members:
         h = _nominal(hset, channel, category, process, variable, region)
@@ -34,11 +34,11 @@ def _group_histogram(hset: HistogramSet, channel: str, category: str, members: l
     return total
 
 
-def default_signal_scale(hset: HistogramSet, analysis: Analysis, channel: str, category: str, variable: str, region: str = NOMINAL_REGION) -> float:
+def default_signal_scale(hset: HistogramSet, analysis: Analysis, channel: str, category: str, variable: str, region: str = NOMINAL) -> float:
     """1, 2 or 5 x 10^n such that the scaled signal maximum is about 30 % of the background maximum."""
     signal = _nominal(hset, channel, category, analysis.signal, variable, region)
     background = 0.0
-    for _, members in grouped_backgrounds(analysis):
+    for _, members in grouped_backgrounds(analysis, channel):
         h = _group_histogram(hset, channel, category, members, variable, region)
         if h is not None:
             background = max(background, float(h.values.max()))
@@ -50,16 +50,16 @@ def default_signal_scale(hset: HistogramSet, analysis: Analysis, channel: str, c
     return float(min((1, 2, 5, 10), key=lambda m: abs(m - mantissa)) * 10**exponent)
 
 
-def plot_stack(hset: HistogramSet, analysis: Analysis, channel: str, category: str, variable: str, output_dir: Path, blind: bool = False, log: bool = False, signal_scale: float | None = None, normalize_by_bin_width: bool = False, region: str = NOMINAL_REGION) -> list[Path]:
-    if region != NOMINAL_REGION and not hset.keys(channel=channel, category=category, region=region, variable=variable):
+def plot_stack(hset: HistogramSet, analysis: Analysis, channel: str, category: str, variable: str, output_dir: Path, blind: bool = False, log: bool = False, signal_scale: float | None = None, normalize_by_bin_width: bool = False, region: str = NOMINAL) -> list[Path]:
+    if region != NOMINAL and not hset.select(channel=channel, category=category, region=region, variable=variable):
         raise ValueError(f"no histograms for {channel}/{category}/{region}/{variable}; fill them with `shapesmith hist --regions {region}`")
     groups = []
-    for group, members in grouped_backgrounds(analysis):
+    for group, members in grouped_backgrounds(analysis, channel):
         h = _group_histogram(hset, channel, category, members, variable, region)
         if h is not None:
             groups.append((group, h))
     if not groups:
-        if region != NOMINAL_REGION:
+        if region != NOMINAL:
             raise ValueError(f"no background histograms for {channel}/{category}/{region}/{variable}; fill them with `shapesmith hist --regions {region}`")
         logger.warning(f"{channel}/{category}/{variable}: no background histograms, no plot")
         return []
@@ -68,7 +68,7 @@ def plot_stack(hset: HistogramSet, analysis: Analysis, channel: str, category: s
     norm = widths if normalize_by_bin_width else np.ones_like(widths)
     background = np.sum([h.values for _, h in groups], axis=0)
     background_error = np.sqrt(np.sum([h.variances for _, h in groups], axis=0))
-    data_hist = _nominal(hset, channel, category, "data", variable, region)
+    data_hist = _nominal(hset, channel, category, analysis.channel(channel).data(), variable, region)
     if data_hist is None and not blind:
         raise ValueError(f"data histogram is missing for {channel}/{category}/{region}/{variable}; fill data with `shapesmith hist --regions {region}` or use --blind")
     data = background.copy() if blind else data_hist.values
@@ -94,7 +94,7 @@ def plot_stack(hset: HistogramSet, analysis: Analysis, channel: str, category: s
     ax.legend(loc="upper right", ncol=2, fontsize=16, frameon=False)
     hep.cms.label(llabel="Private Work", rlabel=style.lumi_label if style else "", ax=ax, fontsize=22)
     channel_label = style.channel_labels.get(channel, channel) if style else channel
-    selection_label = f"{channel_label}, {category}" if region == NOMINAL_REGION else f"{channel_label}, {category}, {region}"
+    selection_label = f"{channel_label}, {category}" if region == NOMINAL else f"{channel_label}, {category}, {region}"
     ax.text(0.04, 0.95, selection_label, transform=ax.transAxes, va="top", ha="left", fontsize=20)
 
     with np.errstate(divide="ignore", invalid="ignore"):
@@ -114,7 +114,7 @@ def plot_stack(hset: HistogramSet, analysis: Analysis, channel: str, category: s
     rax.set_xlim(edges[0], edges[-1])
 
     output_dir = Path(output_dir) / channel
-    if region != NOMINAL_REGION:
+    if region != NOMINAL:
         output_dir = output_dir / region
     output_dir.mkdir(parents=True, exist_ok=True)
     paths = [output_dir / f"{category}_{variable}.{ext}" for ext in ("pdf", "png")]
@@ -124,15 +124,15 @@ def plot_stack(hset: HistogramSet, analysis: Analysis, channel: str, category: s
     return paths
 
 
-def run_plot(hset: HistogramSet, analysis: Analysis, channels: list[str], control: bool, category: str | None, variables: list[str] | None, output_dir: Path, region: str = NOMINAL_REGION, **options) -> list[Path]:
+def run_plot(hset: HistogramSet, analysis: Analysis, channels: list[str], control: bool, category: str | None, variables: list[str] | None, output_dir: Path, region: str = NOMINAL, **options) -> list[Path]:
     written = []
     for channel in channels:
         analysis.channel(channel).region(region)
         if control:
-            for variable in variables or list(analysis.control_variables):
+            for variable in variables or list(analysis.channel(channel).variables):
                 written += plot_stack(hset, analysis, channel, INCLUSIVE, variable, output_dir, region=region, **options)
         else:
-            for cat in analysis.categories:
+            for cat in analysis.channel(channel).categories:
                 if category is None or cat.name == category:
                     written += plot_stack(hset, analysis, channel, cat.name, cat.variable.name, output_dir, region=region, **options)
     return written

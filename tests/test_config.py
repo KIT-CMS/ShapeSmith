@@ -4,7 +4,8 @@ from pathlib import Path
 
 import pytest
 
-from shapesmith.config import NtupleConfig, RunConfig, load_analysis, load_config, write_versions
+from shapesmith.config import NtupleConfig, RunConfig, load_analysis, load_config
+from shapesmith.provenance import write_versions
 
 
 def _yaml(tmp_path, text):
@@ -95,7 +96,9 @@ def test_overrides(tmp_path):
 
 def test_write_versions(tmp_path):
     config = RunConfig(analysis="tests.mini_analysis:build", era="2018", channels=["mt"], ntuples=NtupleConfig(base="/data"), skim_dir=tmp_path / "s", output_dir=tmp_path / "o")
-    record = json.loads(write_versions(config, tmp_path / "o").read_text())
+    path = write_versions(config, "mini", tmp_path / "o")
+    assert path == tmp_path / "o" / "versions" / "mini.json"
+    record = json.loads(path.read_text())
     assert record["shapesmith"]["version"] and record["analysis"]["module"] == "tests.mini_analysis:build"
-    assert record["sample_database"] is None and record["config"]["channels"] == ["mt"]
-    assert (tmp_path / "o" / "versions.json").exists()
+    assert record["sample_database"] is None and record["config"]["channels"] == ["mt"] and record["ntuples"] == "/data"
+    assert len(record["config_sha256"]) == 64

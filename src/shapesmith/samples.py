@@ -1,77 +1,49 @@
-"""Production inventories and the normalisation lookup in the KingMaker sample database (datasets.json).
+"""Sample lists and the normalisation lookup in the KingMaker sample database (datasets.json).
 
-The database renames nicks now and then (2026-08: the 2018 v15 nicks gained the campaign suffix
-`_mc2018_realistic_v1-v2`) while CROWN output directories keep the nick used at production time. The DBS
-dataset path is stable, so an inventory lists `nick dbs` pairs and the lookup goes by nick first, by DBS second.
+A sample list is an unchanged copy of the KingMaker sample list a production ran with: one nick per line. The
+normalisation of every nick comes from the configured database, looked up by nick. The database renames nicks now
+and then, so an older production may need the database checkout it was produced with.
 """
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
 from pathlib import Path
 
-FIELDS = ("sample_type", "xsec", "nevents", "generator_weight")
+from shapesmith.model import AnalysisError
 
-
-@dataclass(frozen=True)
-class InventoryEntry:
-    nick: str  # directory name in the CROWN output
-    dbs: str  # DBS dataset path, stable across database versions
+FIELDS = ("xsec", "nevents", "generator_weight")
 
 
 def kind_of(sample_type: str) -> str:
-    if sample_type == "data":
-        return "data"
-    if "embedding" in sample_type:
-        return "embedding"
-    return "mc"
+    """The sample kind of a database `sample_type`: data, embedding, or mc for every simulated type."""
+    return sample_type if sample_type in ("data", "embedding") else "mc"
 
 
-def read_inventory(path: Path) -> list[InventoryEntry]:
-    """`<nick> <dbs>` per line; blank lines and `#` comments are ignored."""
-    entries = []
-    for line in Path(path).read_text().splitlines():
-        line = line.split("#", 1)[0].strip()
-        if not line:
+def read_sample_list(path: Path) -> tuple[str, ...]:
+    """The nicks of a sample list in file order; blank lines are skipped, every other line is exactly one nick."""
+    nicks: list[str] = []
+    for number, line in enumerate(Path(path).read_text().splitlines(), start=1):
+        tokens = line.split()
+        if not tokens:
             continue
-        parts = line.split()
-        if len(parts) != 2:
-            raise ValueError(f"{path}: expected '<nick> <dbs>', got {line!r}")
-        entries.append(InventoryEntry(*parts))
-    return entries
+        if len(tokens) != 1:
+            raise ValueError(
+                f"{path}:{number}: expected one nick per line (an unchanged KingMaker sample list), got {line!r};"
+                " the former DBS column is no longer supported"
+            )
+        if tokens[0] in nicks:
+            raise ValueError(f"{path}:{number}: duplicate nick {tokens[0]}")
+        nicks.append(tokens[0])
+    return tuple(nicks)
 
 
-def write_inventory(path: Path, database: Path, nicks: list[str]) -> list[InventoryEntry]:
-    """Create an inventory for nicks that the given database version still knows by name."""
+def normalisation(database: Path, nicks: tuple[str, ...] | list[str]) -> dict[str, dict]:
+    """nick -> {kind, xsec, nevents, generator_weight} from the database; every missing nick is reported at once."""
     db = json.loads(Path(database).read_text())
     missing = [nick for nick in nicks if nick not in db]
     if missing:
-        raise KeyError(f"nicks not in {database}: {', '.join(missing)}")
-    entries = [InventoryEntry(nick, db[nick]["dbs"]) for nick in nicks]
-    Path(path).parent.mkdir(parents=True, exist_ok=True)
-    Path(path).write_text("".join(f"{entry.nick} {entry.dbs}\n" for entry in entries))
-    return entries
-
-
-def normalisation(database: Path, inventory: list[InventoryEntry]) -> dict[str, dict]:
-    """nick -> {kind, sample_type, xsec, nevents, generator_weight, database_nick} for every inventory entry."""
-    db = json.loads(Path(database).read_text())
-    by_dbs: dict[str, list[str]] = {}
-    for key, entry in db.items():
-        by_dbs.setdefault(entry["dbs"], []).append(key)
-    result, unresolved = {}, []
-    for item in inventory:
-        if item.nick in db:
-            key = item.nick
-        else:
-            candidates = by_dbs.get(item.dbs, [])
-            values = {tuple(db[c][field] for field in FIELDS) for c in candidates}
-            if len(values) != 1:
-                unresolved.append(f"{item.nick} ({len(candidates)} entries for {item.dbs})")
-                continue
-            key = candidates[0]
-        entry = db[key]
-        result[item.nick] = {"kind": kind_of(entry["sample_type"]), "database_nick": key, **{field: entry[field] for field in FIELDS}}
-    if unresolved:
-        raise KeyError(f"not resolvable in {database}: " + "; ".join(unresolved))
-    return result
+        raise AnalysisError(
+            f"{len(missing)} nicks are not in {database} (the database may have renamed them, see the git log of the"
+            " sample database):\n" + "\n".join(missing)
+        )
+    return {nick: {"kind": kind_of(db[nick]["sample_type"]), **{field: db[nick][field] for field in FIELDS}} for nick in nicks}

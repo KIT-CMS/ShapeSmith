@@ -1,0 +1,20 @@
+imax * number of bins
+jmax * number of processes minus 1
+kmax * number of nuisance parameters
+------------------------------------------------------------
+shapes * htt_mt_1_2018 common/htt_input_2018.root htt_mt_1_2018/$PROCESS htt_mt_1_2018/$PROCESS_$SYSTEMATIC
+shapes * htt_mt_2_2018 common/htt_input_2018.root htt_mt_2_2018/$PROCESS htt_mt_2_2018/$PROCESS_$SYSTEMATIC
+------------------------------------------------------------
+bin htt_mt_1_2018 htt_mt_2_2018
+observation 118.0 81.0
+------------------------------------------------------------
+bin htt_mt_1_2018 htt_mt_1_2018 htt_mt_1_2018 htt_mt_1_2018 htt_mt_2_2018 htt_mt_2_2018 htt_mt_2_2018 htt_mt_2_2018
+process HH ZTT ZL jetFakes HH ZTT ZL jetFakes
+process 0 1 2 3 0 1 2 3
+rate -1 -1 -1 -1 -1 -1 -1 -1
+------------------------------------------------------------
+lumi lnN 1.025 1.025 1.025 1.025 1.025 1.025 1.025 1.025
+zjXsec lnN - 1.02 1.02 - - 1.02 1.02 -
+ffNorm_mt lnN - - - 1.1 - - - 1.1
+CMS_pu shape 1 1 1 - 1 1 1 -
+* autoMCStats 0

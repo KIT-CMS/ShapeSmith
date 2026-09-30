@@ -40,7 +40,7 @@ def test_full_chain(tmp_path):
     _run("validate", "-c", str(config))
     _run("skim", "-c", str(config))
     assert (tmp_path / "skims" / "mt" / "ZTT_1" / "manifest.json").exists()
-    assert (tmp_path / "skims" / "versions.json").exists()
+    assert (tmp_path / "skims" / "versions" / "mini.json").exists()
     _run("hist", "-c", str(config), "--control")
     _run("estimate", "-c", str(config), "--control")
     _run("plot", "-c", str(config), "--control")
@@ -58,13 +58,9 @@ def test_full_chain(tmp_path):
     assert (tmp_path / "ml" / "mt" / "fold0_training.feather").exists()
     result = _run("inspect", str(tmp_path / "out" / "shapes.root"))
     assert "jetFakes" in result.output
+    assert _run("inspect", "--unchanged", str(tmp_path / "out" / "shapes.root")).output == ""
     with uproot.open(tmp_path / "out" / "shapes.root") as f:
         assert "mt_sig/jetFakes#nominal#Nominal#score" in f
-
-
-def test_example_config(tmp_path):
-    _run("example-config", str(tmp_path / "example.yaml"))
-    assert "analysis:" in (tmp_path / "example.yaml").read_text()
 
 
 def test_hist_regions_and_plot_region_cli(tmp_path):

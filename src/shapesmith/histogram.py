@@ -1,4 +1,5 @@
-"""A minimal weighted 1D histogram on numpy arrays with ROOT TH1D conversion through uproot.
+"""A minimal weighted 1D histogram on numpy arrays with ROOT TH1D conversion through uproot, and the keyed set
+of histograms the stages exchange (one ROOT file plus a JSON index).
 
 boost-histogram/hist are deliberately not used: in LCG_108 (boost_histogram 1.3.2, numpy 2.1) the axis
 `edges` property returns constant values, and uproot writes exactly those corrupted edges. numpy plus
@@ -6,10 +7,28 @@ uproot's low-level TH1 constructor gives correct variable bins and Sumw2 for com
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+import json
+from dataclasses import asdict, dataclass
+from pathlib import Path
 
 import numpy as np
+import uproot
 from uproot.writing.identify import to_TAxis, to_TH1x
+
+NOMINAL_VARIATION = "Nominal"
+INCLUSIVE = "inclusive"  # the category of control-variable histograms
+TEMPLATE_SEPARATOR = "@"
+
+
+def is_template(variation: str) -> bool:
+    """A variation without a direction (e.g. one point of an energy-scale grid), not one on top of a template."""
+    return variation != NOMINAL_VARIATION and not variation.endswith(("Up", "Down")) and TEMPLATE_SEPARATOR not in variation
+
+
+def on_template(variation: str, template: str) -> str:
+    """The name of `variation` applied on top of the template variation `template`. It ends in the template's name,
+    so datacards never read it as a shape."""
+    return f"{variation}{TEMPLATE_SEPARATOR}{template}"
 
 
 @dataclass
@@ -76,3 +95,72 @@ class Histogram:
     @classmethod
     def from_root(cls, th) -> "Histogram":
         return cls(th.axis().edges(), th.values(), th.variances())
+
+
+@dataclass(frozen=True, order=True)
+class HistKey:
+    channel: str
+    category: str
+    process: str
+    region: str
+    variation: str
+    variable: str
+
+    @property
+    def directory(self) -> str:
+        return f"{self.channel}_{self.category}"
+
+    @property
+    def object_name(self) -> str:
+        return f"{self.process}#{self.region}#{self.variation}#{self.variable}"
+
+    @property
+    def path(self) -> str:
+        return f"{self.directory}/{self.object_name}"
+
+    @classmethod
+    def parse(cls, path: str) -> "HistKey":
+        directory, name = path.split("/", 1)
+        channel, category = directory.split("_", 1)
+        process, region, variation, variable = name.split("#")
+        return cls(channel, category, process, region, variation, variable)
+
+
+class HistogramSet(dict):
+    """HistKey -> Histogram, saved as one ROOT file (`<channel>_<category>/<process>#<region>#<variation>#<variable>`)
+    plus a JSON index next to it."""
+
+    def select(self, **fields) -> list[HistKey]:
+        """The keys whose fields equal the given values, sorted."""
+        return sorted(key for key in self if all(getattr(key, name) == value for name, value in fields.items()))
+
+    def save(self, path: Path) -> None:
+        path = Path(path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        items = sorted(self.items())
+        with uproot.recreate(path) as f:
+            for key, h in items:
+                f[key.path] = h.to_root(key.object_name)
+        index = [{**asdict(key), "sum": h.sum(), "bins": len(h.values)} for key, h in items]
+        path.with_suffix(".json").write_text(json.dumps(index, indent=1))
+
+    @classmethod
+    def load(cls, path: Path) -> "HistogramSet":
+        hset = cls()
+        with uproot.open(path) as f:
+            for name, classname in f.classnames(recursive=True, cycle=False).items():
+                if classname.startswith("TH1"):
+                    hset[HistKey.parse(name)] = Histogram.from_root(f[name])
+        return hset
+
+
+def unchanged_variations(hset: HistogramSet) -> list[HistKey]:
+    """The variation histograms that are bitwise equal to their nominal (a declared variation that has no effect)."""
+    result = []
+    for key in hset.select():
+        if key.variation == NOMINAL_VARIATION:
+            continue
+        nominal = hset.get(HistKey(key.channel, key.category, key.process, key.region, NOMINAL_VARIATION, key.variable))
+        if nominal is not None and np.array_equal(hset[key].values, nominal.values) and np.array_equal(hset[key].variances, nominal.variances):
+            result.append(key)
+    return result

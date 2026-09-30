@@ -1,3 +1,4 @@
+import dataclasses
 import json
 from pathlib import Path
 
@@ -6,9 +7,8 @@ import pandas as pd
 import pytest
 
 from shapesmith.config import FriendConfig, NtupleConfig, RunConfig
-from shapesmith.io.skims import SkimMissingError, read_manifest, read_skims, skim_path, write_manifest
-from shapesmith.model import Region, Selection
-from shapesmith.skim import SKIM_COLUMNS, columns_for_sample, required_columns, run_skim
+from shapesmith.skim import needed_columns, run_skim
+from shapesmith.store import SKIM_COLUMNS, SkimMissingError, read_manifest, read_skims, skim_path, write_manifest
 from shapesmith.testing import make_mini_dataset
 from tests.mini_analysis import build
 
@@ -31,18 +31,21 @@ def config(tmp_path):
     return _config(tmp_path)
 
 
-def _tighter_skim(analysis):
-    import dataclasses
+def _replace_channel(analysis, **changes):
+    return dataclasses.replace(analysis, channels={"mt": dataclasses.replace(analysis.channel("mt"), **changes)})
 
-    channel = analysis.channel("mt")
-    changed = dataclasses.replace(channel, skim=Selection(cuts={**channel.skim.cuts, "tighter": "m_vis > 40"}))
-    return dataclasses.replace(analysis, channels={"mt": changed})
+
+def _tighter_skim(analysis):
+    return _replace_channel(analysis, skim={**analysis.channel("mt").skim, "tighter": "m_vis > 40"})
 
 
 def _with_cut(analysis, nick, cut):
-    import dataclasses
+    samples = tuple(dataclasses.replace(s, cut=cut) if s.nick == nick else s for s in analysis.channel("mt").samples)
+    return _replace_channel(analysis, samples=samples)
 
-    return dataclasses.replace(analysis, samples=tuple(dataclasses.replace(s, cut=cut) if s.nick == nick else s for s in analysis.samples))
+
+def _sample(analysis, nick):
+    return next(s for s in analysis.channel("mt").samples if s.nick == nick)
 
 
 def _add_npartons(tmp_path):
@@ -59,47 +62,34 @@ def _add_npartons(tmp_path):
         make_ntuple(path, columns, metadata)
 
 
-def test_required_columns_cover_every_expression():
-    columns = required_columns(build(), "mt")
-    assert {"veto", "id_loose", "q_1", "q_2", "id_tight", "trg_wgt", "fake_factor", "gen_match", "puweight", "puweight_up", "puweight_down", "score", "cls", "m_vis", "event"} <= columns
-    assert "genWeight" in columns
+def test_needed_columns_cover_every_expression_of_the_sample():
+    analysis = build()
+    channel = analysis.channel("mt")
+    mc = needed_columns(channel, _sample(analysis, "ZTT_1"))
+    assert {"veto", "id_loose", "q_1", "q_2", "id_tight", "trg_wgt", "fake_factor", "gen_match", "puweight", "puweight_up", "puweight_down", "score", "cls", "m_vis", "event", "genWeight"} <= mc
+    data = needed_columns(channel, _sample(analysis, "DATA_A"))
+    assert {"fake_factor", "m_vis", "score", "event"} <= data and not {"puweight", "gen_match", "genWeight", "trg_wgt"} & data
 
 
 def test_sample_cut_columns_are_required_by_that_sample_only():
     analysis = _with_cut(build(), "ZTT_1", "npartons == 0")
-    ztt, sig = analysis.samples[1], analysis.samples[2]
-    assert "npartons" in columns_for_sample(analysis, "mt", ztt)
-    assert "npartons" not in columns_for_sample(analysis, "mt", sig)
-    assert "npartons" not in required_columns(analysis, "mt")  # read from the files of ZTT_1 only: other samples may lack the column
-
-
-def test_region_replacement_of_baseline_weight_stays_optional_for_data(config):
-    import dataclasses
-
-    analysis = build()
     channel = analysis.channel("mt")
-    baseline = Selection(channel.baseline.cuts, {**channel.baseline.weights, "mc_only": "puweight"})
-    regions = tuple(
-        Region(region.name, region.replace_cuts, {**region.add_weights, "mc_only": "puweight_up"})
-        if region.name == "same_sign"
-        else region
-        for region in channel.regions
-    )
-    analysis = dataclasses.replace(analysis, channels={"mt": dataclasses.replace(channel, baseline=baseline, regions=regions)})
-    data = analysis.samples[0]
+    assert "npartons" in needed_columns(channel, _sample(analysis, "ZTT_1"))
+    assert "npartons" not in needed_columns(channel, _sample(analysis, "SIG_1"))
 
-    assert "puweight_up" not in columns_for_sample(analysis, "mt", data)
+
+def test_a_replaced_weight_is_not_read_for_processes_without_it(config):
+    analysis = build()
+    regions = tuple(dataclasses.replace(r, replace_weights={"pu": "puweight_up * 1.0"}) for r in analysis.channel("mt").regions)
+    analysis = _replace_channel(analysis, regions=regions, variations=())
+    assert "puweight_up" in needed_columns(analysis.channel("mt"), _sample(analysis, "ZTT_1"))
+    assert "puweight_up" not in needed_columns(analysis.channel("mt"), _sample(analysis, "DATA_A"))
     run_skim(config, analysis)
-    assert "puweight_up" not in read_skims(config.skim_dir, "mt", [data.nick], None)
+    assert "puweight_up" not in read_skims(config.skim_dir, "mt", ["DATA_A"], None)
 
 
 def test_empty_skims_keep_a_readable_schema(config):
-    import dataclasses
-
-    analysis = build(config)
-    channel = analysis.channel("mt")
-    strict = dataclasses.replace(channel, skim=Selection(cuts={"nothing": "m_vis > 1e9"}))
-    analysis = dataclasses.replace(analysis, channels={"mt": strict})
+    analysis = _replace_channel(build(), skim={"nothing": "m_vis > 1e9"})
     run_skim(config, analysis, ["mt"])
     frame = read_skims(config.skim_dir, "mt", ["ZTT_1", "DATA_A"], ["m_vis", "sample_nick", "is_mc"])
     assert len(frame) == 0 and str(frame["sample_nick"].dtype) in ("string", "object") and frame["is_mc"].dtype == bool
@@ -112,8 +102,7 @@ def test_run_skim_writes_parquet_and_manifest(config):
     frame = read_skims(config.skim_dir, "mt", ["ZTT_1"], None)
     assert set(SKIM_COLUMNS) <= set(frame.columns)
     assert frame["sample_nick"].unique().tolist() == ["ZTT_1"] and frame["is_mc"].all() and not frame["is_data"].any()
-    expected_norm = 10.0 / (100 * 1.0)
-    assert np.allclose(np.abs(frame["norm_weight"]), expected_norm)
+    assert np.allclose(np.abs(frame["norm_weight"]), 10.0 / (100 * 1.0))
     assert set(np.sign(frame["norm_weight"]).unique()) <= {-1.0, 1.0}
     assert (frame["veto"] < 0.5).all() and (frame["id_loose"] > 0.5).all()  # skim selection applied
     assert ((frame["q_1"] * frame["q_2"]) > 0).any()  # both charges kept
@@ -122,9 +111,9 @@ def test_run_skim_writes_parquet_and_manifest(config):
     manifest = read_manifest(config.skim_dir / "mt" / "ZTT_1" / "manifest.json")
     assert manifest["nick"] == "ZTT_1" and len(manifest["files"]) == 2 and manifest["n_out"] == len(frame)
     assert manifest["metadata"]["sample_type"] == "mc"
-    assert manifest["normalisation"]["kind"] == "mc" and set(manifest["normalisation"]) == {"kind", "xsec", "nevents", "generator_weight"}
+    assert manifest["normalisation"] == {"kind": "mc", "xsec": 10.0, "nevents": 100, "generator_weight": 1.0}
     assert manifest["contract"]["selection"] == {"iso_loose": "id_loose > 0.5", "veto": "veto < 0.5"}
-    assert "m_vis" in manifest["contract"]["required_columns"]
+    assert manifest["contract"]["required_columns"] == sorted(needed_columns(analysis.channel("mt"), _sample(analysis, "ZTT_1")))
     assert manifest["contract"]["normalisation"] == manifest["normalisation"]
 
 
@@ -150,14 +139,10 @@ def test_sample_cut_is_part_of_the_skim_contract(tmp_path):
     run_skim(config, analysis)
     path = config.skim_dir / "mt" / "ZTT_1" / "manifest.json"
     plain = read_manifest(path)["contract"]
-    assert plain == {  # unchanged for samples without a cut, so their existing skims stay reusable
-        "selection": {"iso_loose": "id_loose > 0.5", "veto": "veto < 0.5"},
-        "required_columns": sorted(required_columns(analysis, "mt")),
-        "normalisation": {"kind": "mc", "xsec": 10.0, "nevents": 100, "generator_weight": 1.0},
-    }
+    assert set(plain) == {"selection", "required_columns", "normalisation", "friends"}  # no sample_cut key without a cut
     for cut in ("gen_match == 5", "gen_match == 6", None):  # set, changed, removed (gen_match is required anyway)
         changed = _with_cut(analysis, "ZTT_1", cut)
-        with pytest.raises(ValueError, match=r"mt/ZTT_1 is incompatible \(sample cut changed\).*shapesmith skim --force"):
+        with pytest.raises(ValueError, match=r"mt/ZTT_1: sample_cut changed"):
             run_skim(config, changed)
         run_skim(config, changed, force=True)
         assert read_manifest(path)["contract"] == (plain if cut is None else {**plain, "sample_cut": cut})
@@ -171,14 +156,12 @@ def test_a_sample_cut_on_a_new_column_leaves_the_other_skims_reusable(tmp_path):
     run_skim(config, analysis)
     plain = read_manifest(config.skim_dir / "mt" / "SIG_1" / "manifest.json")["contract"]
     changed = _with_cut(analysis, "ZTT_1", "npartons == 0")
-    with pytest.raises(ValueError, match=r"mt/ZTT_1 is incompatible \(required columns changed, sample cut changed\)"):
+    with pytest.raises(ValueError, match=r"mt/ZTT_1: sample_cut changed, columns missing: npartons"):
         run_skim(config, changed)
     run_skim(config, changed, samples=["ZTT_1"], force=True)
     assert all(r.skipped for r in run_skim(config, changed))  # DATA_A and SIG_1 keep the skims made before the cut existed
     assert read_manifest(config.skim_dir / "mt" / "SIG_1" / "manifest.json")["contract"] == plain
-    cut = read_manifest(config.skim_dir / "mt" / "ZTT_1" / "manifest.json")
-    assert cut["contract"]["required_columns"] == sorted({*plain["required_columns"], "npartons"})
-    assert "npartons" in cut["columns"]
+    assert "npartons" in read_manifest(config.skim_dir / "mt" / "ZTT_1" / "manifest.json")["columns"]
 
 
 def test_run_skim_skips_existing_files_unless_forced(config):
@@ -209,6 +192,16 @@ def test_run_skim_resumes_after_a_read_error_without_recomputing_finished_files(
     assert set(manifest["completed"]) == {"ZTT_1_0.root", "ZTT_1_1.root"} and manifest["n_in"] == 400
 
 
+def test_resumed_files_keep_the_stored_columns(config, tmp_path):
+    analysis = build()
+    run_skim(config, analysis)
+    (config.skim_dir / "mt" / "ZTT_1" / "ZTT_1_1.parquet").unlink()
+    fewer = _replace_channel(analysis, variations=())  # puweight_up/down are no longer needed
+    assert [r.basename for r in run_skim(config, fewer) if not r.skipped] == ["ZTT_1_1.root"]
+    schemas = [set(pd.read_parquet(p).columns) for p in sorted((config.skim_dir / "mt" / "ZTT_1").glob("*.parquet"))]
+    assert schemas[0] == schemas[1] and "puweight_up" in schemas[1]
+
+
 def test_run_skim_records_empty_inputs_under_the_new_contract_after_force(tmp_path):
     config = _config(tmp_path, n_events=0)
     analysis = build()
@@ -217,7 +210,7 @@ def test_run_skim_records_empty_inputs_under_the_new_contract_after_force(tmp_pa
     path = config.skim_dir / "mt" / "ZTT_1" / "manifest.json"
     changed = _tighter_skim(analysis)
     run_skim(config, changed, force=True)
-    assert read_manifest(path)["contract"]["selection"] == changed.channel("mt").skim.cuts
+    assert read_manifest(path)["contract"]["selection"] == changed.channel("mt").skim
     assert all(r.skipped for r in run_skim(config, changed))
 
 
@@ -232,13 +225,13 @@ def test_run_skim_manifest_counts_cover_reused_files(config):
 
 
 def test_run_skim_keeps_the_previous_parquet_when_a_write_fails(tmp_path, monkeypatch):
-    import shapesmith.io.skims as skims
+    import shapesmith.store as store
 
     config = _config(tmp_path, workers=1)  # inline jobs, so the patched writer is used
     run_skim(config, build())
     target = config.skim_dir / "mt" / "ZTT_1" / "ZTT_1_1.parquet"
     rows = len(pd.read_parquet(target))
-    real = skims.pq.write_table
+    real = store.pq.write_table
 
     def failing(table, where, **kwargs):
         if Path(where).name.startswith("ZTT_1_1"):
@@ -246,7 +239,7 @@ def test_run_skim_keeps_the_previous_parquet_when_a_write_fails(tmp_path, monkey
             raise OSError("disk full")
         return real(table, where, **kwargs)
 
-    monkeypatch.setattr(skims.pq, "write_table", failing)
+    monkeypatch.setattr(store.pq, "write_table", failing)
     with pytest.raises(RuntimeError, match="disk full"):
         run_skim(config, build(), force=True)
     assert len(pd.read_parquet(target)) == rows
@@ -271,36 +264,26 @@ def test_write_manifest_replaces_atomically(tmp_path, monkeypatch):
     assert read_manifest(path) == {"version": 1}
 
 
-@pytest.mark.parametrize("change", ["selection", "columns", "normalisation"])
-def test_run_skim_rejects_incompatible_reuse_with_force_guidance(config, change):
-    import dataclasses
-
+@pytest.mark.parametrize(("change", "problem"), [("selection", "selection changed"), ("columns", "columns missing: new_required_column"), ("normalisation", "normalisation changed")])
+def test_run_skim_lists_every_incompatible_skim_with_force_guidance(config, change, problem):
     analysis = build()
     run_skim(config, analysis)
     if change == "selection":
         analysis = _tighter_skim(analysis)
     elif change == "columns":
-        channel = analysis.channel("mt")
-        changed = dataclasses.replace(channel, keep_columns=(*channel.keep_columns, "new_required_column"))
-        analysis = dataclasses.replace(analysis, channels={"mt": changed})
+        analysis = _replace_channel(analysis, keep_columns=("event", "new_required_column"))
     else:
-        samples = tuple(dataclasses.replace(sample, xsec=sample.xsec * 2) if sample.nick == "ZTT_1" else sample for sample in analysis.samples)
-        analysis = dataclasses.replace(analysis, samples=samples)
-
-    with pytest.raises(ValueError, match=r"incompatible.*shapesmith skim --force"):
+        analysis = _replace_channel(analysis, samples=tuple(dataclasses.replace(s, xsec=s.xsec * 2) for s in analysis.channel("mt").samples))
+    with pytest.raises(ValueError, match=r"shapesmith skim --force") as excinfo:
         run_skim(config, analysis)
+    assert all(f"mt/{nick}: {problem}" in str(excinfo.value) for nick in ("DATA_A", "SIG_1", "ZTT_1"))
 
 
-def test_run_skim_rejects_legacy_manifest_without_selection_contract(config):
-    analysis = build()
-    run_skim(config, analysis)
-    path = config.skim_dir / "mt" / "ZTT_1" / "manifest.json"
-    manifest = read_manifest(path)
-    manifest.pop("contract")
-    path.write_text(json.dumps(manifest))
-
-    with pytest.raises(ValueError, match=r"selection was not recorded.*shapesmith skim --force"):
-        run_skim(config, analysis)
+def test_a_skim_without_manifest_is_incompatible(config):
+    run_skim(config, build())
+    (config.skim_dir / "mt" / "ZTT_1" / "manifest.json").unlink()
+    with pytest.raises(ValueError, match="mt/ZTT_1: its manifest is missing"):
+        run_skim(config, build())
 
 
 def test_read_skims_missing_nick(config):
@@ -309,4 +292,4 @@ def test_read_skims_missing_nick(config):
 
 
 def test_skim_path():
-    assert skim_path(config_dir := __import__("pathlib").Path("/s"), "mt", "N", "N_0.root") == config_dir / "mt" / "N" / "N_0.parquet"
+    assert skim_path(Path("/s"), "mt", "N", "N_0.root") == Path("/s") / "mt" / "N" / "N_0.parquet"

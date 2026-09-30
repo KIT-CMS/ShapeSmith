@@ -1,9 +1,8 @@
 import uproot
 
-from shapesmith.datacards import bin_name, rebin_edges, run_datacards, shape_processes, write_datacard
-from shapesmith.histogram import Histogram
-from shapesmith.histograms import HistKey, HistogramSet
-from tests.mini_analysis import build
+from shapesmith.datacards import bin_name, rebin_edges, run_datacards, write_datacard
+from shapesmith.histogram import HistKey, Histogram, HistogramSet
+from tests.mini_analysis import build, build_embedding
 
 
 def _hist(values, edges=(0.0, 0.25, 0.5, 0.75, 1.0)):
@@ -13,22 +12,20 @@ def _hist(values, edges=(0.0, 0.25, 0.5, 0.75, 1.0)):
 def _hset():
     hset = HistogramSet()
     for category in ("sig", "bkg"):
-        hset.add(HistKey("mt", category, "data", "nominal", "Nominal", "score"), _hist([20, 10, 5, 2]))
-        hset.add(HistKey("mt", category, "ZTT", "nominal", "Nominal", "score"), _hist([10, 5, 2, 0.4]))
-        hset.add(HistKey("mt", category, "ZTT", "nominal", "CMS_puUp", "score"), _hist([11, 5.5, 2.2, 0.44]))
-        hset.add(HistKey("mt", category, "ZTT", "nominal", "CMS_puDown", "score"), _hist([9, 4.5, 1.8, 0.36]))
-        hset.add(HistKey("mt", category, "ZL", "nominal", "Nominal", "score"), _hist([5, 3, 1, 0.3]))
-        hset.add(HistKey("mt", category, "jetFakes", "nominal", "Nominal", "score"), _hist([4, 2, 1, 0.2]))
-        hset.add(HistKey("mt", category, "HH", "nominal", "Nominal", "score"), _hist([0.01, 0.02, 0.05, 0.1]))
-        hset.add(HistKey("mt", category, "HH", "nominal", "CMS_puUp", "score"), _hist([0.011, 0.022, 0.055, 0.11]))
-        hset.add(HistKey("mt", category, "HH", "nominal", "CMS_puDown", "score"), _hist([0.009, 0.018, 0.045, 0.09]))
+        hset[HistKey("mt", category, "data", "nominal", "Nominal", "score")] = _hist([20, 10, 5, 2])
+        hset[HistKey("mt", category, "ZTT", "nominal", "Nominal", "score")] = _hist([10, 5, 2, 0.4])
+        hset[HistKey("mt", category, "ZTT", "nominal", "CMS_puUp", "score")] = _hist([11, 5.5, 2.2, 0.44])
+        hset[HistKey("mt", category, "ZTT", "nominal", "CMS_puDown", "score")] = _hist([9, 4.5, 1.8, 0.36])
+        hset[HistKey("mt", category, "ZL", "nominal", "Nominal", "score")] = _hist([5, 3, 1, 0.3])
+        hset[HistKey("mt", category, "jetFakes", "nominal", "Nominal", "score")] = _hist([4, 2, 1, 0.2])
+        hset[HistKey("mt", category, "HH", "nominal", "Nominal", "score")] = _hist([0.01, 0.02, 0.05, 0.1])
+        hset[HistKey("mt", category, "HH", "nominal", "CMS_puUp", "score")] = _hist([0.011, 0.022, 0.055, 0.11])
+        hset[HistKey("mt", category, "HH", "nominal", "CMS_puDown", "score")] = _hist([0.009, 0.018, 0.045, 0.09])
     return hset
 
 
-def test_bin_name_and_shape_processes():
-    analysis = build()
-    assert bin_name(analysis, "mt", 0) == "htt_mt_1_2018"
-    assert shape_processes(analysis) == ("ZTT", "ZL", "HH")
+def test_bin_name():
+    assert bin_name(build(), "mt", 0) == "htt_mt_1_2018"
 
 
 def test_rebin_edges_merges_from_the_right():
@@ -70,3 +67,14 @@ def test_write_datacard_without_systematics(tmp_path):
 def test_run_datacards_final_states(tmp_path):
     paths = run_datacards(_hset(), build(), {"mt": ["mt"], "all": ["mt"]}, tmp_path, systematics=True, min_background=1.0)
     assert set(paths) == {"mt", "all"} and all(p.exists() for p in paths.values())
+
+
+def test_auxiliary_processes_and_templates_stay_out_of_the_card(tmp_path):
+    hset = _hset()
+    for category in ("sig", "bkg"):
+        hset[HistKey("mt", category, "EMB", "nominal", "Nominal", "score")] = _hist([3, 2, 1, 0.5])
+        hset[HistKey("mt", category, "EMB", "nominal", "emb1p002", "score")] = _hist([3, 2, 1, 0.6])
+    text = write_datacard(hset, build_embedding(), ["mt"], tmp_path / "mt").read_text()
+    processes = [line for line in text.splitlines() if line.startswith("process")][0].split()[1:]
+    assert "ZTT" not in processes and "EMB" in processes  # ZTT is the auxiliary template of the embedding
+    assert "emb1p002" not in text
