@@ -43,3 +43,10 @@ def test_an_invalid_payload_is_rejected():
     broken.data.content.append(2.0)  # two values for one bin
     with pytest.raises(Exception):
         payloads.dumps(payloads.correction_set([broken], {}))
+
+
+def test_transform_node():
+    by_abs_eta = payloads.transform("eta", "abs(x)", payloads.binning("eta", [0.0, 1.5, 2.5], [1.0, 2.0]))
+    cset = payloads.correction_set([payloads.correction("es", [payloads.variable("eta")], by_abs_eta)], {})
+    evaluator = correctionlib.CorrectionSet.from_string(payloads.dumps(cset))
+    assert evaluator["es"].evaluate(-2.0) == 2.0 and evaluator["es"].evaluate(0.5) == 1.0

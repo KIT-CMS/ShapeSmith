@@ -114,12 +114,12 @@ def estimate(config: Path = ConfigOption, channels: Optional[str] = ChannelsOpti
 
 
 @app.command()
-def measure(config: Path = ConfigOption, channels: Optional[str] = ChannelsOption, overrides: Optional[list[str]] = SetOption, suggest_binning: bool = typer.Option(False, "--suggest-binning", help="print proposed bin edges instead of measuring"), workers: Optional[int] = WorkersOption):
+def measure(config: Path = ConfigOption, channels: Optional[str] = ChannelsOption, overrides: Optional[list[str]] = SetOption, suggest_binning: bool = typer.Option(False, "--suggest-binning", help="print proposed bin edges instead of measuring"), merge: bool = typer.Option(False, "--merge", help="combine the results of the earlier runs (e.g. one per working point) into one payload"), workers: Optional[int] = WorkersOption):
     """Run the analysis's measurement; results in <output_dir>/<measurement>/<era>/."""
     from shapesmith.measurements import run_measure
 
     cfg, analysis, selected = _setup(config, channels, workers=workers, overrides=overrides)
-    typer.echo(f"measurement output: {run_measure(cfg, analysis, selected, suggest_binning)}")
+    typer.echo(f"measurement output: {run_measure(cfg, analysis, selected, suggest_binning, merge)}")
 
 
 @app.command()

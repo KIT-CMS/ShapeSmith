@@ -24,6 +24,9 @@ class CountEvents:
         if context.suggest_binning:
             print(f"suggested: {result}")
             return
+        if context.merge:
+            (context.output / "merged.json").write_text(json.dumps(result))
+            return
         (context.output / "result.json").write_text(json.dumps({"yields": result, "provenance": context.provenance(channel="mt")}))
 
 
@@ -69,3 +72,5 @@ def test_measure_command(tmp_path):
     assert result.exit_code == 0 and "suggested" in result.output and not (tmp_path / "out" / "count_events").exists()
     assert runner.invoke(app, ["measure", "-c", str(config)]).exit_code == 0
     assert (tmp_path / "out" / "count_events" / "2018" / "result.json").exists()
+    assert runner.invoke(app, ["measure", "-c", str(config), "--merge"]).exit_code == 0
+    assert (tmp_path / "out" / "count_events" / "2018" / "merged.json").exists()

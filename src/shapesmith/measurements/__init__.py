@@ -23,6 +23,7 @@ class MeasureContext:
     channels: list[str]
     output: Path
     suggest_binning: bool = False  # print proposed bin edges instead of measuring
+    merge: bool = False  # combine the results of earlier runs (e.g. one per switch combination) into one payload
 
     def events(self, query: Query, columns: Iterable[str] = ()) -> Events:
         return load(self.config, self.analysis, query, columns)
@@ -40,11 +41,11 @@ class Measurement(Protocol):
     def run(self, context: MeasureContext) -> None: ...
 
 
-def run_measure(config: RunConfig, analysis: Analysis, channels: list[str], suggest_binning: bool = False) -> Path:
+def run_measure(config: RunConfig, analysis: Analysis, channels: list[str], suggest_binning: bool = False, merge: bool = False) -> Path:
     if analysis.measurement is None:
         raise ValueError(f"analysis {analysis.name} defines no measurement")
     output = Path(config.output_dir) / analysis.measurement.name / analysis.era
     if not suggest_binning:
         write_versions(config, analysis.name, output)
-    analysis.measurement.run(MeasureContext(config, analysis, channels, output, suggest_binning))
+    analysis.measurement.run(MeasureContext(config, analysis, channels, output, suggest_binning, merge))
     return output
