@@ -16,6 +16,10 @@ def _partner(name: str) -> str | None:
     return None
 
 
+def _weight_names(channel: Channel) -> set[str]:
+    return {name for p in channel.processes for name in p.selection.weights}
+
+
 def _process_problems(channel: Channel) -> list[str]:
     problems = _duplicates("process", [p.name for p in channel.processes])
     problems += _duplicates("sample", [s.nick for s in channel.samples])
@@ -32,7 +36,7 @@ def _process_problems(channel: Channel) -> list[str]:
 
 
 def _region_problems(channel: Channel) -> list[str]:
-    weights = {name for p in channel.processes for name in p.selection.weights}
+    weights = _weight_names(channel)
     problems = _duplicates("region", [NOMINAL, *(r.name for r in channel.regions)])
     for region in channel.regions:
         problems += [f"region {region.name}: replaces unknown cut {cut}" for cut in region.replace_cuts if cut not in channel.cuts]
@@ -42,7 +46,7 @@ def _region_problems(channel: Channel) -> list[str]:
 
 
 def _variation_problems(channel: Channel, region_names: set[str]) -> list[str]:
-    weights = {name for p in channel.processes for name in p.selection.weights}
+    weights = _weight_names(channel)
     groups = {s.group for s in channel.samples}
     names = [v.name for v in channel.variations]
     problems = _duplicates("variation", names)
