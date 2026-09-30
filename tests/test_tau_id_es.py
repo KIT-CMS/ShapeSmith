@@ -50,7 +50,7 @@ def _analysis(shifts=(-2, 2)):
                   variations=tuple(ColumnVariation(grid_name(s), derived={"pt_2": f"pt_2 * {factor(s)}"}, applies_to=("embedding",)) for s in shifts),
                   estimators=(DataMinus("QCD", "same_sign", ("EMB", "ZL")),))
     mm = _channel("mm", [Category("control_region", "m_vis > 70", M_VIS)], [data, Process("MUEMB", "MUEMB", "background", "MUEMB")])
-    return Analysis("tau_id", "2018", 1.0, "EMB", {"mt": mt, "mm": mm})
+    return Analysis("tau_id", "2018", 1.0, None, {"mt": mt, "mm": mm})
 
 
 def _h(value):

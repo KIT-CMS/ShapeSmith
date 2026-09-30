@@ -9,10 +9,10 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from shapesmith.histogram import NOMINAL_VARIATION, TEMPLATE_SEPARATOR, HistKey, Histogram, HistogramSet
-from shapesmith.measurements.tau_id_es.grid import CHANNEL, SIGNAL, mass, shift_of
-from shapesmith.model import NOMINAL, Analysis
-from shapesmith.shapes import shape_name, write_shapes
+from shapesmith.histogram import TEMPLATE_SEPARATOR, HistogramSet
+from shapesmith.measurements.tau_id_es.grid import SIGNAL, mass, shift_of
+from shapesmith.model import Analysis
+from shapesmith.shapes import shape_name, synced_entries, write_shapes
 
 POSTFIX = "-TauID_ES"
 
@@ -30,21 +30,12 @@ def signal_name(category: str, variation: str) -> str:
     return f"{SIGNAL}_{category}_{mass(shift)}" + (f"_{systematic}" if template else "")
 
 
-def entries(hset: HistogramSet, analysis: Analysis, channel_name: str) -> list[tuple[str, str, Histogram]]:
-    channel = analysis.channel(channel_name)
-    result = []
-    for category in channel.categories:
-        folder, variable = f"{channel_name}_{category.name}", category.variable.name
-        result.append((folder, "data_obs", hset[HistKey(channel_name, category.name, channel.data(), NOMINAL, NOMINAL_VARIATION, variable)]))
-        for process in channel.backgrounds():
-            for key in hset.select(channel=channel_name, category=category.name, process=process, region=NOMINAL, variable=variable):
-                name = signal_name(category.name, key.variation) if channel_name == CHANNEL and process == SIGNAL else shape_name(process, key.variation)
-                result.append((folder, name, hset[key]))
-    return result
+def _name(category: str, process: str, variation: str) -> str:
+    return signal_name(category, variation) if process == SIGNAL else shape_name(process, variation)
 
 
 def write_synced(hset: HistogramSet, analysis: Analysis, directory: Path) -> Path:
     """The shapes file of every channel of the analysis under `directory`; returns `directory`."""
     for channel in analysis.channels:
-        write_shapes(shapes_path(directory, channel, analysis.era), entries(hset, analysis, channel))
+        write_shapes(shapes_path(directory, channel, analysis.era), synced_entries(hset, analysis, channel, _name))
     return Path(directory)

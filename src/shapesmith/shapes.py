@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Iterable
+from typing import Callable, Iterable
 
 import uproot
 
@@ -24,8 +24,13 @@ def shape_name(process: str, variation: str) -> str:
     return process if variation == NOMINAL_VARIATION else f"{process}_{variation}"
 
 
-def synced_entries(hset: HistogramSet, analysis: Analysis, channel_name: str) -> list[tuple[str, str, Histogram]]:
-    """data_obs and every nominal-region histogram of the signal and the backgrounds, per category."""
+def _synced_name(category: str, process: str, variation: str) -> str:
+    return shape_name(process, variation)
+
+
+def synced_entries(hset: HistogramSet, analysis: Analysis, channel_name: str, name: Callable[[str, str, str], str] = _synced_name) -> list[tuple[str, str, Histogram]]:
+    """data_obs and every nominal-region histogram of the signal and the backgrounds, per category, each named
+    `name(category, process, variation)`."""
     channel = analysis.channel(channel_name)
     entries = []
     for category in channel.categories:
@@ -36,7 +41,7 @@ def synced_entries(hset: HistogramSet, analysis: Analysis, channel_name: str) ->
             entries.append((folder, "data_obs", hset[data_key]))
         for process in (*channel.backgrounds(), analysis.signal):
             for key in hset.select(channel=channel_name, category=category.name, process=process, region=NOMINAL, variable=variable):
-                entries.append((folder, shape_name(process, key.variation), hset[key]))
+                entries.append((folder, name(category.name, process, key.variation), hset[key]))
     return entries
 
 
