@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import logging
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -27,6 +28,8 @@ if TYPE_CHECKING:
 
 EPSILON = 1e-4
 RECORD = "binning.json"
+
+logger = logging.getLogger(__name__)
 
 
 def inside(values: np.ndarray, rule: EqualData) -> np.ndarray:
@@ -68,7 +71,9 @@ def resolve(config: RunConfig, analysis: Analysis, channel_name: str, targets: l
         except ValueError as error:
             raise ValueError(f"{channel_name}/{target.category}/{target.variable.name}: equal-data binning: {error}") from None
         resolved.append(dataclasses.replace(target, variable=dataclasses.replace(target.variable, edges=edges)))
-        record.setdefault(target.category, {})[target.variable.name] = {"rule": dataclasses.asdict(rule), "n_data": int(inside(values, rule).size), "edges": list(edges)}
+        n_data = int(inside(values, rule).size)
+        record.setdefault(target.category, {})[target.variable.name] = {"rule": dataclasses.asdict(rule), "n_data": n_data, "edges": list(edges)}
+        logger.info(f"{channel_name}/{target.category}/{target.variable.name}: {len(edges) - 1} equal-data bins from {n_data} data events, edges {', '.join(f'{edge:.6g}' for edge in edges)}")
     return resolved, record
 
 

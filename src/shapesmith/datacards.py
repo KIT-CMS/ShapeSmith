@@ -7,12 +7,15 @@ file), `* autoMCStats 0`.
 """
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from pathlib import Path
 
 from shapesmith.histogram import NOMINAL_VARIATION, HistKey, Histogram, HistogramSet, is_part
 from shapesmith.model import NOMINAL, Analysis, Category, LnN
 from shapesmith.shapes import shape_name, write_shapes
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -56,6 +59,7 @@ def collect_bin(hset: HistogramSet, analysis: Analysis, channel_name: str, index
 
     nominal = {p: hset[key_of(p)] for p in (analysis.signal, *channel.backgrounds()) if key_of(p) in hset}
     if not nominal or key_of(channel.data()) not in hset:
+        logger.warning(f"{channel_name}/{category.name}/{variable}: no {'processes' if not nominal else 'data'}, bin {bin_name(analysis, channel_name, index)} left out")
         return None
     total = None
     for process, h in nominal.items():
@@ -63,9 +67,12 @@ def collect_bin(hset: HistogramSet, analysis: Analysis, channel_name: str, index
             total = h.copy() if total is None else total.add(h)
     edges = rebin_edges(total, min_background) if total is not None else list(hset[key_of(channel.data())].edges)
     result = Bin(channel_name, bin_name(analysis, channel_name, index), hset[key_of(channel.data())].rebin(edges), {}, {})
+    if len(edges) < len(hset[key_of(channel.data())].edges):
+        logger.debug(f"{result.name}: {len(hset[key_of(channel.data())].edges) - 1} -> {len(edges) - 1} bins (background >= {min_background:g} per bin)")
     for process, h in nominal.items():
         rebinned = h.rebin(edges)
         if rebinned.sum() <= 0.0:
+            logger.debug(f"{result.name}: {process} left out, rate {rebinned.sum():.3g}")
             continue
         result.processes[process] = rebinned
         keys = hset.select(channel=channel_name, category=category.name, process=process, region=NOMINAL, variable=variable)
@@ -145,7 +152,10 @@ def write_datacard(hset: HistogramSet, analysis: Analysis, channels: list[str], 
             entries += [(b.name, shape_name(process, variation), varied) for variation, varied in b.variations[process].items()]
     write_shapes(output_dir / "common" / f"htt_input_{analysis.era}.root", entries)
     card = output_dir / "combined.txt"
-    card.write_text(card_text(analysis, bins, systematics))
+    text = card_text(analysis, bins, systematics)
+    card.write_text(text)
+    nuisances = sum(1 for line in text.splitlines() if " lnN " in line or " shape " in line)
+    logger.info(f"{output_dir.name}: {len(bins)} bins, {sum(len(b.processes) for b in bins)} process columns, {nuisances} nuisances -> {card}")
     return card
 
 

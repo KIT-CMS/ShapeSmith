@@ -118,6 +118,7 @@ def plot_stack(hset: HistogramSet, analysis: Analysis, channel: str, category: s
         output_dir = output_dir / region
     output_dir.mkdir(parents=True, exist_ok=True)
     paths = [output_dir / f"{category}_{variable}.{ext}" for ext in ("pdf", "png")]
+    logger.debug(f"{channel}/{category}/{variable}#{region}: {len(groups)} background groups, signal x {scale:g} -> {output_dir}/{category}_{variable}.pdf/png")
     for path in paths:
         fig.savefig(path, bbox_inches="tight")
     plt.close(fig)
@@ -128,6 +129,7 @@ def run_plot(hset: HistogramSet, analysis: Analysis, channels: list[str], contro
     written = []
     for channel in channels:
         analysis.channel(channel).region(region)
+        before = len(written)
         if control:
             for variable in variables or list(analysis.channel(channel).variables):
                 written += plot_stack(hset, analysis, channel, INCLUSIVE, variable, output_dir, region=region, **options)
@@ -135,4 +137,5 @@ def run_plot(hset: HistogramSet, analysis: Analysis, channels: list[str], contro
             for cat in analysis.channel(channel).categories:
                 if category is None or cat.name == category:
                     written += plot_stack(hset, analysis, channel, cat.name, cat.variable.name, output_dir, region=region, **options)
+        logger.info(f"{channel}: {(len(written) - before) // 2} plots of region {region} in {Path(output_dir) / channel}")
     return written

@@ -100,5 +100,7 @@ def run_ml_export(config: RunConfig, analysis: Analysis, channels: list[str]) ->
             combined[tuple_column("Nominal", "class_weight")] = class_weights(combined[tuple_column("Nominal", "weight")].to_numpy().astype(np.float64), labels).astype(np.float32)
             path = directory / f"{fold}.feather"
             feather.write_feather(pa.Table.from_pandas(combined), path)  # pyarrow keeps the MultiIndex columns in its pandas metadata
+            logger.debug(f"{channel}/{fold}: {len(combined)} events -> {path}")
             written.append(path)
+        logger.info(f"{channel}: {len(parts)} fold files in {directory}")
     return written

@@ -98,6 +98,7 @@ def fit_or_failure(combine_config: CombineConfig | None, category: str, synced: 
     try:
         return fit_category(combine_config, category, synced, directory, era, grid)
     except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as error:
+        logger.error(f"{category}: CMSSW step failed: {error}")
         return {"sf": None, "es": None, "problems": [f"CMSSW step failed: {error}"]}
 
 
@@ -114,17 +115,21 @@ def measure(measurement: TauIdEsMeasurement, context: MeasureContext) -> Path:
     check(analysis, measurement)
     directory = context.output / f"{measurement.vsjet_wp}_{measurement.vsele_wp}"
     shapes = directory / "shapes.root"
+    logger.info(f"tau_id_es {measurement.vsjet_wp}/{measurement.vsele_wp}: histograms of {CHANNEL} and {CONTROL_CHANNEL} with {len(measurement.grid)} ES shifts -> {directory}")
     hset = run_hist(config, analysis, [CHANNEL, CONTROL_CHANNEL], False, None, True, None, shapes)
     run_estimates(hset, analysis, [CHANNEL, CONTROL_CHANNEL])
     hset.save(shapes)
     synced = write_synced(hset, analysis, directory / "synced")
+    logger.info(f"synced shapes: {synced}")
     categories = [c.name for c in analysis.channel(CHANNEL).categories]
     for category in categories:
         plots.plot_control(hset, analysis, category, directory / "plots" / "control" / category)
+    logger.info(f"fitting {len(categories)} categories, {max(1, config.workers)} at a time: {', '.join(categories)}")
     with ThreadPoolExecutor(max_workers=max(1, config.workers)) as pool:  # each category runs in its own CMSSW process
         fits = list(pool.map(lambda category: fit_or_failure(config.combine, category, synced, directory, analysis.era, measurement.grid), categories))
     for category, fit in zip(categories, fits):
         if fit["sf"] is not None:
+            logger.info(f"{category}: SF {_interval(fit['sf'])}, ES {_interval(fit['es'])}" + (f", problems: {'; '.join(fit['problems'])}" if fit["problems"] else ""))
             plot_category(directory, category, fit)
     record = {
         "vsjet_wp": measurement.vsjet_wp,
@@ -139,9 +144,14 @@ def measure(measurement: TauIdEsMeasurement, context: MeasureContext) -> Path:
     return directory
 
 
+def _interval(interval: dict) -> str:
+    return " ".join(f"{name}={value:.4g}" for name, value in interval.items() if isinstance(value, (int, float)))
+
+
 def merge(context: MeasureContext) -> Path:
     """The payload of every working-point combination measured below the output directory."""
     records = [json.loads(path.read_text()) for path in sorted(Path(context.output).glob("*/results.json"))]
+    logger.info(f"tau_id_es: merging {len(records)} working-point combinations from {context.output}")
     if not records:
         raise ValueError(f"tau_id_es: no results.json below {context.output}; run the measurement per working point first")
     problems = [f"{r['vsjet_wp']}_{r['vsele_wp']}/{category}: {problem}" for r in records for category, fit in r["categories"].items() for problem in fit["problems"]]

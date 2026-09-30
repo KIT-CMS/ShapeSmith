@@ -3,6 +3,7 @@ import textwrap
 import uproot
 from typer.testing import CliRunner
 
+from shapesmith import __version__
 from shapesmith.cli import app
 from shapesmith.testing import make_mini_dataset
 
@@ -76,3 +77,26 @@ def test_validate_reports_broken_analysis(tmp_path):
     config.write_text(config.read_text().replace("tests.mini_analysis:build", "tests.mini_analysis:no_such"))
     result = runner.invoke(app, ["validate", "-c", str(config)])
     assert result.exit_code != 0
+
+
+def test_commands_write_a_log_file(tmp_path):
+    config = _write_config(tmp_path)
+    _run("validate", "-c", str(config))
+    assert not (tmp_path / "out" / "logs").exists()  # validate only reports
+    _run("skim", "-c", str(config), "-s", "log_level=debug")
+    [log] = (tmp_path / "out" / "logs").glob("skim_*.log")
+    text = log.read_text()
+    assert f"shapesmith.cli: ShapeSmith {__version__} skim: {config}, overrides log_level=debug" in text
+    assert "log level DEBUG" in text and "shapesmith.skim: mt: samples 0 reused, 0 resumed" in text
+    assert "shapesmith.parallel: skim: " in text and "jobs done (100 %)" in text
+    assert any(" DEBUG " in line and "SpawnProcess" in line and "shapesmith.skim: mt/" in line for line in text.splitlines())  # from the workers
+    assert "shapesmith.cli: done in" in text
+
+
+def test_a_failing_command_logs_its_traceback(tmp_path):
+    config = _write_config(tmp_path)
+    result = runner.invoke(app, ["hist", "-c", str(config)])  # no skims yet
+    assert result.exit_code != 0
+    [log] = (tmp_path / "out" / "logs").glob("hist_*.log")
+    text = log.read_text()
+    assert "ERROR   MainProcess shapesmith.cli: failed after" in text and "SkimMissingError" in text and "Traceback" in text

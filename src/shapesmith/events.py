@@ -9,6 +9,7 @@ Event weight: (norm_weight * lumi) * product of the weights, with lumi only for 
 """
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from typing import Iterable
 
@@ -19,6 +20,8 @@ from shapesmith.config import RunConfig
 from shapesmith.expressions import columns_of, mask, product, shift
 from shapesmith.model import NOMINAL, Analysis, Channel, ColumnVariation, Process, Region, Variation, WeightVariation
 from shapesmith.store import SKIM_COLUMNS, read_skims, schema
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -71,4 +74,6 @@ def load(config: RunConfig, analysis: Analysis, query: Query, columns: Iterable[
     cuts, weights = selection
     frame = read_skims(config.skim_dir, channel.name, nicks, set(SKIM_COLUMNS) | columns_of(cuts + weights) | set(columns))
     selected = frame[mask(frame, cuts)].reset_index(drop=True)
+    variation = f" ({query.variation.name})" if query.variation is not None else ""
+    logger.debug(f"{query.channel}/{query.process}#{query.region}{variation}: {len(selected)} of {len(frame)} events selected")
     return Events(selected, event_weights(selected, weights, lumi(analysis, channel, process)))

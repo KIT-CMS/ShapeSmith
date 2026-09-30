@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 from dataclasses import dataclass
 
@@ -11,6 +12,8 @@ import uproot
 from shapesmith.config import NtupleConfig
 
 TREE = "ntuple"
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -70,6 +73,7 @@ def discover(ntuples: NtupleConfig, era: str, nick: str, channel: str, kind: str
     missing = [f"{directory}/{name}" for directory, names in zip(friend_dirs, friend_listings) for name in basenames if name not in names]
     if missing:
         raise FileNotFoundError("missing friend files:\n" + "\n".join(missing))
+    logger.debug(f"{channel}/{nick}: {len(basenames)} files in {join_url(ntuples.server, main_dir)}" + (f", {len(friend_dirs)} friends each" if friend_dirs else ""))
     return [
         NtupleFile(
             path=join_url(ntuples.server, f"{main_dir}/{name}"),

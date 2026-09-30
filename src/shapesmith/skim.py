@@ -14,6 +14,7 @@ friends contain the current ones and its Parquet schema holds the needed columns
 from __future__ import annotations
 
 import logging
+import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -21,12 +22,12 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from shapesmith import __version__
+from shapesmith import __version__, logs
 from shapesmith.config import RunConfig
 from shapesmith.events import select
 from shapesmith.expressions import columns_in, columns_of, mask, shift
 from shapesmith.model import NOMINAL_REGION, Analysis, Channel, ColumnVariation, Sample, WeightVariation, applies
-from shapesmith.ntuples import NtupleFile, discover, friend_bases, read_ntuple
+from shapesmith.ntuples import NtupleFile, discover, friend_bases, join_url, read_ntuple
 from shapesmith.parallel import run_jobs
 from shapesmith.store import SKIM_COLUMNS, manifest_path, read_manifest, schema, skim_path, write_manifest, write_skim
 
@@ -87,9 +88,11 @@ def check_shifts(channel: Channel, sample: Sample, columns: set[str], branches: 
 def skim_one(ntuple: NtupleFile, sample: Sample, channel: Channel, columns: set[str], out_path: Path, optional: set[str] = frozenset()) -> SkimResult:
     """Read one file, keep the events that pass the skim cuts under any variation and the sample cut, add the
     bookkeeping columns and write Parquet. Every column in `columns` must exist; `optional` ones may be absent."""
+    start = time.monotonic()
     variations = column_variations(channel, sample)
     shifted = {column + v.suffix for v in variations if v.suffix for column in columns}
     frame, metadata, branches = read_ntuple(ntuple, columns | shifted, set(optional) | shifted)
+    read = time.monotonic() - start
     check_shifts(channel, sample, columns, branches)
     n_in = len(frame)
     nominal = list(channel.skim.values())
@@ -108,6 +111,10 @@ def skim_one(ntuple: NtupleFile, sample: Sample, channel: Channel, columns: set[
     for column, kind in (("is_data", "data"), ("is_mc", "mc"), ("is_embedding", "embedding")):
         frame[column] = np.full(len(frame), sample.kind == kind, dtype=bool)
     write_skim(frame, out_path)
+    logger.debug(
+        f"{channel.name}/{sample.nick}/{ntuple.basename}: {n_in} -> {len(frame)} events, {len(frame.columns)} columns "
+        f"({len(shifted & set(frame.columns))} shifted), read in {logs.duration(read)}, done in {logs.duration(time.monotonic() - start)}"
+    )
     return SkimResult(sample.nick, ntuple.basename, n_in, len(frame), out_path, metadata)
 
 
@@ -181,8 +188,10 @@ def _plan(config: RunConfig, channel: Channel, sample: Sample, files: list[Ntupl
             return manifest, [], ", ".join(problems)
         completed = {name: record for name, record in previous.get("completed", {}).items() if name in {f.basename for f in files}}
         if all(ntuple.basename in completed and out.exists() for ntuple, out in outputs):
+            logger.debug(f"{channel.name}/{sample.nick}: stored skim of {len(files)} files reused")
             return {**previous, "completed": completed}, [], None
         if all(previous["contract"].get(name) == manifest["contract"].get(name) for name in ROW_FIELDS):
+            logger.debug(f"{channel.name}/{sample.nick}: resuming the stored skim, {len(completed)} of {len(files)} files done")
             manifest.update(metadata=previous.get("metadata", {}), completed=completed)
             columns |= stored_columns
             manifest["contract"]["required_columns"] = sorted(columns)
@@ -190,6 +199,7 @@ def _plan(config: RunConfig, channel: Channel, sample: Sample, files: list[Ntupl
             logger.info(f"{channel.name}/{sample.nick}: the stored skim holds more variations but is incomplete, skimming it again")
             stored_columns = set()
     jobs = [(ntuple, sample, channel, columns, out, stored_columns) for ntuple, out in outputs if not (ntuple.basename in manifest["completed"] and out.exists())]
+    logger.debug(f"{channel.name}/{sample.nick}: {len(jobs)} of {len(files)} files to skim, {len(columns)} columns" + (" (--force)" if force else ""))
     for ntuple, *_ in jobs:
         manifest["completed"].pop(ntuple.basename, None)  # its Parquet is gone: the record no longer counts
     return manifest, jobs, None
@@ -219,7 +229,11 @@ def run_skim(config: RunConfig, analysis: Analysis, channels: list[str] | None =
         chosen = select_samples(channel, samples)
         with ThreadPoolExecutor(max_workers=min(8, max(1, len(chosen)))) as listing:  # directory listings are latency bound
             discovered = list(listing.map(lambda s: discover(config.ntuples, config.era, s.nick, channel_name, s.kind), chosen))
+        logger.info(f"{channel_name}: {len(chosen)} samples, {sum(len(files) for files in discovered)} files in {join_url(config.ntuples.server, config.ntuples.base)}")
+        counts = dict.fromkeys(("reused", "resumed", "new", "empty", "pending"), 0)
         for sample, files in zip(chosen, discovered):
+            if not files:
+                logger.warning(f"{channel_name}/{sample.nick}: no ntuple files")
             manifest, pending, problem = _plan(config, channel, sample, files, force)
             if problem is not None:
                 incompatible.append(f"{channel_name}/{sample.nick}: {problem}")
@@ -227,17 +241,21 @@ def run_skim(config: RunConfig, analysis: Analysis, channels: list[str] | None =
             manifests[channel_name, sample.nick] = manifest
             results += [SkimResult(sample.nick, name, record["n_in"], record["n_out"], skim_path(config.skim_dir, channel_name, sample.nick, name), skipped=True) for name, record in manifest["completed"].items()]
             jobs += pending
+            counts["empty" if not files else "reused" if not pending else "resumed" if manifest["completed"] else "new"] += 1
+            counts["pending"] += len(pending)
+        logger.info(f"{channel_name}: samples {counts['reused']} reused, {counts['resumed']} resumed, {counts['new']} new, {counts['empty']} without files; {counts['pending']} files to skim")
     if samples and not manifests and not incompatible:
         raise ValueError(f"no sample matches {samples}")
     if incompatible:
         raise ValueError("incompatible skims (re-run `shapesmith skim --force --samples ...` for them):\n" + "\n".join(incompatible))
     for channel_name, nick in {(job[2].name, job[1].nick) for job in jobs}:
         _write_manifest(config, manifests[channel_name, nick])  # the contract is recorded before the first file is written
-    logger.info(f"skimming {len(jobs)} files with {config.workers} workers")
+    logger.info(f"skimming {len(jobs)} files with {config.workers} workers into {config.skim_dir}")
     failures = []
-    for job, result, error in run_jobs(_skim_job, jobs, config.workers):
+    for job, result, error in run_jobs(_skim_job, jobs, config.workers, label="skim"):
         if error is not None:  # collect, report all at the end
             failures.append(f"{job[0].path}: {error}")
+            logger.error(f"{job[2].name}/{job[1].nick}/{job[0].basename}: {error}")
             continue
         results.append(result)
         manifest = manifests[job[2].name, result.nick]
@@ -245,6 +263,9 @@ def run_skim(config: RunConfig, analysis: Analysis, channels: list[str] | None =
         if not manifest["metadata"]:
             manifest["metadata"] = result.metadata
         _write_manifest(config, manifest)
+    for channel_name in channels or config.channels:
+        done = [r for r in results if r.path.parent.parent.name == channel_name]  # <skim_dir>/<channel>/<nick>/<file>
+        logger.info(f"{channel_name}: {len(done)} files, {sum(r.n_in for r in done)} -> {sum(r.n_out for r in done)} events")
     if failures:
-        raise RuntimeError("skim failures:\n" + "\n".join(failures))
+        raise RuntimeError(f"{len(failures)} skim failures:\n" + "\n".join(failures))
     return results

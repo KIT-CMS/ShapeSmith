@@ -163,8 +163,25 @@ skim_dir: /ceph/USER/shapesmith/TAG
 output_dir: output/TAG
 ml_dir: /ceph/USER/shapesmith_ml/TAG
 workers: 16
+log_level: INFO                           # DEBUG | INFO | WARNING | ERROR
 combine: {cmssw_dir: /work/USER/CMSSW_14_1_9, scram_arch: el9_amd64_gcc12}
 ```
+
+## Logging
+
+`log_level` sets the level of ShapeSmith and of the analysis package; one run changes it with
+`-s log_level=DEBUG`. Other libraries (matplotlib, numexpr, uproot, ...) log from WARNING on.
+
+- Console: the messages, on stderr (stdout keeps the reports of `validate` and `inspect`).
+- Log file: every command but `validate` and `inspect` also writes
+  `<output_dir>/logs/<command>_<YYYYmmdd-HHMMSS>.log` with time, level, process and logger, and the
+  traceback of a failing command.
+- INFO: the run (versions, configuration, channels, workers), the analysis per channel, what every
+  stage does per channel, the progress of the parallel jobs (every tenth), the files written and
+  the duration. DEBUG adds every ntuple file, booking, estimate, datacard bin, fit and plot, and
+  the output of the CMSSW commands (at INFO it is shown only when they fail).
+- The worker processes log through the main process, so their messages reach the console and
+  the log file as well.
 
 ## Notes
 

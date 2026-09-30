@@ -4,12 +4,15 @@ from __future__ import annotations
 import hashlib
 import importlib
 import json
+import logging
 import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
 
 from shapesmith import __version__
 from shapesmith.config import RunConfig
+
+logger = logging.getLogger(__name__)
 
 
 def git_hash(path: Path) -> str | None:
@@ -42,4 +45,5 @@ def write_versions(config: RunConfig, analysis_name: str, directory: Path) -> Pa
     path = Path(directory) / "versions" / f"{analysis_name}.json"
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(record(config), indent=2))
+    logger.debug(f"versions recorded in {path}")
     return path
