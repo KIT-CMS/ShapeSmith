@@ -9,13 +9,15 @@ Output, below <output_dir>/tau_id_es/<era>/:
 - <vsjet>_<vsele>/: shapes.root (histograms and estimates), synced/ (MorphingTauID2017 inputs), fits/ (per
   category the cards, workspace, scan and singles fit), results.json, plots/;
 - DeepTau2018v2p5_id_es_embedding<era>UL.json.gz, written by --merge.
-A result with a problem (an interval at the fit range, a scan region at the scan boundary, a failed crossing) is an
-error: the run raises after writing results.json, and --merge refuses it.
+A result with a problem (an interval at the fit range, a scan region at the scan boundary, a failed crossing, a CMSSW
+step that failed or ran longer than STEP_TIMEOUT) is an error: the run raises after writing results.json, and
+--merge refuses it.
 """
 from __future__ import annotations
 
 import json
 import logging
+import subprocess
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -33,6 +35,7 @@ from shapesmith.measurements.tau_id_es.synced import write_synced
 from shapesmith.model import Analysis
 
 logger = logging.getLogger(__name__)
+STEP_TIMEOUT = 3600.0  # seconds per CMSSW step of a category; a singles fit can iterate without end
 
 
 @dataclass(frozen=True)
@@ -72,16 +75,24 @@ def fit_category(combine_config: CombineConfig | None, category: str, synced: Pa
     result and problems."""
     work_dir = Path(directory) / "fits"
     work_dir.mkdir(parents=True, exist_ok=True)
-    cmssw.run([f"{combine.morphing_command(category, synced, era, grid)} > morphing_{category}.log 2>&1"], combine_config, work_dir)
+    cmssw.run([f"{combine.morphing_command(category, synced, era, grid)} > morphing_{category}.log 2>&1"], combine_config, work_dir, STEP_TIMEOUT)
     cards = combine.card_dir(work_dir, category)
     combine.add_rate_parameters(cards, category)
-    cmssw.run([f"{combine.workspace_command(category)} > workspace.log 2>&1", f"{combine.scan_command(category, grid)} > scan.log 2>&1"], combine_config, cards)
+    cmssw.run([f"{combine.workspace_command(category)} > workspace.log 2>&1", f"{combine.scan_command(category, grid)} > scan.log 2>&1"], combine_config, cards, STEP_TIMEOUT)
     scan = combine.read_scan(combine.output_path(cards, f"scan_2D_{category}"), category)
     start, r_range, es_range, problems = combine.singles_inputs(scan, grid)
-    cmssw.run([f"{combine.singles_command(category, start, r_range, es_range)} > singles.log 2>&1", f"{combine.postfit_command(category)} > postfit.log 2>&1"], combine_config, cards)
+    cmssw.run([f"{combine.singles_command(category, start, r_range, es_range)} > singles.log 2>&1", f"{combine.postfit_command(category)} > postfit.log 2>&1"], combine_config, cards, STEP_TIMEOUT)
     sf, es = combine.read_singles(combine.output_path(cards, f"singles_{category}"), category)
     problems += combine.interval_problems("r", sf, r_range) + combine.interval_problems("ES", es, es_range)
     return {"sf": asdict(sf), "es": asdict(es), "start": start, "ranges": {"r": r_range, "ES": es_range}, "problems": problems}
+
+
+def fit_or_failure(combine_config: CombineConfig | None, category: str, synced: Path, directory: Path, era: str, grid: tuple[int, ...]) -> dict:
+    """fit_category, or a result without values whose problem is the failed CMSSW step (see its log)."""
+    try:
+        return fit_category(combine_config, category, synced, directory, era, grid)
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as error:
+        return {"sf": None, "es": None, "problems": [f"CMSSW step failed: {error}"]}
 
 
 def plot_category(directory: Path, category: str, fit: dict) -> None:
@@ -105,9 +116,10 @@ def measure(measurement: TauIdEsMeasurement, context: MeasureContext) -> Path:
     for category in categories:
         plots.plot_control(hset, analysis, category, directory / "plots" / "control" / category)
     with ThreadPoolExecutor(max_workers=max(1, config.workers)) as pool:  # each category runs in its own CMSSW process
-        fits = list(pool.map(lambda category: fit_category(config.combine, category, synced, directory, analysis.era, measurement.grid), categories))
+        fits = list(pool.map(lambda category: fit_or_failure(config.combine, category, synced, directory, analysis.era, measurement.grid), categories))
     for category, fit in zip(categories, fits):
-        plot_category(directory, category, fit)
+        if fit["sf"] is not None:
+            plot_category(directory, category, fit)
     record = {
         "vsjet_wp": measurement.vsjet_wp,
         "vsele_wp": measurement.vsele_wp,
@@ -123,17 +135,14 @@ def measure(measurement: TauIdEsMeasurement, context: MeasureContext) -> Path:
 
 def merge(context: MeasureContext) -> Path:
     """The payload of every working-point combination measured below the output directory."""
-    results, sources, problems = {}, {}, []
-    for path in sorted(Path(context.output).glob("*/results.json")):
-        record = json.loads(path.read_text())
-        pair = (record["vsjet_wp"], record["vsele_wp"])
-        results[pair] = {category: (Interval(**fit["sf"]), Interval(**fit["es"])) for category, fit in record["categories"].items()}
-        sources["_".join(pair)] = record["provenance"]
-        problems += [f"{'_'.join(pair)}/{category}: {problem}" for category, fit in record["categories"].items() for problem in fit["problems"]]
-    if not results:
+    records = [json.loads(path.read_text()) for path in sorted(Path(context.output).glob("*/results.json"))]
+    if not records:
         raise ValueError(f"tau_id_es: no results.json below {context.output}; run the measurement per working point first")
+    problems = [f"{r['vsjet_wp']}_{r['vsele_wp']}/{category}: {problem}" for r in records for category, fit in r["categories"].items() for problem in fit["problems"]]
     if problems:
         raise ValueError("tau_id_es: results with problems, not merged:\n" + "\n".join(problems))
+    results = {(r["vsjet_wp"], r["vsele_wp"]): {category: (Interval(**fit["sf"]), Interval(**fit["es"])) for category, fit in r["categories"].items()} for r in records}
+    sources = {f"{r['vsjet_wp']}_{r['vsele_wp']}": r["provenance"] for r in records}
     cset = correction_set(results, context.provenance(working_points=sorted(sources), measurements=sources))
     path = payloads.write(cset, Path(context.output) / payload_name(context.analysis.era))
     logger.info(f"payload of {len(results)} working-point combinations: {path}")

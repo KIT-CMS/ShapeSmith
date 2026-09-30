@@ -1,12 +1,14 @@
 """Run commands inside a CMSSW environment (combine, CombineHarvester) in a bash subshell.
 
 The subshell starts from a clean environment: the Python environment ShapeSmith runs in (e.g. an LCG view) would
-otherwise shadow CMSSW's libraries and Python packages.
+otherwise shadow CMSSW's libraries and Python packages. With a timeout, the whole process group of the subshell is
+killed when it expires (a fit can iterate without end).
 """
 from __future__ import annotations
 
 import logging
 import os
+import signal
 import subprocess
 from pathlib import Path
 from typing import Sequence
@@ -38,8 +40,18 @@ def clean_environment() -> dict[str, str]:
     return {"PATH": "/usr/bin:/bin", **{name: os.environ[name] for name in KEPT_VARIABLES if name in os.environ}}
 
 
-def run(commands: Sequence[str], combine: CombineConfig | None, cwd: Path) -> None:
+def run(commands: Sequence[str], combine: CombineConfig | None, cwd: Path, timeout: float | None = None) -> None:
+    """Raise CalledProcessError on a failing command, TimeoutExpired after `timeout` seconds."""
     if combine is None:
         raise ValueError("the run configuration needs `combine` (cmssw_dir) to run CMSSW commands")
     logger.info(f"running {len(commands)} CMSSW commands in {cwd}")
-    subprocess.run(["bash", "-c", script(combine, cwd, commands)], check=True, env=clean_environment())
+    arguments = ["bash", "-c", script(combine, cwd, commands)]
+    process = subprocess.Popen(arguments, env=clean_environment(), start_new_session=True)
+    try:
+        code = process.wait(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        os.killpg(process.pid, signal.SIGKILL)
+        process.wait()
+        raise
+    if code:
+        raise subprocess.CalledProcessError(code, arguments)

@@ -188,3 +188,13 @@ def test_plots_are_written(tmp_path):
         for name, value in (("data_obs", 3.0), ("EMB_DM0", 2.0), ("ZL", 1.0), ("TotalProcs", 3.0)):
             f[f"htt_mt_7_Run2018_postfit/{name}"] = _h(value).to_root(name)
     assert [p.name for p in plots.plot_postfit(tmp_path / "postfit_shapes.root", tmp_path / "postfit")] == ["htt_mt_7_Run2018_postfit.pdf", "htt_mt_7_Run2018_postfit.png"]
+
+
+def test_merge_refuses_a_failed_category(tmp_path, mini_run):
+    config, analysis = mini_run
+    _record(tmp_path / "Tight_VVLoose", "Tight", "VVLoose")
+    record = json.loads((tmp_path / "Tight_VVLoose" / "results.json").read_text())
+    record["categories"]["DM0"] = {"sf": None, "es": None, "problems": ["CMSSW step failed: timeout"]}
+    (tmp_path / "Tight_VVLoose" / "results.json").write_text(json.dumps(record))
+    with pytest.raises(ValueError, match="DM0: CMSSW step failed"):
+        merge(MeasureContext(config, analysis, ["mt"], tmp_path, merge=True))

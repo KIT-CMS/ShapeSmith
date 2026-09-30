@@ -1,3 +1,5 @@
+import subprocess
+import time
 from pathlib import Path
 
 import numpy as np
@@ -30,6 +32,17 @@ def test_cmssw_commands_run_in_a_clean_environment(monkeypatch):
     monkeypatch.setenv("HOME", "/home/someone")
     environment = cmssw.clean_environment()
     assert "PYTHONPATH" not in environment and environment["HOME"] == "/home/someone" and environment["PATH"] == "/usr/bin:/bin"
+
+
+def test_cmssw_run_stops_the_commands_at_the_timeout(tmp_path, monkeypatch):
+    monkeypatch.setattr(cmssw, "script", lambda combine, cwd, commands: "; ".join([f"cd {cwd}", *commands]))  # no CMSSW needed
+    with pytest.raises(subprocess.TimeoutExpired):
+        cmssw.run(["sleep 30 & echo $! > child", "wait"], CombineConfig(cmssw_dir="/unused"), tmp_path, timeout=1)
+    child = int((tmp_path / "child").read_text())
+    time.sleep(0.2)
+    assert not Path(f"/proc/{child}").exists() or "Z" in Path(f"/proc/{child}/stat").read_text().split()[2]  # killed with its group
+    with pytest.raises(subprocess.CalledProcessError):
+        cmssw.run(["exit 3"], CombineConfig(cmssw_dir="/unused"), tmp_path)
 
 
 def test_cmssw_run_needs_a_combine_configuration(tmp_path):
