@@ -21,6 +21,7 @@ from shapesmith.measurements.tau_id_es.grid import CATEGORIES
 DECAY_MODES = (0, 1, 10, 11)
 OTHER_GENMATCH = (0, 1, 2, 3, 4, 6)
 WORKING_POINTS = ("VVVLoose", "VVLoose", "VLoose", "Loose", "Medium", "Tight", "VTight", "VVTight")
+WP_ORDER = {wp: index for index, wp in enumerate(WORKING_POINTS)}
 MAX_PT = 100000.0  # the upper edge of the per-decay-mode bins
 TAU_ID = "DeepTau2018v2p5"
 
@@ -56,18 +57,16 @@ def _by_decay_mode(results: Mapping[str, tuple[Interval, Interval]], index: int,
 
 def _genuine_taus(results: Results, node: Callable[[Mapping[str, tuple[Interval, Interval]]], cs.Category]) -> cs.Category:
     """1.0 unless genmatch is 5; then per working point, vsEle working point and decay mode."""
-    order = {wp: index for index, wp in enumerate(WORKING_POINTS)}
     by_wp: dict[str, dict] = {}
-    for vsjet, vsele in sorted(results, key=lambda pair: (order[pair[0]], order[pair[1]])):
+    for vsjet, vsele in sorted(results, key=lambda pair: (WP_ORDER[pair[0]], WP_ORDER[pair[1]])):
         by_wp.setdefault(vsjet, {})[vsele] = node(results[vsjet, vsele])
     wps = payloads.category("wp", {vsjet: payloads.category("wp_VSe", by_vsele) for vsjet, by_vsele in by_wp.items()})
     return payloads.category("genmatch", {**{genmatch: 1.0 for genmatch in OTHER_GENMATCH}, 5: wps})
 
 
 def _inputs(results: Results, *names: str) -> list[cs.Variable]:
-    order = {wp: index for index, wp in enumerate(WORKING_POINTS)}
-    vsjet = ",".join(sorted({pair[0] for pair in results}, key=order.get))
-    vsele = ",".join(sorted({pair[1] for pair in results}, key=order.get))
+    vsjet = ",".join(sorted({pair[0] for pair in results}, key=WP_ORDER.get))
+    vsele = ",".join(sorted({pair[1] for pair in results}, key=WP_ORDER.get))
     known = {
         "pt": ("real", "Reconstructed tau pT"),
         "eta": ("real", "Reconstructed tau eta"),
