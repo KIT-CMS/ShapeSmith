@@ -18,6 +18,11 @@ import numpy as np
 Node = cs.Binning | cs.Category | cs.Transform | float
 
 
+def _leaf(value):
+    """A number (also a numpy scalar) as a plain float; a node unchanged."""
+    return float(value) if isinstance(value, (int, float, np.number)) else value
+
+
 def variable(name: str, type: str = "real", description: str | None = None) -> cs.Variable:
     fields = {"description": description} if description is not None else {}
     return cs.Variable(name=name, type=type, **fields)
@@ -25,13 +30,12 @@ def variable(name: str, type: str = "real", description: str | None = None) -> c
 
 def binning(input: str, edges: Sequence[float], content: Sequence[Node], flow: str | Node = "clamp") -> cs.Binning:
     """A binned node; numbers (also numpy arrays) become plain floats."""
-    content = [float(c) if isinstance(c, (int, float, np.number)) else c for c in content]
-    return cs.Binning(nodetype="binning", input=input, edges=[float(e) for e in edges], content=content, flow=flow)
+    return cs.Binning(nodetype="binning", input=input, edges=[float(e) for e in edges], content=[_leaf(c) for c in content], flow=flow)
 
 
 def category(input: str, content: Mapping[str | int, Node], default: Node | None = None) -> cs.Category:
-    items = [cs.CategoryItem(key=key, value=float(value) if isinstance(value, (int, float, np.number)) else value) for key, value in content.items()]
-    fields = {"default": float(default) if isinstance(default, (int, float, np.number)) else default} if default is not None else {}
+    items = [cs.CategoryItem(key=key, value=_leaf(value)) for key, value in content.items()]
+    fields = {"default": _leaf(default)} if default is not None else {}
     return cs.Category(nodetype="category", input=input, content=items, **fields)
 
 
