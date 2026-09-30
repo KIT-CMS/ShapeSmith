@@ -250,7 +250,7 @@ class Analysis:
     name: str
     era: str
     lumi_pb: float
-    signal: str  # the signal process of datacards and plots
+    signal: str | None  # the signal process of datacards and plots (None: a measurement analysis without one)
     channels: Mapping[str, Channel]
     lnn: tuple[LnN, ...] = ()
     style: Style | None = None

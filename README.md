@@ -114,6 +114,18 @@ it with a `MeasureContext` (configuration, analysis, channels, output directory,
   (`tests/reference/make_smoothing_reference.py`).
 - `shapesmith.cmssw`: run commands in a CMSSW environment (`combine.cmssw_dir`).
 
+`shapesmith.measurements.fake_factors` is the fake-factor measurement (the SM method of
+TauFakeFactors): an analysis sets `Analysis.measurement = FakeFactorMeasurement(legs)`, built from
+its region and process names and per-channel tables (`Binned`, `Fit`, `Split`, `ProcessFF`,
+`DrSr`, `DataScale`, `Fractions`, `Leg`). `shapesmith measure` writes `fake_factors_<ch>.json.gz`
+and `FF_corrections_<ch>.json.gz` (the conventions of the CROWN fake-factor friend), the
+intermediate DR->SR payload, `measurement_<ch>.json` (every ratio, fit input and result) and plots;
+`--suggest-binning` prints equipopulated edges instead. The histograms (`hist.py`: centre of mass,
+MC-suppressed errors), fits (`fit.py`: bands, SystMCShift, the compatibility-with-1 reset,
+sparsify) and the kernel are checked against ROOT and TauFakeFactors
+(`tests/reference/make_fake_factor_reference.py`); the normative algorithm is the "Algorithm
+reference" of the design spec.
+
 ## Run configuration
 
 ```yaml
