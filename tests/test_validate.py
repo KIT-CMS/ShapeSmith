@@ -122,3 +122,16 @@ def test_validate_checks_variation_sums():
         with pytest.raises(model.AnalysisError, match=problem):
             validate(_with_channel(analysis, variations=channel.variations + parts, estimators=(estimator,)))
 
+
+def test_validate_checks_equal_data_binning():
+    analysis = build()
+    channel = analysis.channel("mt")
+    good = model.Variable("m_vis", "m_vis", model.EqualData(10, 30.0, 160.0))
+    validate(_with_channel(analysis, categories=(model.Category("sig", "cls == 0", good),)))
+    bad = model.Variable("m_vis", "m_vis", model.EqualData(0, 160.0, 30.0))
+    with pytest.raises(model.AnalysisError) as error:
+        validate(_with_channel(analysis, categories=(model.Category("sig", "cls == 0", bad),)))
+    assert "equal-data binning needs n_bins >= 1" in str(error.value) and "equal-data binning needs low < high" in str(error.value)
+    no_data = tuple(p for p in channel.processes if p.role != "data")
+    with pytest.raises(model.AnalysisError, match="variable m_vis: equal-data binning needs a data process"):
+        validate(_with_channel(analysis, processes=no_data, estimators=(), variables={"m_vis": good}))

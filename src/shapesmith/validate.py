@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from shapesmith.histogram import part_of
-from shapesmith.model import NOMINAL, ROLES, SAMPLE_KINDS, Analysis, AnalysisError, Channel, ColumnVariation, DataMinus, TemplateShift, VariationSum, WeightVariation
+from shapesmith.model import NOMINAL, ROLES, SAMPLE_KINDS, Analysis, AnalysisError, Channel, ColumnVariation, DataMinus, EqualData, TemplateShift, VariationSum, WeightVariation
 
 
 def _duplicates(what: str, names: list[str]) -> list[str]:
@@ -93,11 +93,26 @@ def _estimator_problems(channel: Channel, region_names: set[str]) -> list[str]:
     return problems
 
 
+def _binning_problems(channel: Channel) -> list[str]:
+    problems = []
+    for variable in [c.variable for c in channel.categories] + list(channel.variables.values()):
+        rule = variable.edges
+        if not isinstance(rule, EqualData):
+            continue
+        if rule.n_bins < 1:
+            problems.append(f"variable {variable.name}: equal-data binning needs n_bins >= 1")
+        if not rule.low < rule.high:
+            problems.append(f"variable {variable.name}: equal-data binning needs low < high")
+        if not any(p.role == "data" for p in channel.processes):
+            problems.append(f"variable {variable.name}: equal-data binning needs a data process")
+    return problems
+
+
 def channel_problems(channel: Channel) -> list[str]:
     region_names = {NOMINAL, *(r.name for r in channel.regions)}
     problems = _process_problems(channel) + _region_problems(channel)
     problems += _duplicates("category", [c.name for c in channel.categories])
-    problems += _variation_problems(channel, region_names) + _estimator_problems(channel, region_names)
+    problems += _variation_problems(channel, region_names) + _estimator_problems(channel, region_names) + _binning_problems(channel)
     return [f"channel {channel.name}: {problem}" for problem in problems]
 
 

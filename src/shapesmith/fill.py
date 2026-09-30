@@ -14,11 +14,12 @@ from typing import NamedTuple
 
 import numpy as np
 
+from shapesmith.binning import RECORD, resolve, write_record
 from shapesmith.config import RunConfig
 from shapesmith.events import event_weights, lumi, select
 from shapesmith.expressions import columns_of, evaluate, mask, shift
 from shapesmith.histogram import INCLUSIVE, NOMINAL_VARIATION, HistKey, Histogram, HistogramSet
-from shapesmith.model import ABCD, NOMINAL, Analysis, Channel, ColumnVariation, DataMinus, Process, Variable, Variation, applies
+from shapesmith.model import ABCD, NOMINAL, Analysis, Channel, ColumnVariation, DataMinus, EqualData, Process, Variable, Variation, applies
 from shapesmith.parallel import run_jobs
 from shapesmith.store import SKIM_COLUMNS, read_skims, schema
 
@@ -126,6 +127,9 @@ def plan_booking(channel: Channel, booking: Booking, targets_: list[Target], ava
 
 def fill_booking(config: RunConfig, analysis: Analysis, channel_name: str, booking: Booking, targets_: list[Target]) -> dict[HistKey, Histogram]:
     """All histograms of one booking, from one frame of the process's skims."""
+    unresolved = [t.variable.name for t in targets_ if isinstance(t.variable.edges, EqualData)]
+    if unresolved:
+        raise ValueError(f"{channel_name}: the equal-data binning of {', '.join(unresolved)} is not resolved (fill through run_hist)")
     channel = analysis.channel(channel_name)
     process = booking.process
     nicks = [s.nick for s in channel.samples_of(process.group)]
@@ -159,12 +163,13 @@ def run_hist(config: RunConfig, analysis: Analysis, channels: list[str] | None, 
     """Fill every booked histogram of the requested channels into `output` (+ .json index).
 
     The requested scopes (channel, process, region, category, variable) are always filled; histograms of other
-    scopes already in `output` are kept."""
+    scopes already in `output` are kept. The edges of EqualData variables are computed from the data first and
+    recorded in binning.json next to `output`."""
     output = Path(output)
-    jobs, scopes = [], set()
+    jobs, scopes, record = [], set(), {}
     for channel_name in channels or config.channels:
         channel = analysis.channel(channel_name)
-        targets_ = targets(channel, control, variables)
+        targets_, record[channel_name] = resolve(config, analysis, channel_name, targets(channel, control, variables))
         for booking in bookings(channel, systematics, regions):
             if processes and booking.process.name not in processes:
                 continue
@@ -181,4 +186,7 @@ def run_hist(config: RunConfig, analysis: Analysis, channels: list[str] | None, 
             raise RuntimeError(f"{job[2]}/{job[3].process.name}: {error}") from error
         hset.update(result)
     hset.save(output)
+    record = {channel: entries for channel, entries in record.items() if entries}
+    if record:
+        write_record(output.parent / RECORD, record)
     return hset

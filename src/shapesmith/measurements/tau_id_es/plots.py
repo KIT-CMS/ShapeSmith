@@ -89,7 +89,9 @@ def plot_control(hset: HistogramSet, analysis: Analysis, category: str, path: Pa
         return hset.get(HistKey(CHANNEL, category, process, NOMINAL, variation, variable.name))
 
     backgrounds = [(name, h) for name in channel.backgrounds() if (h := get(name)) is not None]
-    edges, widths = np.asarray(variable.edges), np.diff(variable.edges)
+    data = get(channel.data())
+    edges = data.edges  # those of the filled histograms: an EqualData variable of the analysis carries no numbers
+    widths = np.diff(edges)
     total = np.sum([h.values for _, h in backgrounds], axis=0)
     signal = get(SIGNAL)
     fig, ax = plt.subplots(figsize=(10, 8))
@@ -98,7 +100,6 @@ def plot_control(hset: HistogramSet, analysis: Analysis, category: str, path: Pa
         shifted = get(SIGNAL, grid_name(shift))
         if shifted is not None:
             hep.histplot((total - signal.values + shifted.values) / widths, bins=edges, histtype="step", linewidth=2, label=f"ES {shift / 10:+.1f} %", ax=ax)
-    data = get(channel.data())
     hep.histplot(data.values / widths, bins=edges, yerr=np.sqrt(data.variances) / widths, histtype="errorbar", color="black", label="Data", ax=ax)
     ax.set_ylabel("dN / dm$_{vis}$ [1/GeV]")
     ax.set_xlabel(r"$m_{vis}$ [GeV]")
