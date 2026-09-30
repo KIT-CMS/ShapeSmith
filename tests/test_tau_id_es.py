@@ -10,7 +10,7 @@ from shapesmith import payloads
 from shapesmith.histogram import HistKey, Histogram, HistogramSet
 from shapesmith.measurements import MeasureContext
 from shapesmith.measurements.tau_id_es import TauIdEsMeasurement, check, combine, merge, plots
-from shapesmith.measurements.tau_id_es.combine import Interval, Scan
+from shapesmith.measurements.tau_id_es.combine import Interval, Profile, Scan
 from shapesmith.measurements.tau_id_es.grid import CATEGORIES, factor, grid, grid_name, mass, shift_of
 from shapesmith.measurements.tau_id_es.payload import correction_set
 from shapesmith.measurements.tau_id_es.synced import shapes_path, signal_name, write_synced
@@ -92,6 +92,10 @@ def test_commands_have_the_predecessor_options(tmp_path):
                                                 " --PO \"map=^.*/EMB_DM0:r_EMB_DM0[1,0.1,2.9]\"")
     scan = combine.scan_command("DM0", GRID)
     assert "--setParameterRanges r_EMB_DM0=0.11,2.89:ES_DM0=-19.9,19.9" in scan and "--points=289 --algo grid" in scan
+    closeup = combine.closeup_command("DM0", "ES_DM0", (0.9, -1.5), (0.6, 1.2), (-10.0, 6.0))
+    assert closeup.startswith("combineTool.py -M MultiDimFit -n .closeup_ES_DM0 -d workspace.root --setParameters ES_DM0=-1.5,r_EMB_DM0=0.9"
+                              " --setParameterRanges r_EMB_DM0=0.6,1.2:ES_DM0=-10.0,6.0")
+    assert closeup.endswith("--redefineSignalPOIs ES_DM0 --algo grid -m 125 --cminDefaultMinimizerStrategy 0 --floatOtherPOIs=1 --points=17 --alignEdges=1")
     singles = combine.singles_command("DM0", (0.9, -1.5), (0.7, 1.1), (-8.0, 4.0))
     assert "--setParameters ES_DM0=-1.5,r_EMB_DM0=0.9 --setParameterRanges r_EMB_DM0=0.7,1.1:ES_DM0=-8.0,4.0" in singles
     assert "--algo singles" in singles and "--cminFallbackAlgo Minuit2,Migrad,0:0.001,Minuit2,Migrad,0:0.01" in singles
@@ -122,19 +126,35 @@ def test_read_singles_and_its_problems(tmp_path):
     assert "no interval" in combine.interval_problems("ES", Interval(1.0, 1.0, 2.0), (-5.0, 5.0))[0]
 
 
-def _scan(best=(0.9, -2.0), sigma=(0.05, 2.0)):
+def _scan(best=(0.9, -2.0), sigma=(0.2, 5.0)):
     r, es = np.meshgrid(np.linspace(0.11, 2.89, 17), np.linspace(-19.9, 19.9, 17))
     dnll = 0.5 * (((r - best[0]) / sigma[0]) ** 2 + ((es - best[1]) / sigma[1]) ** 2)
-    return Scan(best, r.ravel(), es.ravel(), dnll.ravel())
+    return Scan(r.ravel(), es.ravel(), dnll.ravel())
 
 
-def test_singles_inputs_from_the_scan():
-    start, r_range, es_range, problems = combine.singles_inputs(_scan(sigma=(0.2, 5.0)), GRID)
-    assert start == (0.9, -2.0) and problems == []
-    assert r_range[0] < 0.9 - 0.2 and r_range[1] > 0.9 + 0.2 and es_range[0] < -7.0 and es_range[1] > 3.0  # the 1 sigma interval inside
-    lost = dataclasses.replace(_scan(sigma=(0.2, 5.0)), best=(0.11, -19.9))  # the scan's initial fit ended in a corner
-    assert combine.singles_inputs(lost, GRID)[0] == pytest.approx((0.97875, -2.4875))  # the lowest grid point
-    assert combine.singles_inputs(_scan(best=(0.9, 18.0), sigma=(0.2, 5.0)), GRID)[3] == ["the ES scan region reaches the scan boundary"]
+def test_profile_intervals_as_the_predecessor():
+    profile = Profile.of(np.array([4.0, 0.0, 1.0, 2.0, 3.0, np.nan]), np.array([6.0, 5.0, 1.0, 0.0, 2.0, np.inf]))
+    assert profile.values.tolist() == [0.0, 1.0, 2.0, 3.0, 4.0] and profile.minimum == 2.0
+    assert profile.crossings(3.09) == pytest.approx((0.4775, 3.2725))  # linear between the grid points
+    assert profile.window(0.1, (0.4, 10.0)) == pytest.approx((0.4, 3.3725))  # widened by the margin, within the bounds
+    outermost = Profile.of(np.arange(6.0), np.array([5.0, 2.0, 4.0, 0.0, 1.0, 7.0]))
+    assert outermost.crossings(3.09)[0] == pytest.approx(1 - 1.09 / 3)
+    no_crossing = Profile.of(np.arange(3.0), np.array([1.0, -0.5, 1.0]))  # a grid point below the fit
+    assert no_crossing.dnll.tolist() == [1.5, 0.0, 1.5] and no_crossing.window(0.1, (-5.0, 5.0)) == pytest.approx((-0.1, 2.1))
+
+
+def test_scan_profiles_and_the_inputs_of_the_next_steps():
+    small = Scan(np.array([1.0, 2.0, 1.0, 2.0]), np.array([0.0, 0.0, 5.0, 5.0]), np.array([0.5, 3.0, 1.0, np.nan]))
+    assert small.profile(0).dnll.tolist() == [0.5, 3.0] and small.profile(1).dnll.tolist() == [0.5, 1.0]  # the lowest over the other POI
+    scan = _scan()
+    start, r_range, es_range = combine.closeup_inputs(scan, GRID)
+    assert start == pytest.approx((0.97875, -2.4875))  # the lowest grid point
+    two_sigma = 0.2 * np.sqrt(6.18 - 2 * scan.profile(0).dnll.min())
+    assert r_range == pytest.approx((0.9 - two_sigma - 0.2, 0.9 + two_sigma + 0.2), abs=0.01)  # interpolated on the grid, plus the margin
+    assert combine.closeup_inputs(_scan(best=(0.9, 18.0)), GRID)[2][1] == 19.9  # no crossing: the scan end, within the scan range
+    closeups = (Profile.of(np.linspace(0.6, 1.2, 17), 0.5 * ((np.linspace(0.6, 1.2, 17) - 0.9) / 0.1) ** 2), scan.profile(1))
+    start, r_range, _ = combine.singles_inputs(closeups, GRID)
+    assert start[0] == pytest.approx(0.9) and r_range == pytest.approx((0.9 - 0.2486 - 0.05, 0.9 + 0.2486 + 0.05), abs=2e-3)
 
 
 def _results(offset=0.0):
@@ -178,7 +198,7 @@ def test_merge_writes_the_payload_of_every_working_point(tmp_path, mini_run):
 
 
 def test_plots_are_written(tmp_path):
-    scan = _scan(sigma=(0.2, 5.0))
+    scan = _scan()
     assert plots.plot_scan(scan, Interval(0.9, 0.7, 1.1), Interval(-2.0, -7.0, 3.0), "DM0", tmp_path / "scan")[0].exists()
     hset = HistogramSet()
     for process, variation, value in (("data", "Nominal", 3.0), ("EMB", "Nominal", 2.0), ("EMB", "es-2", 1.8), ("ZL", "Nominal", 1.0)):

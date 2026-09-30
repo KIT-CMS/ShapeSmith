@@ -7,11 +7,10 @@ the result is the singles fit. `--merge` combines the runs into the correctionli
 
 Output, below <output_dir>/tau_id_es/<era>/:
 - <vsjet>_<vsele>/: shapes.root (histograms and estimates), synced/ (MorphingTauID2017 inputs), fits/ (per
-  category the cards, workspace, scan and singles fit), results.json, plots/;
+  category the cards, workspace, scans and singles fit), results.json, plots/;
 - DeepTau2018v2p5_id_es_embedding<era>UL.json.gz, written by --merge.
-A result with a problem (an interval at the fit range, a scan region at the scan boundary, a failed crossing, a CMSSW
-step that failed or ran longer than STEP_TIMEOUT) is an error: the run raises after writing results.json, and
---merge refuses it.
+A result with a problem (an interval at the fit range, a failed crossing, a CMSSW step that failed or ran longer than
+STEP_TIMEOUT) is an error: the run raises after writing results.json, and --merge refuses it.
 """
 from __future__ import annotations
 
@@ -71,8 +70,8 @@ def check(analysis: Analysis, measurement: TauIdEsMeasurement) -> None:
 
 
 def fit_category(combine_config: CombineConfig | None, category: str, synced: Path, directory: Path, era: str, grid: tuple[int, ...]) -> dict:
-    """Datacards, workspace, 2D scan, singles fit and postfit shapes of one category below `directory`/fits; its
-    result and problems."""
+    """Datacards, workspace, 2D scan, close-up scans, singles fit and postfit shapes of one category below
+    `directory`/fits; its result and problems."""
     work_dir = Path(directory) / "fits"
     work_dir.mkdir(parents=True, exist_ok=True)
     cmssw.run([f"{combine.morphing_command(category, synced, era, grid)} > morphing_{category}.log 2>&1"], combine_config, work_dir, STEP_TIMEOUT)
@@ -80,11 +79,18 @@ def fit_category(combine_config: CombineConfig | None, category: str, synced: Pa
     combine.add_rate_parameters(cards, category)
     cmssw.run([f"{combine.workspace_command(category)} > workspace.log 2>&1", f"{combine.scan_command(category, grid)} > scan.log 2>&1"], combine_config, cards, STEP_TIMEOUT)
     scan = combine.read_scan(combine.output_path(cards, f"scan_2D_{category}"), category)
-    start, r_range, es_range, problems = combine.singles_inputs(scan, grid)
+    closeup = combine.closeup_inputs(scan, grid)
+    cmssw.run([f"{combine.closeup_command(category, poi, *closeup)} > closeup_{poi}.log 2>&1" for poi in combine.pois(category)], combine_config, cards, STEP_TIMEOUT)
+    profiles = tuple(combine.read_profile(combine.output_path(cards, f"closeup_{poi}"), poi) for poi in combine.pois(category))
+    start, r_range, es_range = combine.singles_inputs(profiles, grid)
     cmssw.run([f"{combine.singles_command(category, start, r_range, es_range)} > singles.log 2>&1", f"{combine.postfit_command(category)} > postfit.log 2>&1"], combine_config, cards, STEP_TIMEOUT)
     sf, es = combine.read_singles(combine.output_path(cards, f"singles_{category}"), category)
-    problems += combine.interval_problems("r", sf, r_range) + combine.interval_problems("ES", es, es_range)
-    return {"sf": asdict(sf), "es": asdict(es), "start": start, "ranges": {"r": r_range, "ES": es_range}, "problems": problems}
+    problems = combine.interval_problems("r", sf, r_range) + combine.interval_problems("ES", es, es_range)
+    return {"sf": asdict(sf), "es": asdict(es), **_inputs(start, r_range, es_range), "closeup": _inputs(*closeup), "problems": problems}
+
+
+def _inputs(start: tuple[float, float], r_range: tuple[float, float], es_range: tuple[float, float]) -> dict:
+    return {"start": start, "ranges": {"r": r_range, "ES": es_range}}
 
 
 def fit_or_failure(combine_config: CombineConfig | None, category: str, synced: Path, directory: Path, era: str, grid: tuple[int, ...]) -> dict:

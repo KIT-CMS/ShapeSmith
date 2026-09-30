@@ -112,10 +112,12 @@ the results of earlier runs into one payload). Measurements:
 - `shapesmith.measurements.tau_id_es`: tau-ID scale factor and energy scale of embedded taus, the
   chain of smhtt_ul `tauID_SFs_dev`. One run per working-point combination fills the mt channel
   and the mm control region, writes the shapes in the input format of MorphingTauID2017 and runs
-  per category in CMSSW the datacards, T2W, a 2D likelihood scan and the MultiDimFit singles fit,
-  the result (`results.json`, plots). The energy scale is a grid of template column variations in
-  units of 0.1 % (`grid.py`); `--merge` writes the correctionlib payload of all combinations. A
-  1 sigma interval at the fit range or a scan region at the scan boundary is an error.
+  per category in CMSSW the datacards, T2W, a 2D likelihood scan, close-up 1D scans of both POIs
+  and the MultiDimFit singles fit, the result (`results.json`, plots). As in the predecessor, the
+  close-up scans and the singles fit start at the lowest grid point of the step before, within its
+  2 sigma intervals widened by a margin. The energy scale is a grid of template column variations
+  in units of 0.1 % (`grid.py`); `--merge` writes the correctionlib payload of all combinations.
+  A 1 sigma interval at the fit range or a failed crossing is an error.
 - `shapesmith.measurements.fake_factors`: the fake-factor measurement (the SM method of
   TauFakeFactors). An analysis sets `Analysis.measurement = FakeFactorMeasurement(legs)`, built
   from its region and process names and per-channel tables (`Binned`, `Fit`, `Split`,
