@@ -25,7 +25,7 @@ shapesmith validate  -c run.yaml              # build + validate the analysis, l
 shapesmith skim      -c run.yaml [--channels mt] [--samples TT,SingleMuon] [--force] [--workers 8]   # ntuples (+ friends) -> Parquet
 shapesmith hist      -c run.yaml [--control] [--regions all] [--skip-systematics] [--processes ZTT,data]  # histograms (ROOT + JSON index)
 shapesmith estimate  -c run.yaml [--control]  # estimated processes and variations (Channel.estimators)
-shapesmith measure   -c run.yaml [--suggest-binning]   # Analysis.measurement -> <output_dir>/<measurement>/<era>/
+shapesmith measure   -c run.yaml [--suggest-binning] [--merge]   # Analysis.measurement -> <output_dir>/<measurement>/<era>/
 shapesmith plot      -c run.yaml [--control] [--region nominal] [--blind] [--log]
 shapesmith sync      -c run.yaml              # combine-style shape files per channel
 shapesmith datacards -c run.yaml [--min-background 1.0] [--no-systematics]
@@ -54,12 +54,14 @@ categories, control variables, variations and estimators.
 - `Region(name, replace_cuts, add_weights, replace_weights)`: cuts replaced by name, weights
   replaced where a process carries them, weights added to every process.
 - `WeightVariation(name, replace_weights, applies_to, regions)` and
-  `ColumnVariation(name, suffix | derived, applies_to, regions)`: a column variation reads column
-  `c` as `c + suffix` where that branch exists (a CROWN shift), or replaces it by `derived[c]`, an
-  expression of nominal columns. Names ending in `Up`/`Down` need their partner and become
-  datacard shapes; other names are templates.
-- Estimators, run in order by `estimate`: `DataMinus(output, region, subtract, scale)`,
-  `ABCD(output, b, c, d, subtract)` and `TemplateShift(name, process, template, fraction)`.
+  `ColumnVariation(name, suffix | derived, applies_to, regions, groups)`: a column variation reads
+  column `c` as `c + suffix` where that branch exists (a CROWN shift), or replaces it by
+  `derived[c]`, an expression of nominal columns; `groups` restricts it to the samples of some
+  groups (a CROWN shift produced for some samples only). Names ending in `Up`/`Down` need their
+  partner and become datacard shapes; other names are templates.
+- Estimators, run in order by `estimate`: `DataMinus(output, region, subtract, scale,
+  clip_negative)`, `ABCD(output, b, c, d, subtract)` and `TemplateShift(name, process, template,
+  fraction)`, which also varies every template variation `t` of the process (as `<name>Up@t`).
 
 **The event rule** (`shapesmith.events`, used by hist, the ML export and measurements): cuts are
 the channel cuts with the region's replacements, the process cuts and the skim cuts; weights are
@@ -81,7 +83,7 @@ the requested scopes and keeps the other histograms of its file.
 Per sample, the skim keeps the columns of every expression its processes can use and the
 shifted branches of its column variations. An event is kept if the skim cuts pass nominally or
 under any column variation of its kind (hist re-applies the varied skim cuts). Where the channel
-declares CROWN shifts for a sample kind, every file must carry a shifted branch for each of them,
+declares CROWN shifts for a sample (its kind and group), every file must carry a shifted branch for each of them,
 and every shifted branch `c__X` of a needed column must be declared; otherwise the skim fails.
 
 The manifest records the skim contract. A stored skim is reused when its skim cuts,
@@ -104,7 +106,18 @@ then, so an older production needs the database checkout it was produced with.
 
 `Analysis.measurement` is an object with a `name` and `run(context)`; `shapesmith measure` calls
 it with a `MeasureContext` (configuration, analysis, channels, output directory,
-`events(query)`, `provenance()`). Building blocks:
+`events(query)`, `provenance()`, and the flags `suggest_binning` and `merge`, the latter to combine
+the results of earlier runs into one payload). Measurements:
+
+- `shapesmith.measurements.tau_id_es`: tau-ID scale factor and energy scale of embedded taus, the
+  chain of smhtt_ul `tauID_SFs_dev`. One run per working-point combination fills the mt channel
+  and the mm control region, writes the shapes in the input format of MorphingTauID2017 and runs
+  per category in CMSSW the datacards, T2W, a 2D likelihood scan and the MultiDimFit singles fit,
+  the result (`results.json`, plots). The energy scale is a grid of template column variations in
+  units of 0.1 % (`grid.py`); `--merge` writes the correctionlib payload of all combinations. A
+  1 sigma interval at the fit range or a scan region at the scan boundary is an error.
+
+Building blocks:
 
 - `shapesmith.payloads`: correctionlib schema-v2 builders; the provenance is JSON in
   `CorrectionSet.description`; payloads are checked (schema, evaluator, no `$schema` key, so
@@ -112,7 +125,8 @@ it with a `MeasureContext` (configuration, analysis, channels, output directory,
 - `shapesmith.measurements.smoothing`: TauFakeFactors' kernel smoothing without ROOT, a port of
   ROOT's `TGraphSmooth::SmoothKern` checked against ROOT and FF_Updated
   (`tests/reference/make_smoothing_reference.py`).
-- `shapesmith.cmssw`: run commands in a CMSSW environment (`combine.cmssw_dir`).
+- `shapesmith.cmssw`: run commands in a CMSSW environment (`combine.cmssw_dir`), started from a
+  clean environment so that the Python environment of ShapeSmith does not shadow CMSSW's.
 
 ## Run configuration
 
