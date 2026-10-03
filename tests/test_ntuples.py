@@ -1,3 +1,5 @@
+from pathlib import Path
+
 import numpy as np
 import pytest
 
@@ -71,6 +73,24 @@ def test_friend_length_mismatch_is_an_error(tmp_path):
     friend = make_ntuple(tmp_path / "friend.root", {"b": np.zeros(2, dtype=np.float32)})
     with pytest.raises(ValueError, match="entries"):
         read_ntuple(NtupleFile(str(main), (str(friend),), "X", "mt", "main.root"), {"a", "b"})
+
+
+# CROWN writes the friend of a main file without events as a tree without branches; uproot cannot write such a
+# tree, so the fixture is ROOT's `TTree("ntuple", "ntuple").Write()`.
+TREE_WITHOUT_BRANCHES = Path(__file__).parent / "reference" / "tree_without_branches.root"
+
+
+def test_a_friend_without_branches_of_a_main_file_without_events_gives_empty_columns(tmp_path):
+    main = make_ntuple(tmp_path / "main.root", {"a": np.zeros(0, dtype=np.float32)})
+    frame, _, branches = read_ntuple(NtupleFile(str(main), (str(TREE_WITHOUT_BRANCHES),), "X", "mt", "main.root"), {"a", "b"}, {"c"})
+    assert len(frame) == 0 and sorted(frame.columns) == ["a", "b"]
+    assert branches == {"a"}
+
+
+def test_a_friend_without_branches_of_a_main_file_with_events_is_an_error(tmp_path):
+    main = make_ntuple(tmp_path / "main.root", {"a": np.zeros(3, dtype=np.float32)})
+    with pytest.raises(MissingColumnsError, match="b"):
+        read_ntuple(NtupleFile(str(main), (str(TREE_WITHOUT_BRANCHES),), "X", "mt", "main.root"), {"a", "b"})
 
 
 def test_missing_columns_error_is_picklable():

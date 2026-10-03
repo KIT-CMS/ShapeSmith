@@ -1,9 +1,11 @@
 """Column variations end to end on the mini dataset with CROWN shifts: skim checks and reuse, fill rule, estimates."""
 import dataclasses
+import json
 import shutil
 
 import numpy as np
 import pytest
+import uproot
 
 from shapesmith.config import FriendConfig, NtupleConfig, RunConfig
 from shapesmith.estimates import run_estimates
@@ -12,8 +14,9 @@ from shapesmith.histogram import INCLUSIVE, HistKey
 from shapesmith.model import ColumnVariation
 from shapesmith.skim import run_skim
 from shapesmith.store import read_manifest, read_skims
-from shapesmith.testing import make_mini_dataset
+from shapesmith.testing import make_mini_dataset, make_ntuple
 from tests.mini_analysis import build_embedding
+from tests.test_ntuples import TREE_WITHOUT_BRANCHES
 
 TES = ("CMS_tesUp", "CMS_tesDown")
 FF = ("CMS_ffStatUp", "CMS_ffStatDown")
@@ -68,6 +71,19 @@ def test_an_event_that_passes_only_shifted_is_kept_and_filled_only_shifted(confi
     weights = emb["emb_genweight"].astype(float) * emb["trg_wgt"].astype(float)
     assert nominal.sum() == pytest.approx(weights[base & (emb["m_vis"] > 100)].sum())  # the skim cut is re-applied nominally
     assert up.sum() == pytest.approx(weights[base & (emb["m_vis__tesUp"] > 100) & (emb["m_vis__tesUp"] <= 200)].sum())  # 200: last edge
+
+
+def test_a_file_without_events_and_its_friend_without_branches_are_skimmed(config, tmp_path):
+    """CROWN writes the friend of a main file without events as a tree without branches: no columns and no shifted
+    branches to check, so the file adds an empty skim."""
+    data = tmp_path / "data"
+    first = uproot.open(data / "CROWNRun" / "2018" / "DATA_A" / "mt" / "DATA_A_0.root")
+    columns = {name: array[:0] for name, array in first["ntuple"].arrays(library="np").items()}
+    make_ntuple(data / "CROWNRun" / "2018" / "DATA_A" / "mt" / "DATA_A_2.root", columns, json.loads(str(first["metadata"])))
+    shutil.copy(TREE_WITHOUT_BRANCHES, data / "CROWNFriends" / "nn" / "2018" / "DATA_A" / "mt" / "DATA_A_2.root")
+    run_skim(config, _analysis())
+    assert "DATA_A_2.root" in _manifest(config, "DATA_A")["completed"]
+    assert "fake_factor__ffStatUp" in read_skims(config.skim_dir, "mt", ["DATA_A"], None)
 
 
 def test_a_declared_shift_without_branches_fails_the_skim(config):

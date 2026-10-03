@@ -90,7 +90,9 @@ def read_ntuple(ntuple: NtupleFile, columns: set[str], optional: set[str] = froz
     """The requested columns of one ntuple (+ friends), the CROWN metadata of the main file and the names of all
     branches, opening every file once (remote opens cost seconds).
 
-    Columns in `optional` may be absent (they are left out); any other missing column raises MissingColumnsError.
+    Columns in `optional` may be absent (they are left out); any other missing column raises MissingColumnsError,
+    except in a main file without events: CROWN writes its friends as trees without branches, so their columns are
+    returned empty.
     """
     paths = (*ntuple.friends, ntuple.path)  # main file last so that it overrides friends
     handles = [uproot.open(path) for path in paths]
@@ -99,13 +101,15 @@ def read_ntuple(ntuple: NtupleFile, columns: set[str], optional: set[str] = froz
         for index, handle in enumerate(handles):
             for name in handle[TREE].keys():
                 sources[name] = index
-        missing = set(columns) - set(sources)
-        if missing - set(optional):
-            raise MissingColumnsError(sorted(missing - set(optional)), ntuple.path)
+        absent = set(columns) - set(sources) - set(optional)
+        if absent and handles[-1][TREE].num_entries:
+            raise MissingColumnsError(sorted(absent), ntuple.path)
         by_handle: dict[int, list[str]] = {}
         for column in sorted(set(columns) & set(sources)):
             by_handle.setdefault(sources[column], []).append(column)
         frames = [pd.DataFrame(handles[index][TREE].arrays(names, library="np")) for index, names in by_handle.items()]
+        if absent:
+            frames.append(pd.DataFrame({name: pd.Series(dtype="float32") for name in sorted(absent)}))
         main = handles[-1]
         metadata = json.loads(str(main["metadata"])) if "metadata" in main else {}
     finally:

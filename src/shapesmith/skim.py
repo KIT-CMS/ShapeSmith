@@ -93,7 +93,8 @@ def skim_one(ntuple: NtupleFile, sample: Sample, channel: Channel, columns: set[
     shifted = {column + v.suffix for v in variations if v.suffix for column in columns}
     frame, metadata, branches = read_ntuple(ntuple, columns | shifted, set(optional) | shifted)
     read = time.monotonic() - start
-    check_shifts(channel, sample, columns, branches)
+    if len(frame):  # the friends of a file without events have no branches, so no shifted ones either
+        check_shifts(channel, sample, columns, branches)
     n_in = len(frame)
     nominal = list(channel.skim.values())
     selected = mask(frame, nominal)
