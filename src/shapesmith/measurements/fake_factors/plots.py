@@ -14,12 +14,17 @@ import numpy as np  # noqa: E402
 hep.style.use("CMS")
 
 
+def plot_path(directory: Path, name: str, category: int) -> Path:
+    """The plot of category `category` of the record entry `name` (a stage prefix "for_DRtoSR/" becomes "for_DRtoSR_")."""
+    return directory / f"{name.replace('/', '_')}_category{category}.png"
+
+
 def plot_record(record: dict[str, list[dict]], directory: Path) -> list[Path]:
     directory.mkdir(parents=True, exist_ok=True)
     paths = []
     for name, entries in record.items():
         for entry in entries:
-            path = directory / f"{name.replace('/', '_')}_category{entry.get('category', 0)}.png"
+            path = plot_path(directory, name, entry.get("category", 0))
             if "curve" in entry:
                 paths.append(_plot_fit(name, entry, path))
             elif "fractions" in entry:

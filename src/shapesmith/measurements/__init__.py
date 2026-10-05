@@ -2,7 +2,9 @@
 
 An analysis sets `Analysis.measurement` to an object with a `name` and a `run(context)` method;
 `shapesmith measure` runs it with its output directory `<output_dir>/<name>/<era>/`. The measurement reads the skims
-itself (`context.events`), possibly in several passes, and writes its results there.
+itself (`context.events`), possibly in several passes, and writes its results there. A measurement with a
+`gallery(output, channels)` method returning a `shapesmith.web.gallery.Content` can be published with
+`shapesmith publish`.
 """
 from __future__ import annotations
 

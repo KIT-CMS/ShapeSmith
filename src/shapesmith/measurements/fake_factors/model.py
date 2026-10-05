@@ -155,3 +155,9 @@ class FakeFactorMeasurement:
         from shapesmith.measurements.fake_factors.measure import run  # plots and correctionlib load only for a run
 
         run(self, context)
+
+    def gallery(self, output, channels):
+        """The plots, notes and facts of the measurement in `output` for `shapesmith publish`."""
+        from shapesmith.measurements.fake_factors.gallery import content
+
+        return content(self, output, channels)

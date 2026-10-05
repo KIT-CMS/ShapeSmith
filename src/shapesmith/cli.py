@@ -13,7 +13,7 @@ from rich.console import Console
 from rich.table import Table
 
 from shapesmith import __version__, logs
-from shapesmith.config import RunConfig, load_analysis, load_config
+from shapesmith.config import RunConfig, WebConfig, load_analysis, load_config
 from shapesmith.ntuples import join_url
 from shapesmith.provenance import record, write_versions
 
@@ -222,6 +222,18 @@ def plot(config: Path = ConfigOption, channels: Optional[str] = ChannelsOption, 
     cfg, analysis, selected = _setup(config, channels, overrides=overrides)
     files = run_plot(HistogramSet.load(_shapes_path(cfg, control)), analysis, selected, control, category, _split(variables), cfg.output_dir / "plots", region=region, blind=blind, log=log, signal_scale=signal_scale, normalize_by_bin_width=normalize_by_bin_width)
     logger.info(f"{len(files)} files written to {cfg.output_dir / 'plots'}")
+
+
+@app.command()
+@_logged
+def publish(config: Path = ConfigOption, channels: Optional[str] = ChannelsOption, overrides: Optional[list[str]] = SetOption, to: Optional[Path] = typer.Option(None, "--to", help="gallery directory (default: web.dir of the configuration)"), variant: Optional[str] = typer.Option(None, "--variant", help="the gallery column, [a-z0-9_]+ (default: web.variant)"), label: Optional[str] = typer.Option(None, "--label", help="label of the variant"), description: Optional[str] = typer.Option(None, "--description", help="description of the variant"), title: Optional[str] = typer.Option(None, "--title", help="title of the gallery"), about: Optional[str] = typer.Option(None, "--about", help="text of the gallery's About section")):
+    """Copy the plots and their yields (of a measurement analysis: the measurement's plots) into a static web gallery (one column per variant); publishing a variant again replaces its channels."""
+    from shapesmith.web import publish as publish_gallery
+
+    cfg, analysis, selected = _setup(config, channels, overrides=overrides)
+    options = {"dir": to.absolute() if to else None, "variant": variant, "label": label, "description": description, "title": title, "about": about}
+    web = (cfg.web or WebConfig()).model_copy(update={key: value for key, value in options.items() if value is not None})
+    publish_gallery(cfg, analysis, web, selected if channels else None, config, overrides or [])
 
 
 @app.command("ml-export")

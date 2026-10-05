@@ -36,6 +36,21 @@ class CombineConfig(BaseModel):
     scram_arch: str = "el9_amd64_gcc12"
 
 
+VARIANT_PATTERN = r"[a-z0-9_]+"
+
+
+class WebConfig(BaseModel):
+    """Where `shapesmith publish` puts the plots: the gallery directory and the variant (one column of the gallery)."""
+
+    model_config = ConfigDict(extra="forbid")
+    dir: Path | None = None
+    variant: str | None = Field(None, pattern=rf"^{VARIANT_PATTERN}$")
+    label: str | None = None  # of the variant; default: its key with spaces for underscores
+    description: str | None = None  # of the variant
+    title: str | None = None  # of the gallery
+    about: str | None = None  # text of the gallery's "About this gallery" section (collapsed)
+
+
 class RunConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
     analysis: str  # "package.module:function" -> build(config) -> Analysis
@@ -50,6 +65,7 @@ class RunConfig(BaseModel):
     workers: int = 4
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR"] = "INFO"  # of ShapeSmith and the analysis (logs.configure)
     combine: CombineConfig | None = None
+    web: WebConfig | None = None
 
     @field_validator("log_level", mode="before")
     @classmethod
@@ -57,7 +73,7 @@ class RunConfig(BaseModel):
         return value.upper() if isinstance(value, str) else value
 
 
-RELATIVE_PATH_FIELDS = ("skim_dir", "output_dir", "ml_dir", "sample_database")
+RELATIVE_PATH_FIELDS = ("skim_dir", "output_dir", "ml_dir", "sample_database", "web.dir")
 
 
 def apply_overrides(raw: dict, overrides: Iterable[str]) -> dict:
@@ -82,8 +98,12 @@ def load_config(path: str | Path, overrides: Iterable[str] = ()) -> RunConfig:
     with open(path) as handle:
         raw = apply_overrides(yaml.safe_load(handle), overrides)
     for field in RELATIVE_PATH_FIELDS:
-        if raw.get(field) is not None and not Path(raw[field]).is_absolute():
-            raw[field] = os.path.normpath(path.parent / raw[field])
+        *parents, leaf = field.split(".")
+        section = raw
+        for part in parents:
+            section = section.get(part) if isinstance(section, dict) else None
+        if isinstance(section, dict) and section.get(leaf) is not None and not Path(section[leaf]).is_absolute():
+            section[leaf] = os.path.normpath(path.parent / section[leaf])
     return RunConfig.model_validate(raw)
 
 

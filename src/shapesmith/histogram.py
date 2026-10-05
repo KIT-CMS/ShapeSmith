@@ -11,6 +11,7 @@ import json
 import logging
 from dataclasses import asdict, dataclass
 from pathlib import Path
+from typing import Callable
 
 import numpy as np
 import uproot
@@ -167,12 +168,15 @@ class HistogramSet(dict):
         logger.debug(f"{len(items)} histograms saved to {path} (+ {path.with_suffix('.json').name})")
 
     @classmethod
-    def load(cls, path: Path) -> "HistogramSet":
+    def load(cls, path: Path, keep: Callable[[HistKey], bool] | None = None) -> "HistogramSet":
+        """The histograms of a file written by `save`; with `keep`, only those whose key it accepts."""
         hset = cls()
         with uproot.open(path) as f:
             for name, classname in f.classnames(recursive=True, cycle=False).items():
                 if classname.startswith("TH1"):
-                    hset[HistKey.parse(name)] = Histogram.from_root(f[name])
+                    key = HistKey.parse(name)
+                    if keep is None or keep(key):
+                        hset[key] = Histogram.from_root(f[name])
         logger.debug(f"{len(hset)} histograms loaded from {path}")
         return hset
 

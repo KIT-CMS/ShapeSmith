@@ -33,6 +33,9 @@ shapesmith = "shapesmith.cli:app"
 [tool.setuptools.packages.find]
 where = ["src"]
 
+[tool.setuptools.package-data]
+"shapesmith.web" = ["static/*"]
+
 [tool.setuptools_scm]
 fallback_version = "0.1.0"
 

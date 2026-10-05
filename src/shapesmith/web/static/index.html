@@ -1,0 +1,108 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="theme-color" content="#009682">
+<meta name="color-scheme" content="light dark">
+<title>ShapeSmith gallery</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Cpath fill='%23009682' d='M3 29h5V17H3zm7 0h5V6h-5zm7 0h5V11h-5zm7 0h5V21h-5z'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="viewer.css?v=__SHAPESMITH_STAMP__">
+<script>var t="light";try{t=localStorage.getItem("shapesmith-gallery-theme")||t}catch(e){}if(t!=="auto")document.documentElement.setAttribute("data-theme",t==="dark"?"dark":"light")</script>
+</head>
+<body>
+<a class="skip" href="#grid">Skip to the plots</a>
+
+<header class="masthead">
+  <div class="title-row">
+    <h1 id="title">ShapeSmith gallery</h1>
+    <label class="theme">Theme
+      <select id="theme">
+        <option value="light">Light</option>
+        <option value="dark">Dark</option>
+        <option value="auto">System</option>
+      </select>
+    </label>
+  </div>
+  <p class="meta"><time id="updated"></time><span id="generator"></span></p>
+  <details id="about" class="about" hidden>
+    <summary>About this gallery</summary>
+    <p id="description"></p>
+  </details>
+</header>
+
+<div id="notice" class="notice" role="alert" hidden></div>
+<noscript><p class="notice">This gallery needs JavaScript.</p></noscript>
+
+<nav id="controls" class="controls" aria-label="Plot selection" hidden>
+  <div class="field">
+    <span class="field-label" id="channel-label">Channel</span>
+    <div id="channels" class="segmented" role="group" aria-labelledby="channel-label"></div>
+  </div>
+  <label class="field">
+    <span class="field-label" id="region-label">Region</span>
+    <select id="region"></select>
+  </label>
+  <label class="field" id="category-field">
+    <span class="field-label" id="category-label">Category</span>
+    <select id="category"></select>
+  </label>
+  <div class="field var-field">
+    <label class="field-label" id="var-label" for="var-input">Variable</label>
+    <div class="picker">
+      <button type="button" id="prev" class="btn" aria-label="Previous variable" title="Previous variable (←)">‹</button>
+      <div class="combo">
+        <input id="var-input" type="text" role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="var-list" autocomplete="off" spellcheck="false" placeholder="Search">
+        <ul id="var-list" class="listbox" role="listbox" aria-label="Variables" hidden></ul>
+      </div>
+      <button type="button" id="next" class="btn" aria-label="Next variable" title="Next variable (→)">›</button>
+      <span id="counter" class="counter"></span>
+    </div>
+  </div>
+  <div class="field variants-field">
+    <span class="field-label" id="variants-label">Variants</span>
+    <div id="variants" class="chips" role="group" aria-labelledby="variants-label"></div>
+  </div>
+  <button type="button" id="copy-link" class="btn">Copy link</button>
+</nav>
+
+<main id="main" hidden>
+  <div id="grid" class="grid" tabindex="-1"></div>
+  <details id="facts-panel" class="panel" open hidden>
+    <summary id="facts-summary">Summary</summary>
+    <div id="facts" class="panel-body"></div>
+  </details>
+  <details id="yields-panel" class="panel">
+    <summary id="yields-summary">Yields</summary>
+    <div id="yields" class="panel-body"></div>
+  </details>
+  <details id="provenance-panel" class="panel">
+    <summary>Provenance</summary>
+    <div id="provenance" class="panel-body"></div>
+  </details>
+</main>
+
+<footer class="site-foot">
+  <p><kbd>←</kbd> <kbd>→</kbd> step through the plots · <kbd>/</kbd> searches · click a plot to enlarge it (<kbd>↑</kbd> <kbd>↓</kbd> switch the variant, <kbd>Esc</kbd> closes)</p>
+</footer>
+
+<div id="lightbox" class="lightbox" role="dialog" aria-modal="true" aria-labelledby="lb-caption" hidden>
+  <div class="lb-bar">
+    <p id="lb-caption" class="lb-caption"></p>
+    <span id="lb-pos" class="lb-pos"></span>
+    <button type="button" id="lb-up" class="lb-btn" aria-label="Previous variant" title="Previous variant (↑)">↑</button>
+    <button type="button" id="lb-down" class="lb-btn" aria-label="Next variant" title="Next variant (↓)">↓</button>
+    <button type="button" id="lb-prev" class="lb-btn" aria-label="Previous variable" title="Previous variable (←)">‹</button>
+    <button type="button" id="lb-next" class="lb-btn" aria-label="Next variable" title="Next variable (→)">›</button>
+    <button type="button" id="lb-close" class="lb-btn" aria-label="Close" title="Close (Esc)">×</button>
+  </div>
+  <div id="lb-stage" class="lb-stage">
+    <img id="lb-img" alt="">
+    <p id="lb-missing" class="lb-missing" hidden></p>
+  </div>
+</div>
+
+<script src="manifest.js?v=__SHAPESMITH_STAMP__"></script>
+<script src="viewer.js?v=__SHAPESMITH_STAMP__"></script>
+</body>
+</html>

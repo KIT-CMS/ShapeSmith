@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass
 from pathlib import Path
 
 import matplotlib
@@ -34,14 +35,37 @@ def _group_histogram(hset: HistogramSet, channel: str, category: str, members: l
     return total
 
 
+@dataclass
+class Stack:
+    """What a stack plot shows: the background groups in style order, each the nominal histograms of its processes
+    summed (groups without one left out), and the data histogram (None if missing)."""
+
+    groups: list[tuple[str, Histogram]]
+    data: Histogram | None
+
+    @property
+    def background(self) -> np.ndarray:
+        return np.sum([h.values for _, h in self.groups], axis=0)
+
+    @property
+    def background_error(self) -> np.ndarray:
+        return np.sqrt(np.sum([h.variances for _, h in self.groups], axis=0))
+
+
+def stack(hset: HistogramSet, analysis: Analysis, channel: str, category: str, variable: str, region: str = NOMINAL) -> Stack:
+    """The stack of a plot; also the yields of `shapesmith publish`."""
+    groups = []
+    for group, members in grouped_backgrounds(analysis, channel):
+        h = _group_histogram(hset, channel, category, members, variable, region)
+        if h is not None:
+            groups.append((group, h))
+    return Stack(groups, _nominal(hset, channel, category, analysis.channel(channel).data(), variable, region))
+
+
 def default_signal_scale(hset: HistogramSet, analysis: Analysis, channel: str, category: str, variable: str, region: str = NOMINAL) -> float:
     """1, 2 or 5 x 10^n such that the scaled signal maximum is about 30 % of the background maximum."""
     signal = _nominal(hset, channel, category, analysis.signal, variable, region)
-    background = 0.0
-    for _, members in grouped_backgrounds(analysis, channel):
-        h = _group_histogram(hset, channel, category, members, variable, region)
-        if h is not None:
-            background = max(background, float(h.values.max()))
+    background = max((float(h.values.max()) for _, h in stack(hset, analysis, channel, category, variable, region).groups), default=0.0)
     if signal is None or signal.values.max() <= 0 or background <= 0:
         return 1.0
     raw = 0.3 * background / float(signal.values.max())
@@ -53,11 +77,8 @@ def default_signal_scale(hset: HistogramSet, analysis: Analysis, channel: str, c
 def plot_stack(hset: HistogramSet, analysis: Analysis, channel: str, category: str, variable: str, output_dir: Path, blind: bool = False, log: bool = False, signal_scale: float | None = None, normalize_by_bin_width: bool = False, region: str = NOMINAL) -> list[Path]:
     if region != NOMINAL and not hset.select(channel=channel, category=category, region=region, variable=variable):
         raise ValueError(f"no histograms for {channel}/{category}/{region}/{variable}; fill them with `shapesmith hist --regions {region}`")
-    groups = []
-    for group, members in grouped_backgrounds(analysis, channel):
-        h = _group_histogram(hset, channel, category, members, variable, region)
-        if h is not None:
-            groups.append((group, h))
+    shown = stack(hset, analysis, channel, category, variable, region)
+    groups = shown.groups
     if not groups:
         if region != NOMINAL:
             raise ValueError(f"no background histograms for {channel}/{category}/{region}/{variable}; fill them with `shapesmith hist --regions {region}`")
@@ -66,9 +87,9 @@ def plot_stack(hset: HistogramSet, analysis: Analysis, channel: str, category: s
     edges = groups[0][1].edges
     widths = np.diff(edges)
     norm = widths if normalize_by_bin_width else np.ones_like(widths)
-    background = np.sum([h.values for _, h in groups], axis=0)
-    background_error = np.sqrt(np.sum([h.variances for _, h in groups], axis=0))
-    data_hist = _nominal(hset, channel, category, analysis.channel(channel).data(), variable, region)
+    background = shown.background
+    background_error = shown.background_error
+    data_hist = shown.data
     if data_hist is None and not blind:
         raise ValueError(f"data histogram is missing for {channel}/{category}/{region}/{variable}; fill data with `shapesmith hist --regions {region}` or use --blind")
     data = background.copy() if blind else data_hist.values

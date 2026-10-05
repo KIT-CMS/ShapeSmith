@@ -27,6 +27,7 @@ shapesmith hist      -c run.yaml [--control] [--regions all] [--skip-systematics
 shapesmith estimate  -c run.yaml [--control]  # estimated processes and variations (Channel.estimators)
 shapesmith measure   -c run.yaml [--suggest-binning] [--merge]   # Analysis.measurement -> <output_dir>/<measurement>/<era>/
 shapesmith plot      -c run.yaml [--control] [--region nominal] [--blind] [--log]
+shapesmith publish   -c run.yaml --to DIR --variant KEY [--label TEXT] [--description TEXT] [--channels et,mt]   # plots + yields -> static web gallery DIR/index.html
 shapesmith sync      -c run.yaml              # combine-style shape files per channel
 shapesmith datacards -c run.yaml [--min-background 1.0] [--no-systematics]
 shapesmith fit       -c run.yaml [--final-states mt,all] [--skip-combine]   # limits, significance, best fit
@@ -38,6 +39,20 @@ shapesmith inspect   output/shapes.root [--unchanged]   # what a histogram file 
 `manifest.json`; everything else works on the skims. `skim`, `hist`, `measure` and `ml-export`
 record what produced their outputs in `<directory>/versions/<analysis name>.json` (versions,
 git hashes of core, analysis and sample database, the full run configuration and its hash).
+
+`publish` copies the plots of `<output_dir>/plots/` into a web gallery (`DIR/index.html`, a static
+viewer reading `manifest.json`; also works from `file://`): one column per variant (`--variant`,
+`[a-z0-9_]+`, e.g. one run configuration), with the data, prediction and stacked-group yields of
+every plotted region and category (from the `yield` control variable where there is one, computed
+as the stack plot does) and the provenance of the histograms. Publishing a variant again replaces
+its published channels and keeps the other variants and channels; only changed plots are copied
+and everything is world-readable. `--title`/`--about` set the gallery's title and the text of its
+collapsed "About this gallery" section. A directory that is neither empty nor a gallery is refused.
+`web: {dir, variant, label, description, title, about}` in the run YAML sets the defaults of the
+options. For an analysis with a measurement, `publish` takes the measurement's plots from
+`<output_dir>/<measurement>/<era>/` instead (the fake factors: by process, split category and
+quantity, with the p-value of each correction and the ttbar data/MC factors); a gallery holds
+either control plots or one measurement.
 
 ## The analysis model
 
@@ -165,6 +180,7 @@ ml_dir: /ceph/USER/shapesmith_ml/TAG
 workers: 16
 log_level: INFO                           # DEBUG | INFO | WARNING | ERROR
 combine: {cmssw_dir: /work/USER/CMSSW_14_1_9, scram_arch: el9_amd64_gcc12}
+web: {dir: /web/USER/public_html/TAG, variant: emb_ff, label: "embedding + FF"}   # shapesmith publish
 ```
 
 ## Logging
