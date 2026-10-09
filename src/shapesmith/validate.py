@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from shapesmith.histogram import part_of
-from shapesmith.model import NOMINAL, ROLES, SAMPLE_KINDS, Analysis, AnalysisError, Channel, ColumnVariation, DataMinus, EqualData, TemplateShift, VariationSum, WeightVariation
+from shapesmith.model import ABCD, NOMINAL, ROLES, SAMPLE_KINDS, Analysis, AnalysisError, Channel, ColumnVariation, DataMinus, EqualData, TemplateShift, VariationSum, WeightVariation
 
 
 def _duplicates(what: str, names: list[str]) -> list[str]:
@@ -68,7 +68,7 @@ def _variation_problems(channel: Channel, region_names: set[str]) -> list[str]:
 
 def _estimator_problems(channel: Channel, region_names: set[str]) -> list[str]:
     roles = {p.name: p.role for p in channel.processes}
-    problems = []
+    problems = _duplicates("estimator output", [f"{e.output} in {e.target}" for e in channel.estimators if isinstance(e, (DataMinus, ABCD))])
     column_variations = {v.name for v in channel.variations if isinstance(v, ColumnVariation)}
     for estimator in channel.estimators:
         if isinstance(estimator, TemplateShift):
@@ -82,7 +82,7 @@ def _estimator_problems(channel: Channel, region_names: set[str]) -> list[str]:
             parts = [part_of(f"{estimator.name}{d}", p) for p in estimator.parts for d in ("Up", "Down")]
             problems += [f"variation sum {estimator.name}: part {part} is not a column variation" for part in parts if part not in column_variations]
             continue
-        regions = (estimator.region,) if isinstance(estimator, DataMinus) else (estimator.b, estimator.c, estimator.d)
+        regions = (estimator.region, estimator.target) if isinstance(estimator, DataMinus) else (estimator.b, estimator.c, estimator.d, estimator.target)
         problems += [f"estimator {estimator.output}: region {r} does not exist" for r in regions if r not in region_names]
         problems += [f"estimator {estimator.output}: subtracts unknown process {name}" for name in estimator.subtract if name not in roles]
         problems += [f"estimator {estimator.output}: subtracts the auxiliary process {name}" for name in estimator.subtract if roles.get(name) == "auxiliary"]

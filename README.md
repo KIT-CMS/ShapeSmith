@@ -75,13 +75,14 @@ categories, control variables, variations and estimators.
   groups (a CROWN shift produced for some samples only). Names ending in `Up`/`Down` need their
   partner and become datacard shapes; other names are templates.
 - Estimators, run in order by `estimate`: `DataMinus(output, region, subtract, scale,
-  clip_negative)`, `ABCD(output, b, c, d, subtract)`, `TemplateShift(name, process, template,
-  fraction)`, which also varies every template variation `t` of the process (as `<name>Up@t`),
-  and `VariationSum(name, parts)`: `<name>Up/Down` = nominal + the sum of (part - nominal) for
-  every histogram with a part, the part `p` being the column variation `<name>Up%p` /
-  `<name>Down%p` (`histogram.part_of`), e.g. one nuisance from CROWN shifts produced per decay
-  mode (exact where no event is changed by two parts). Parts never become datacard shapes; place
-  the sum after the estimators whose outputs should carry it.
+  clip_negative, target)`, `ABCD(output, b, c, d, subtract, target)`, both writing their output to
+  the region `target` (default the nominal one; e.g. QCD in a diagnostic region),
+  `TemplateShift(name, process, template, fraction)`, which also varies every template variation
+  `t` of the process (as `<name>Up@t`), and `VariationSum(name, parts)`: `<name>Up/Down` =
+  nominal + the sum of (part - nominal) for every histogram with a part, the part `p` being the column
+  variation `<name>Up%p` / `<name>Down%p` (`histogram.part_of`), e.g. one nuisance from CROWN
+  shifts produced per decay mode (exact where no event is changed by two parts). Parts never
+  become datacard shapes; place the sum after the estimators whose outputs should carry it.
 - `MLExportConfig(variables, processes, label_of, region_of)`: `ml-export` writes, per channel, the
   `processes` the channel has as signal, background or estimator output (`exported(channel)`);
   an estimator output is the data of its `region_of` region, which must not be the nominal one.
@@ -96,13 +97,13 @@ variation replaces weights in place (and does not apply to a process lacking one
 column variation rewrites every expression. Event weight: `(norm_weight * lumi) * product`,
 `lumi` for MC only.
 
-**Booking**: the signal in the nominal region, other processes in the nominal and the estimator
-regions (or `--regions`). A variation is filled where its `applies_to` and `regions` allow; a
-column variation only where it changes an expression of the histogram (elsewhere it equals the
-nominal). `DataMinus` builds its output for every column variation of data or a subtracted
-process, taking the nominal of inputs that lack it; weight variations are not propagated, ABCD
-is nominal only. `--skip-systematics` skips weight and column variations. `hist` always refills
-the requested scopes and keeps the other histograms of its file.
+**Booking**: the signal in the nominal region, other processes in the nominal region and the
+regions the estimators read and write (or `--regions`). A variation is filled where its
+`applies_to` and `regions` allow; a column variation only where it changes an expression of the
+histogram (elsewhere it equals the nominal). `DataMinus` builds its output for every column
+variation of data or a subtracted process, taking the nominal of inputs that lack it; weight
+variations are not propagated, ABCD is nominal only. `--skip-systematics` skips weight and column
+variations. `hist` always refills the requested scopes and keeps the other histograms of its file.
 
 ## Skims
 

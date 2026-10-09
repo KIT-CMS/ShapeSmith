@@ -1,9 +1,10 @@
 """Stage 2: skims -> histograms per process, region, category, variable and variation.
 
 Bookings: the signal in the nominal region, auxiliary processes in the nominal region without variations, every
-other process in the nominal region and the estimator regions (or the explicitly requested regions). A variation is
-filled for the processes whose sample kind it applies to, in its regions; a column variation only where it changes
-an expression of the histogram (elsewhere it equals the nominal, and consumers fall back to that).
+other process in the nominal region and the regions the estimators read and write (or the explicitly requested
+regions). A variation is filled for the processes whose sample kind it applies to, in its regions; a column variation
+only where it changes an expression of the histogram (elsewhere it equals the nominal, and consumers fall back to
+that).
 """
 from __future__ import annotations
 
@@ -46,9 +47,9 @@ def estimator_regions(channel: Channel) -> tuple[str, ...]:
     regions = []
     for estimator in channel.estimators:
         if isinstance(estimator, DataMinus):
-            regions.append(estimator.region)
+            regions += [estimator.region, estimator.target]
         elif isinstance(estimator, ABCD):
-            regions += [estimator.b, estimator.c, estimator.d]
+            regions += [estimator.b, estimator.c, estimator.d, estimator.target]
     return tuple(dict.fromkeys(regions))
 
 

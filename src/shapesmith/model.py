@@ -153,25 +153,28 @@ def applies(variation: Variation, kind: str, group: str) -> bool:
 
 @dataclass(frozen=True)
 class DataMinus:
-    """output = scale * (data - sum of `subtract`) in `region`, per column variation of its inputs; with
-    `clip_negative`, negative bins are set to zero keeping the integral."""
+    """output = scale * (data - sum of `subtract`) in `region`, per column variation of its inputs, written to the
+    region `target`; with `clip_negative`, negative bins are set to zero keeping the integral."""
 
     output: str
     region: str
     subtract: tuple[str, ...]
     scale: float = 1.0
     clip_negative: bool = False
+    target: str = NOMINAL  # the region of the output, e.g. a diagnostic region
 
 
 @dataclass(frozen=True)
 class ABCD:
-    """output = (data - MC)(b) * (data - MC)(c).sum() / (data - MC)(d).sum(), nominal only."""
+    """output = (data - MC)(b) * (data - MC)(c).sum() / (data - MC)(d).sum(), without variations, written to the
+    region `target`."""
 
     output: str
     b: str
     c: str
     d: str
     subtract: tuple[str, ...]
+    target: str = NOMINAL  # the region of the output, e.g. a diagnostic region
 
 
 @dataclass(frozen=True)
@@ -254,7 +257,7 @@ class Channel:
         """The background processes followed by the estimator outputs: plots, sync, datacards and the ML export."""
         names = [p.name for p in self.processes if p.role == "background"]
         names += [e.output for e in self.estimators if isinstance(e, (DataMinus, ABCD))]
-        return tuple(names)
+        return tuple(dict.fromkeys(names))  # an output estimated for several target regions once
 
 
 @dataclass(frozen=True)

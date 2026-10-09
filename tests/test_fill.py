@@ -5,7 +5,9 @@ import pytest
 
 from shapesmith.fill import bookings, resolve_regions, run_hist, targets
 from shapesmith.histogram import INCLUSIVE, HistKey, HistogramSet
+from shapesmith.model import DataMinus
 from shapesmith.store import read_skims
+from tests.mini_analysis import build
 
 
 def test_histkey_roundtrip():
@@ -22,6 +24,13 @@ def test_bookings_follow_process_roles_and_sample_kinds(mini_run):
     assert by_process["HH"].regions == ("nominal",) and [v.name for v in by_process["HH"].variations] == ["CMS_puUp", "CMS_puDown"]
     assert by_process["ZTT"].regions == ("nominal", "anti_iso") and len(by_process["ZTT"].variations) == 2
     assert all(b.variations == () for b in bookings(analysis.channel("mt"), systematics=False))
+
+
+def test_the_target_region_of_an_estimator_is_booked():
+    channel = build().channel("mt")
+    qcd = DataMinus("QCD", "same_sign", ("ZTT", "ZL"), target="anti_iso")
+    by_process = {b.process.name: b for b in bookings(dataclasses.replace(channel, estimators=(qcd,)), systematics=False)}
+    assert by_process["data"].regions == ("nominal", "same_sign", "anti_iso") and by_process["HH"].regions == ("nominal",)
 
 
 def test_explicit_regions_include_signal_and_all_expands_per_channel(mini_run):

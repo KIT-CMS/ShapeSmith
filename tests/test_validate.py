@@ -94,6 +94,17 @@ def test_validate_checks_estimators_and_auxiliary_processes():
         validate(_with_channel(analysis, samples=mixed))
 
 
+def test_validate_checks_estimator_targets():
+    analysis = build()
+    channel = analysis.channel("mt")
+    qcd = (model.DataMinus("QCD", "same_sign", ("ZTT",), target="anti_iso"), model.ABCD("QCD", "same_sign", "anti_iso", "same_sign", ("ZTT",)))
+    validate(_with_channel(analysis, estimators=channel.estimators + qcd))
+    with pytest.raises(model.AnalysisError, match="estimator QCD: region nowhere does not exist"):
+        validate(_with_channel(analysis, estimators=(model.ABCD("QCD", "same_sign", "anti_iso", "same_sign", (), target="nowhere"),)))
+    with pytest.raises(model.AnalysisError, match="duplicate estimator output QCD in anti_iso"):
+        validate(_with_channel(analysis, estimators=qcd + qcd[:1]))
+
+
 def test_the_ml_processes_are_checked_per_channel():
     """ZTT is the auxiliary template of the embedding in mt and a background in tt: exported from tt only."""
     analysis = build_embedding()
