@@ -31,6 +31,7 @@ shapesmith publish   -c run.yaml --to DIR --variant KEY [--label TEXT] [--descri
 shapesmith sync      -c run.yaml              # combine-style shape files per channel
 shapesmith datacards -c run.yaml [--min-background 1.0] [--no-systematics]
 shapesmith fit       -c run.yaml [--final-states mt,all] [--skip-combine]   # limits, significance, best fit
+shapesmith fit       -c run.yaml --background-only [--final-states all]   # background-only fit to the data, pulls, yields
 shapesmith ml-export -c run.yaml              # Feather training folds
 shapesmith inspect   output/shapes.root [--unchanged]   # what a histogram file contains; variations equal to their nominal
 ```
@@ -39,6 +40,18 @@ shapesmith inspect   output/shapes.root [--unchanged]   # what a histogram file 
 `manifest.json`; everything else works on the skims. `skim`, `hist`, `measure` and `ml-export`
 record what produced their outputs in `<directory>/versions/<analysis name>.json` (versions,
 git hashes of core, analysis and sample database, the full run configuration and its hash).
+
+`datacards` writes one card per final state, `<output_dir>/datacards/<final state>/combined.txt`;
+`fit` runs combine on them in CMSSW (`combine.cmssw_dir`) and summarises the results in
+`<output_dir>/datacards/limits.{json,md,pdf}`. `fit --background-only` instead fits the data with
+r frozen to 0 (`combine -M FitDiagnostics --setParameters r=0 --freezeParameters r --skipSBFit
+--saveNormalizations --saveShapes --saveWithUncertainties`), by default on the combination of
+the selected channels (`all`, or the only final state), and writes
+`datacards/<final state>/fitDiagnostics.BackgroundOnly.root` and `datacards/background_fit.{json,md}`
+(`--skip-combine`: from the stored values): per final state the fit status, per nuisance the prefit [mean, width] of its Gaussian constraint, postfit
+[value, error], pull and constraint, and per channel, category and process the data and the
+prefit and postfit [value, error] yields (with the totals `total_background`, `total_signal`,
+`total`). It fits the observed data of every bin of the card.
 
 `publish` copies the plots of `<output_dir>/plots/` into a web gallery (`DIR/index.html`, a static
 viewer reading `manifest.json`; also works from `file://`): one column per variant (`--variant`,

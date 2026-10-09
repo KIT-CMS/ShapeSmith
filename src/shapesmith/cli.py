@@ -207,14 +207,20 @@ def datacards(config: Path = ConfigOption, channels: Optional[str] = ChannelsOpt
 
 @app.command()
 @_logged
-def fit(config: Path = ConfigOption, channels: Optional[str] = ChannelsOption, overrides: Optional[list[str]] = SetOption, final_states: Optional[str] = typer.Option(None, help="comma separated; default: each channel and 'all'"), skip_combine: bool = typer.Option(False, "--skip-combine", help="only collect existing combine outputs")):
-    """Run combine (expected limits, significance, best fit) and summarise the results."""
+def fit(config: Path = ConfigOption, channels: Optional[str] = ChannelsOption, overrides: Optional[list[str]] = SetOption, final_states: Optional[str] = typer.Option(None, help="comma separated; default: each channel and 'all' (with --background-only: the combination of the selected channels)"), skip_combine: bool = typer.Option(False, "--skip-combine", help="only collect existing combine outputs"), background_only: bool = typer.Option(False, "--background-only", help="a background-only fit to the data (FitDiagnostics, r frozen to 0) instead of the limits")):
+    """Run combine (expected limits, significance, best fit), or a background-only fit to the data, and summarise the results."""
+    from shapesmith.background_fit import run_background_fit
     from shapesmith.limits import run_limits
 
     cfg, analysis, selected = _setup(config, channels, overrides=overrides)
-    states = _split(final_states) or list(_final_states(selected, analysis.control_channels))
-    results = run_limits(cfg, cfg.output_dir / "datacards", states, skip_combine)
-    typer.echo((cfg.output_dir / "datacards" / "limits.md").read_text())
+    states = list(_final_states(selected, analysis.control_channels))
+    datacard_dir = cfg.output_dir / "datacards"
+    if background_only:
+        results = run_background_fit(cfg, analysis, datacard_dir, _split(final_states) or states[-1:], skip_combine)  # default: 'all' or the only final state
+        typer.echo((datacard_dir / "background_fit.md").read_text())
+    else:
+        results = run_limits(cfg, datacard_dir, _split(final_states) or states, skip_combine)
+        typer.echo((datacard_dir / "limits.md").read_text())
     logger.info(f"{len(results)} final states summarised")
 
 
