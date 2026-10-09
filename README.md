@@ -101,7 +101,7 @@ categories, control variables, variations and estimators.
   an estimator output is the data of its `region_of` region, which must not be the nominal one.
 - `Analysis.control_channels`: channels that `datacards` and `fit` put into every final state
   (each selected channel and `all`) but never make a final state themselves, e.g. a ttbar
-  control channel fitted together with the signal channels.
+  control channel fitted together with the signal channels; `ml-export` skips them.
 
 **The event rule** (`shapesmith.events`, used by hist, the ML export and measurements): cuts are
 the channel cuts with the region's replacements, the process cuts and the skim cuts; weights are

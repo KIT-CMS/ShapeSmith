@@ -89,6 +89,9 @@ def run_ml_export(config: RunConfig, analysis: Analysis, channels: list[str]) ->
         raise ValueError("RunConfig.ml_dir is not set")
     written = []
     for channel in channels:
+        if channel in analysis.control_channels:
+            logger.info(f"{channel}: control channel, not exported")
+            continue
         names = analysis.ml.exported(analysis.channel(channel))
         skipped = [name for name in analysis.ml.processes if name not in names]
         if skipped:

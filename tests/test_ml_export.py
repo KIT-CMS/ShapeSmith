@@ -69,3 +69,10 @@ def test_a_process_the_channel_lacks_is_not_exported(mini_run):
     folds = pd.concat([pd.read_feather(config.ml_dir / "mt" / f"fold{k}.feather") for k in (0, 1)])
     assert (folds[tuple_column("Labels", "is_EMB")] == 0).all()
     assert len(folds) == sum(len(export_process(config, analysis, "mt", name)) for name in ("ZTT", "ZL", "HH", "jetFakes"))
+
+
+def test_a_control_channel_is_not_exported(mini_run):
+    config, analysis = mini_run
+    analysis = dataclasses.replace(analysis, control_channels=("mt",))
+    assert run_ml_export(config, analysis, ["mt"]) == []
+    assert not (config.ml_dir / "mt").exists()
