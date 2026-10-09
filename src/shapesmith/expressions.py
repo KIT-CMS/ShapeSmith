@@ -37,15 +37,19 @@ def columns_of(exprs: Iterable[str]) -> set[str]:
 
 def evaluate(frame: pd.DataFrame, expr: str) -> np.ndarray:
     """Evaluate `expr` on `frame`; scalars are broadcast to one value per row."""
-    missing = sorted(columns_in(expr) - set(frame.columns))
+    columns = columns_in(expr)
+    missing = sorted(columns - set(frame.columns))
     if missing:
         raise ExpressionError(f"expression {expr!r}: missing columns: {', '.join(missing)}")
+    # only the referenced columns: DataFrame.eval copies the index into a Series on every call, and numpy inputs make
+    # pandas convert the result element-wise
+    series = ({name: frame[name] for name in columns},)
     try:
-        result = frame.eval(expr, engine="numexpr")
+        result = pd.eval(expr, engine="numexpr", resolvers=series)
     except NotImplementedError as error:  # numexpr lacks an opcode (e.g. bool * bool): the python engine is slower but complete
         logger.debug(f"numexpr cannot evaluate {expr!r} ({error}); using the python engine")
         try:
-            result = frame.eval(expr, engine="python")
+            result = pd.eval(expr, engine="python", resolvers=series)
         except Exception as fallback_error:
             raise ExpressionError(f"expression {expr!r} failed: {fallback_error}") from fallback_error
     except Exception as error:  # numexpr/pandas raise a mix of ValueError, TypeError, SyntaxError
