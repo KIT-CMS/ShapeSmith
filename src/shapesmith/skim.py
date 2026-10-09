@@ -145,7 +145,7 @@ def contract(config: RunConfig, channel: Channel, sample: Sample, columns: set[s
     variations = {v.name: v.suffix or dict(v.derived) for v in column_variations(channel, sample)}
     if variations:
         result["column_variations"] = variations
-    friends = friend_bases(config.ntuples, sample.kind)
+    friends = friend_bases(config.ntuples, sample.kind, channel.name)
     if friends:
         result["friends"] = friends
     return result

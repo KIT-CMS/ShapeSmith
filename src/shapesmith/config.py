@@ -21,6 +21,7 @@ class FriendConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
     base: str
     applies_to: tuple[SampleKind, ...] = ("mc", "data", "embedding")
+    channels: tuple[str, ...] | None = None  # None: every channel
 
 
 class NtupleConfig(BaseModel):

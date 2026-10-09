@@ -164,6 +164,13 @@ def test_a_sample_cut_on_a_new_column_leaves_the_other_skims_reusable(tmp_path):
     assert "npartons" in read_manifest(config.skim_dir / "mt" / "ZTT_1" / "manifest.json")["columns"]
 
 
+def test_a_friend_of_other_channels_is_neither_read_nor_part_of_the_contract(config):
+    friends = [*config.ntuples.friends, FriendConfig(base="/no/such/friends", channels=("et", "tt"))]
+    config = config.model_copy(update={"ntuples": config.ntuples.model_copy(update={"friends": friends})})
+    run_skim(config, build())
+    assert read_manifest(config.skim_dir / "mt" / "ZTT_1" / "manifest.json")["contract"]["friends"] == [config.ntuples.friends[0].base]
+
+
 def test_run_skim_skips_existing_files_unless_forced(config):
     first = run_skim(config, build())
     second = run_skim(config, build())

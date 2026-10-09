@@ -106,6 +106,9 @@ under any column variation of its kind (hist re-applies the varied skim cuts). W
 declares CROWN shifts for a sample (its kind and group), every file must carry a shifted branch for each of them,
 and every shifted branch `c__X` of a needed column must be declared; otherwise the skim fails.
 
+A friend is read for the samples of its kinds (`applies_to`) in its channels (`channels`, default
+all), so a channel without that friend production (e.g. a control channel) does not look for it.
+
 The manifest records the skim contract. A stored skim is reused when its skim cuts,
 normalisation and sample cut are unchanged, its recorded column variations and friends contain
 the current ones, and its Parquet schema holds the needed columns; so one skim made with all
@@ -172,8 +175,9 @@ sample_database: ../../KingMaker_sample_database/nanoAOD_v15/datasets.json   # r
 ntuples:
   server: root://cmsdcache-kit-disk.gridka.de
   base: /store/user/USER/CROWN/ntuples/TAG/CROWNRun
-  friends:
+  friends:                                # later friends override earlier ones; applies_to and channels default to all
     - {base: /store/user/USER/CROWN/ntuples/TAG/CROWNFriends/nn_v1, applies_to: [mc, data, embedding]}
+    - {base: /store/user/USER/CROWN/ntuples/TAG/CROWNFriends/ff_v1, channels: [et, mt, tt]}
 skim_dir: /ceph/USER/shapesmith/TAG
 output_dir: output/TAG
 ml_dir: /ceph/USER/shapesmith_ml/TAG
