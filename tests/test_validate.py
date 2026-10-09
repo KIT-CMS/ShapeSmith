@@ -103,6 +103,12 @@ def test_the_signal_is_a_process_with_the_signal_role():
     validate(dataclasses.replace(analysis, signal=None))
 
 
+def test_control_channels_are_channels_of_the_analysis():
+    validate(dataclasses.replace(build(), control_channels=("mt",)))
+    with pytest.raises(model.AnalysisError, match="control channel em is not a channel of the analysis"):
+        validate(dataclasses.replace(build(), control_channels=("em",)))
+
+
 def test_dataclasses_are_frozen():
     with pytest.raises(dataclasses.FrozenInstanceError):
         build().signal = "other"

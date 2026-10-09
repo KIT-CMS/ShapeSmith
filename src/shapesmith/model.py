@@ -285,6 +285,7 @@ class Analysis:
     lumi_pb: float
     signal: str | None  # the signal process of datacards and plots (None: a measurement analysis without one)
     channels: Mapping[str, Channel]
+    control_channels: tuple[str, ...] = ()  # in every final state of datacards and fits, never one themselves
     lnn: tuple[LnN, ...] = ()
     style: Style | None = None
     ml: MLExportConfig | None = None

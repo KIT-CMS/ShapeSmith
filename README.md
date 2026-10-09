@@ -82,6 +82,9 @@ categories, control variables, variations and estimators.
   `<name>Down%p` (`histogram.part_of`), e.g. one nuisance from CROWN shifts produced per decay
   mode (exact where no event is changed by two parts). Parts never become datacard shapes; place
   the sum after the estimators whose outputs should carry it.
+- `Analysis.control_channels`: channels that `datacards` and `fit` put into every final state
+  (each selected channel and `all`) but never make a final state themselves, e.g. a ttbar
+  control channel fitted together with the signal channels.
 
 **The event rule** (`shapesmith.events`, used by hist, the ML export and measurements): cuts are
 the channel cuts with the region's replacements, the process cuts and the skim cuts; weights are

@@ -87,9 +87,15 @@ def _shapes_path(config: RunConfig, control: bool) -> Path:
     return config.output_dir / ("control_shapes.root" if control else "shapes.root")
 
 
-def _final_states(channels: list[str]) -> dict[str, list[str]]:
-    states = {channel: [channel] for channel in channels}
-    if len(channels) > 1:
+def _final_states(channels: list[str], control_channels: tuple[str, ...] = ()) -> dict[str, list[str]]:
+    """Each selected channel and, with more than one, all of them ('all'); the selected control channels join every
+    final state and are none themselves."""
+    controls = [channel for channel in channels if channel in control_channels]
+    signal_channels = [channel for channel in channels if channel not in control_channels]
+    if not signal_channels:
+        raise typer.BadParameter(f"no final state: {', '.join(channels)} are control channels")
+    states = {channel: [channel, *controls] for channel in signal_channels}
+    if len(signal_channels) > 1:
         states["all"] = list(channels)
     return states
 
@@ -195,7 +201,7 @@ def datacards(config: Path = ConfigOption, channels: Optional[str] = ChannelsOpt
 
     cfg, analysis, selected = _setup(config, channels, overrides=overrides)
     threshold = None if min_background is None or min_background < 0 else min_background
-    for name, path in run_datacards(HistogramSet.load(_shapes_path(cfg, False)), analysis, _final_states(selected), cfg.output_dir / "datacards", systematics, threshold).items():
+    for name, path in run_datacards(HistogramSet.load(_shapes_path(cfg, False)), analysis, _final_states(selected, analysis.control_channels), cfg.output_dir / "datacards", systematics, threshold).items():
         logger.info(f"datacard {name}: {path}")
 
 
@@ -205,8 +211,8 @@ def fit(config: Path = ConfigOption, channels: Optional[str] = ChannelsOption, o
     """Run combine (expected limits, significance, best fit) and summarise the results."""
     from shapesmith.limits import run_limits
 
-    cfg, _, selected = _setup(config, channels, overrides=overrides)
-    states = _split(final_states) or list(_final_states(selected))
+    cfg, analysis, selected = _setup(config, channels, overrides=overrides)
+    states = _split(final_states) or list(_final_states(selected, analysis.control_channels))
     results = run_limits(cfg, cfg.output_dir / "datacards", states, skip_combine)
     typer.echo((cfg.output_dir / "datacards" / "limits.md").read_text())
     logger.info(f"{len(results)} final states summarised")
