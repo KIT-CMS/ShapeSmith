@@ -108,6 +108,22 @@ def _binning_problems(channel: Channel) -> list[str]:
     return problems
 
 
+def _ml_problems(analysis: Analysis) -> list[str]:
+    """Every ML process is exported by some channel; an estimator output, exported as the data of its region_of
+    region, never from the nominal region."""
+    ml = analysis.ml
+    exported = {name for channel in analysis.channels.values() for name in ml.exported(channel)}
+    problems = [f"ML export: {name} is no signal or background process or estimator output of any channel" for name in ml.processes if name not in exported]
+    for channel in analysis.channels.values():
+        processes = {p.name for p in channel.processes}
+        problems += [
+            f"ML export: {name} is an estimator output of channel {channel.name} without a region in region_of"
+            for name in ml.exported(channel)
+            if name not in processes and ml.region_of.get(name, NOMINAL) == NOMINAL
+        ]
+    return problems
+
+
 def channel_problems(channel: Channel) -> list[str]:
     region_names = {NOMINAL, *(r.name for r in channel.regions)}
     problems = _process_problems(channel) + _region_problems(channel)
@@ -124,7 +140,7 @@ def validate(analysis: Analysis) -> None:
     if analysis.signal is not None and processes.get(analysis.signal) != "signal":
         problems.append(f"signal {analysis.signal} is not a process with the role signal")
     if analysis.ml is not None:
-        problems += [f"ML export: {name} is an auxiliary process" for name in analysis.ml.processes if processes.get(name) == "auxiliary"]
+        problems += _ml_problems(analysis)
     if problems:
         raise AnalysisError("\n".join(sorted(set(problems))))
 

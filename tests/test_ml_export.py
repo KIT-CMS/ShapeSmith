@@ -1,3 +1,5 @@
+import dataclasses
+
 import numpy as np
 import pandas as pd
 import pytest
@@ -53,3 +55,17 @@ def test_run_ml_export_writes_folds(mini_run):
     cw = fold0[tuple_column("Nominal", "class_weight")].to_numpy()
     sums = [cw[labels == c].sum() for c in np.unique(labels)]
     assert np.allclose(sums, sums[0])
+
+
+def test_a_process_the_channel_lacks_is_not_exported(mini_run):
+    """EMB of another channel: before, its name fell back to the data of the nominal region (an unblinding)."""
+    config, analysis = mini_run
+    ml = dataclasses.replace(analysis.ml, processes=analysis.ml.processes + ("EMB",), label_of={**analysis.ml.label_of, "EMB": "is_EMB"})
+    analysis = dataclasses.replace(analysis, ml=ml)
+    assert ml.exported(analysis.channel("mt")) == ("ZTT", "ZL", "HH", "jetFakes")
+    with pytest.raises(ValueError, match="channel mt: EMB is no signal or background process or estimator output"):
+        export_process(config, analysis, "mt", "EMB")
+    run_ml_export(config, analysis, ["mt"])
+    folds = pd.concat([pd.read_feather(config.ml_dir / "mt" / f"fold{k}.feather") for k in (0, 1)])
+    assert (folds[tuple_column("Labels", "is_EMB")] == 0).all()
+    assert len(folds) == sum(len(export_process(config, analysis, "mt", name)) for name in ("ZTT", "ZL", "HH", "jetFakes"))

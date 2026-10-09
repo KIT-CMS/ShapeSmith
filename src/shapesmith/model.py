@@ -277,6 +277,12 @@ class MLExportConfig:
     fold_column: str = "event"
     folds: int = 2
 
+    def exported(self, channel: Channel) -> tuple[str, ...]:
+        """The processes a channel exports: those of `processes` that are its signal or background processes or
+        estimator outputs; a name the channel lacks (e.g. a process of another channel) is left out there."""
+        own = {p.name for p in channel.processes if p.role == "signal"} | set(channel.backgrounds())
+        return tuple(name for name in self.processes if name in own)
+
 
 @dataclass(frozen=True)
 class Analysis:
