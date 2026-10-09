@@ -45,7 +45,8 @@ git hashes of core, analysis and sample database, the full run configuration and
 `fit` runs combine on them in CMSSW (`combine.cmssw_dir`) and summarises the results in
 `<output_dir>/datacards/limits.{json,md,pdf}`. `fit --background-only` instead fits the data with
 r frozen to 0 (`combine -M FitDiagnostics --setParameters r=0 --freezeParameters r --skipSBFit
---saveNormalizations --saveShapes --saveWithUncertainties`), by default on the combination of
+--cminDefaultMinimizerStrategy 0 --robustHesse 1 --saveNormalizations --saveShapes --saveWithUncertainties`; the
+covariance comes from `robustHesse`, its quality is -1), by default on the combination of
 the selected channels (`all`, or the only final state), and writes
 `datacards/<final state>/fitDiagnostics.BackgroundOnly.root` and `datacards/background_fit.{json,md}`
 (`--skip-combine`: from the stored values): per final state the fit status, per nuisance the prefit [mean, width] of its Gaussian constraint, postfit

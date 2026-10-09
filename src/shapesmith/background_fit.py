@@ -27,8 +27,10 @@ logger = logging.getLogger(__name__)
 def fit_commands(mass: str = "125") -> list[str]:
     return [
         f"text2workspace.py combined.txt -o workspace.root -m {mass}",
+        # robustHesse: with many normalisation nuisances on one bin (em) the Minuit covariance is forced positive
+        # definite and its errors are far too small; the covariance quality is then -1
         f"combine -M FitDiagnostics -d workspace.root -m {mass} --setParameters r=0 --freezeParameters r --skipSBFit "
-        f"--saveNormalizations --saveShapes --saveWithUncertainties -n {NAME}",
+        f"--cminDefaultMinimizerStrategy 0 --robustHesse 1 --saveNormalizations --saveShapes --saveWithUncertainties -n {NAME}",
         f"python3 {VALUES_SCRIPT} workspace.root {OUTPUT}.root {OUTPUT}.json",
     ]
 

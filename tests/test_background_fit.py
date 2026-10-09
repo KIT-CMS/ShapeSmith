@@ -24,6 +24,7 @@ def test_fit_commands():
     script = "\n".join(fit_commands())
     assert "text2workspace.py combined.txt -o workspace.root -m 125" in script
     assert "combine -M FitDiagnostics -d workspace.root -m 125 --setParameters r=0 --freezeParameters r --skipSBFit" in script
+    assert "--robustHesse 1" in script
     assert "--saveNormalizations --saveShapes --saveWithUncertainties -n .BackgroundOnly" in script
     assert f"python3 {VALUES_SCRIPT} workspace.root fitDiagnostics.BackgroundOnly.root fitDiagnostics.BackgroundOnly.json" in script
 
