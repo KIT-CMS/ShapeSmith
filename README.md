@@ -60,8 +60,10 @@ viewer reading `manifest.json`; also works from `file://`): one column per varia
 every plotted region and category (from the `yield` control variable where there is one, computed
 as the stack plot does) and the provenance of the histograms. Publishing a variant again replaces
 its published channels and keeps the other variants and channels; only changed plots are copied
-and everything is world-readable. `--title`/`--about` set the gallery's title and the text of its
-collapsed "About this gallery" section. A directory that is neither empty nor a gallery is refused.
+and everything is world-readable. Variants and channels keep the order of their first publication: a
+new variant comes last, a new channel next to the channels of its run already in the gallery, else
+last. `--title`/`--about` set the gallery's title and the text of its collapsed "About this gallery"
+section. A directory that is neither empty nor a gallery is refused.
 `web: {dir, variant, label, description, title, about}` in the run YAML sets the defaults of the
 options. For an analysis with a measurement, `publish` takes the measurement's plots from
 `<output_dir>/<measurement>/<era>/` instead (the fake factors: by process, split category and
