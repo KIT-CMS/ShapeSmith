@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from shapesmith.histogram import part_of
-from shapesmith.model import NOMINAL, ROLES, SAMPLE_KINDS, Analysis, AnalysisError, Channel, ColumnVariation, DataMinus, EqualData, TemplateShift, VariationSum, WeightVariation
+from shapesmith.model import ABCD, NOMINAL, ROLES, SAMPLE_KINDS, Analysis, AnalysisError, Channel, ColumnVariation, DataMinus, EqualData, TemplateShift, VariationSum, WeightVariation
 
 
 def _duplicates(what: str, names: list[str]) -> list[str]:
@@ -68,7 +68,7 @@ def _variation_problems(channel: Channel, region_names: set[str]) -> list[str]:
 
 def _estimator_problems(channel: Channel, region_names: set[str]) -> list[str]:
     roles = {p.name: p.role for p in channel.processes}
-    problems = []
+    problems = _duplicates("estimator output", [f"{e.output} in {e.target}" for e in channel.estimators if isinstance(e, (DataMinus, ABCD))])
     column_variations = {v.name for v in channel.variations if isinstance(v, ColumnVariation)}
     for estimator in channel.estimators:
         if isinstance(estimator, TemplateShift):
@@ -82,7 +82,7 @@ def _estimator_problems(channel: Channel, region_names: set[str]) -> list[str]:
             parts = [part_of(f"{estimator.name}{d}", p) for p in estimator.parts for d in ("Up", "Down")]
             problems += [f"variation sum {estimator.name}: part {part} is not a column variation" for part in parts if part not in column_variations]
             continue
-        regions = (estimator.region,) if isinstance(estimator, DataMinus) else (estimator.b, estimator.c, estimator.d)
+        regions = (estimator.region, estimator.target) if isinstance(estimator, DataMinus) else (estimator.b, estimator.c, estimator.d, estimator.target)
         problems += [f"estimator {estimator.output}: region {r} does not exist" for r in regions if r not in region_names]
         problems += [f"estimator {estimator.output}: subtracts unknown process {name}" for name in estimator.subtract if name not in roles]
         problems += [f"estimator {estimator.output}: subtracts the auxiliary process {name}" for name in estimator.subtract if roles.get(name) == "auxiliary"]
@@ -108,6 +108,22 @@ def _binning_problems(channel: Channel) -> list[str]:
     return problems
 
 
+def _ml_problems(analysis: Analysis) -> list[str]:
+    """Every ML process is exported by some channel; an estimator output, exported as the data of its region_of
+    region, never from the nominal region."""
+    ml = analysis.ml
+    exported = {name for channel in analysis.channels.values() for name in ml.exported(channel)}
+    problems = [f"ML export: {name} is no signal or background process or estimator output of any channel" for name in ml.processes if name not in exported]
+    for channel in analysis.channels.values():
+        processes = {p.name for p in channel.processes}
+        problems += [
+            f"ML export: {name} is an estimator output of channel {channel.name} without a region in region_of"
+            for name in ml.exported(channel)
+            if name not in processes and ml.region_of.get(name, NOMINAL) == NOMINAL
+        ]
+    return problems
+
+
 def channel_problems(channel: Channel) -> list[str]:
     region_names = {NOMINAL, *(r.name for r in channel.regions)}
     problems = _process_problems(channel) + _region_problems(channel)
@@ -120,10 +136,11 @@ def validate(analysis: Analysis) -> None:
     """Raise AnalysisError listing every problem of the analysis."""
     problems = [problem for channel in analysis.channels.values() for problem in channel_problems(channel)]
     processes = {p.name: p.role for channel in analysis.channels.values() for p in channel.processes}
+    problems += [f"control channel {name} is not a channel of the analysis" for name in analysis.control_channels if name not in analysis.channels]
     if analysis.signal is not None and processes.get(analysis.signal) != "signal":
         problems.append(f"signal {analysis.signal} is not a process with the role signal")
     if analysis.ml is not None:
-        problems += [f"ML export: {name} is an auxiliary process" for name in analysis.ml.processes if processes.get(name) == "auxiliary"]
+        problems += _ml_problems(analysis)
     if problems:
         raise AnalysisError("\n".join(sorted(set(problems))))
 

@@ -21,6 +21,7 @@ class FriendConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
     base: str
     applies_to: tuple[SampleKind, ...] = ("mc", "data", "embedding")
+    channels: tuple[str, ...] | None = None  # None: every channel
 
 
 class NtupleConfig(BaseModel):
@@ -110,7 +111,8 @@ def load_config(path: str | Path, overrides: Iterable[str] = ()) -> RunConfig:
 def summary(analysis: Analysis) -> list[str]:
     """One line for the analysis and one per channel: samples per kind, processes, regions, categories, variables,
     variations and estimators."""
-    lines = [f"analysis {analysis.name}: era {analysis.era}, {analysis.lumi_pb:g} pb^-1, signal {analysis.signal}, channels {', '.join(analysis.channels)}"]
+    controls = f" (control {', '.join(analysis.control_channels)})" if analysis.control_channels else ""
+    lines = [f"analysis {analysis.name}: era {analysis.era}, {analysis.lumi_pb:g} pb^-1, signal {analysis.signal}, channels {', '.join(analysis.channels)}{controls}"]
     for name, channel in analysis.channels.items():
         kinds = ", ".join(f"{kind} {count}" for kind, count in sorted(Counter(s.kind for s in channel.samples).items()))
         lines.append(

@@ -59,16 +59,17 @@ def list_root_files(server: str, directory: str) -> list[str]:
     return sorted(name for name in names if name.endswith(".root"))
 
 
-def friend_bases(ntuples: NtupleConfig, kind: str) -> list[str]:
-    """The friend bases that apply to a sample kind, in configured order (later friends override earlier ones)."""
-    return [friend.base for friend in ntuples.friends if kind in friend.applies_to]
+def friend_bases(ntuples: NtupleConfig, kind: str, channel: str) -> list[str]:
+    """The friend bases that apply to a sample kind in a channel, in configured order (later friends override earlier
+    ones)."""
+    return [friend.base for friend in ntuples.friends if kind in friend.applies_to and (friend.channels is None or channel in friend.channels)]
 
 
 def discover(ntuples: NtupleConfig, era: str, nick: str, channel: str, kind: str) -> list[NtupleFile]:
     """Main files of one sample and channel with their friend files; missing friends are an error."""
     main_dir = f"{ntuples.base.rstrip('/')}/{era}/{nick}/{channel}"
     basenames = list_root_files(ntuples.server, main_dir)
-    friend_dirs = [f"{base.rstrip('/')}/{era}/{nick}/{channel}" for base in friend_bases(ntuples, kind)]
+    friend_dirs = [f"{base.rstrip('/')}/{era}/{nick}/{channel}" for base in friend_bases(ntuples, kind, channel)]
     friend_listings = [set(list_root_files(ntuples.server, directory)) for directory in friend_dirs]
     missing = [f"{directory}/{name}" for directory, names in zip(friend_dirs, friend_listings) for name in basenames if name not in names]
     if missing:

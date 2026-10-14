@@ -59,9 +59,12 @@ def _variable_expr(channel: Channel, name: str) -> str:
 
 
 def export_process(config: RunConfig, analysis: Analysis, channel_name: str, name: str) -> pd.DataFrame:
-    """The events of one exported process; an estimator output is exported as the data of its region."""
+    """The events of one process the channel exports (MLExportConfig.exported); an estimator output is exported as the
+    data of its region."""
     ml = analysis.ml
     channel = analysis.channel(channel_name)
+    if name not in ml.exported(channel):
+        raise ValueError(f"channel {channel_name}: {name} is no signal or background process or estimator output")
     process = name if name in {p.name for p in channel.processes} else channel.data()  # an estimator output: data in its region
     exprs = {v: _variable_expr(channel, v) for v in ml.variables}
     events = load(config, analysis, Query(channel_name, process, ml.region_of.get(name, NOMINAL)), {ml.fold_column} | columns_of(exprs.values()))
@@ -86,8 +89,17 @@ def run_ml_export(config: RunConfig, analysis: Analysis, channels: list[str]) ->
         raise ValueError("RunConfig.ml_dir is not set")
     written = []
     for channel in channels:
+        if channel in analysis.control_channels:
+            logger.info(f"{channel}: control channel, not exported")
+            continue
+        names = analysis.ml.exported(analysis.channel(channel))
+        skipped = [name for name in analysis.ml.processes if name not in names]
+        if skipped:
+            logger.info(f"{channel}: {', '.join(skipped)} not exported, no process or estimator output of the channel")
+        if not names:
+            continue
         parts: dict[str, list[pd.DataFrame]] = {}
-        for name in analysis.ml.processes:
+        for name in names:
             frame = export_process(config, analysis, channel, name)
             logger.info(f"{channel}/{name}: {len(frame)} events")
             for fold, selected in fold_masks(frame[tuple_column("Event", analysis.ml.fold_column)].to_numpy(), analysis.ml.folds).items():

@@ -1,10 +1,12 @@
 import textwrap
 
+import pytest
+import typer
 import uproot
 from typer.testing import CliRunner
 
 from shapesmith import __version__
-from shapesmith.cli import app
+from shapesmith.cli import _final_states, app
 from shapesmith.testing import make_mini_dataset
 
 runner = CliRunner()
@@ -100,3 +102,26 @@ def test_a_failing_command_logs_its_traceback(tmp_path):
     [log] = (tmp_path / "out" / "logs").glob("hist_*.log")
     text = log.read_text()
     assert "ERROR   MainProcess shapesmith.cli: failed after" in text and "SkimMissingError" in text and "Traceback" in text
+
+
+def test_final_states_put_the_control_channels_into_every_final_state():
+    assert _final_states(["mt"]) == {"mt": ["mt"]}
+    assert _final_states(["et", "mt"]) == {"et": ["et"], "mt": ["mt"], "all": ["et", "mt"]}
+    assert _final_states(["et", "mt", "em"], ("em",)) == {"et": ["et", "em"], "mt": ["mt", "em"], "all": ["et", "mt", "em"]}
+    assert _final_states(["mt", "em"], ("em",)) == {"mt": ["mt", "em"]}
+    assert _final_states(["et", "mt"], ("em",)) == {"et": ["et"], "mt": ["mt"], "all": ["et", "mt"]}
+    with pytest.raises(typer.BadParameter, match="no final state"):
+        _final_states(["em"], ("em",))
+
+
+def test_datacards_with_a_control_channel(tmp_path):
+    config = _write_config(tmp_path)
+    make_mini_dataset(tmp_path / "data", channel="em", n_files=2, n_events=400)
+    config.write_text(config.read_text().replace("tests.mini_analysis:build", "tests.mini_analysis:build_with_control").replace("channels: [mt]", "channels: [mt, em]"))
+    for command in ("skim", "hist", "estimate", "datacards"):
+        _run(command, "-c", str(config))
+    cards = tmp_path / "out" / "datacards"
+    assert sorted(path.name for path in cards.iterdir()) == ["mt"]
+    bins = [line for line in (cards / "mt" / "combined.txt").read_text().splitlines() if line.startswith("bin")][0].split()[1:]
+    assert bins == ["htt_mt_1_2018", "htt_mt_2_2018", "htt_em_1_2018", "htt_em_2_2018"]
+    assert runner.invoke(app, ["datacards", "-c", str(config), "--channels", "em"]).exit_code != 0

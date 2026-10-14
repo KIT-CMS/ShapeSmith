@@ -31,6 +31,7 @@ shapesmith publish   -c run.yaml --to DIR --variant KEY [--label TEXT] [--descri
 shapesmith sync      -c run.yaml              # combine-style shape files per channel
 shapesmith datacards -c run.yaml [--min-background 1.0] [--no-systematics]
 shapesmith fit       -c run.yaml [--final-states mt,all] [--skip-combine]   # limits, significance, best fit
+shapesmith fit       -c run.yaml --background-only [--final-states all]   # background-only fit to the data, pulls, yields
 shapesmith ml-export -c run.yaml              # Feather training folds
 shapesmith inspect   output/shapes.root [--unchanged]   # what a histogram file contains; variations equal to their nominal
 ```
@@ -40,14 +41,29 @@ shapesmith inspect   output/shapes.root [--unchanged]   # what a histogram file 
 record what produced their outputs in `<directory>/versions/<analysis name>.json` (versions,
 git hashes of core, analysis and sample database, the full run configuration and its hash).
 
+`datacards` writes one card per final state, `<output_dir>/datacards/<final state>/combined.txt`;
+`fit` runs combine on them in CMSSW (`combine.cmssw_dir`) and summarises the results in
+`<output_dir>/datacards/limits.{json,md,pdf}`. `fit --background-only` instead fits the data with
+r frozen to 0 (`combine -M FitDiagnostics --setParameters r=0 --freezeParameters r --skipSBFit
+--cminDefaultMinimizerStrategy 0 --robustHesse 1 --saveNormalizations --saveShapes --saveWithUncertainties`; the
+covariance comes from `robustHesse`, its quality is -1), by default on the combination of
+the selected channels (`all`, or the only final state), and writes
+`datacards/<final state>/fitDiagnostics.BackgroundOnly.root` and `datacards/background_fit.{json,md}`
+(`--skip-combine`: from the stored values): per final state the fit status, per nuisance the prefit [mean, width] of its Gaussian constraint, postfit
+[value, error], pull and constraint, and per channel, category and process the data and the
+prefit and postfit [value, error] yields (with the totals `total_background`, `total_signal`,
+`total`). It fits the observed data of every bin of the card.
+
 `publish` copies the plots of `<output_dir>/plots/` into a web gallery (`DIR/index.html`, a static
 viewer reading `manifest.json`; also works from `file://`): one column per variant (`--variant`,
 `[a-z0-9_]+`, e.g. one run configuration), with the data, prediction and stacked-group yields of
 every plotted region and category (from the `yield` control variable where there is one, computed
 as the stack plot does) and the provenance of the histograms. Publishing a variant again replaces
 its published channels and keeps the other variants and channels; only changed plots are copied
-and everything is world-readable. `--title`/`--about` set the gallery's title and the text of its
-collapsed "About this gallery" section. A directory that is neither empty nor a gallery is refused.
+and everything is world-readable. Variants and channels keep the order of their first publication: a
+new variant comes last, a new channel next to the channels of its run already in the gallery, else
+last. `--title`/`--about` set the gallery's title and the text of its collapsed "About this gallery"
+section. A directory that is neither empty nor a gallery is refused.
 `web: {dir, variant, label, description, title, about}` in the run YAML sets the defaults of the
 options. For an analysis with a measurement, `publish` takes the measurement's plots from
 `<output_dir>/<measurement>/<era>/` instead (the fake factors: by process, split category and
@@ -75,13 +91,20 @@ categories, control variables, variations and estimators.
   groups (a CROWN shift produced for some samples only). Names ending in `Up`/`Down` need their
   partner and become datacard shapes; other names are templates.
 - Estimators, run in order by `estimate`: `DataMinus(output, region, subtract, scale,
-  clip_negative)`, `ABCD(output, b, c, d, subtract)`, `TemplateShift(name, process, template,
-  fraction)`, which also varies every template variation `t` of the process (as `<name>Up@t`),
-  and `VariationSum(name, parts)`: `<name>Up/Down` = nominal + the sum of (part - nominal) for
-  every histogram with a part, the part `p` being the column variation `<name>Up%p` /
-  `<name>Down%p` (`histogram.part_of`), e.g. one nuisance from CROWN shifts produced per decay
-  mode (exact where no event is changed by two parts). Parts never become datacard shapes; place
-  the sum after the estimators whose outputs should carry it.
+  clip_negative, target)`, `ABCD(output, b, c, d, subtract, target)`, both writing their output to
+  the region `target` (default the nominal one; e.g. QCD in a diagnostic region),
+  `TemplateShift(name, process, template, fraction)`, which also varies every template variation
+  `t` of the process (as `<name>Up@t`), and `VariationSum(name, parts)`: `<name>Up/Down` =
+  nominal + the sum of (part - nominal) for every histogram with a part, the part `p` being the column
+  variation `<name>Up%p` / `<name>Down%p` (`histogram.part_of`), e.g. one nuisance from CROWN
+  shifts produced per decay mode (exact where no event is changed by two parts). Parts never
+  become datacard shapes; place the sum after the estimators whose outputs should carry it.
+- `MLExportConfig(variables, processes, label_of, region_of)`: `ml-export` writes, per channel, the
+  `processes` the channel has as signal, background or estimator output (`exported(channel)`);
+  an estimator output is the data of its `region_of` region, which must not be the nominal one.
+- `Analysis.control_channels`: channels that `datacards` and `fit` put into every final state
+  (each selected channel and `all`) but never make a final state themselves, e.g. a ttbar
+  control channel fitted together with the signal channels; `ml-export` skips them.
 
 **The event rule** (`shapesmith.events`, used by hist, the ML export and measurements): cuts are
 the channel cuts with the region's replacements, the process cuts and the skim cuts; weights are
@@ -90,13 +113,13 @@ variation replaces weights in place (and does not apply to a process lacking one
 column variation rewrites every expression. Event weight: `(norm_weight * lumi) * product`,
 `lumi` for MC only.
 
-**Booking**: the signal in the nominal region, other processes in the nominal and the estimator
-regions (or `--regions`). A variation is filled where its `applies_to` and `regions` allow; a
-column variation only where it changes an expression of the histogram (elsewhere it equals the
-nominal). `DataMinus` builds its output for every column variation of data or a subtracted
-process, taking the nominal of inputs that lack it; weight variations are not propagated, ABCD
-is nominal only. `--skip-systematics` skips weight and column variations. `hist` always refills
-the requested scopes and keeps the other histograms of its file.
+**Booking**: the signal in the nominal region, other processes in the nominal region and the
+regions the estimators read and write (or `--regions`). A variation is filled where its
+`applies_to` and `regions` allow; a column variation only where it changes an expression of the
+histogram (elsewhere it equals the nominal). `DataMinus` builds its output for every column
+variation of data or a subtracted process, taking the nominal of inputs that lack it; weight
+variations are not propagated, ABCD is nominal only. `--skip-systematics` skips weight and column
+variations. `hist` always refills the requested scopes and keeps the other histograms of its file.
 
 ## Skims
 
@@ -105,6 +128,9 @@ shifted branches of its column variations. An event is kept if the skim cuts pas
 under any column variation of its kind (hist re-applies the varied skim cuts). Where the channel
 declares CROWN shifts for a sample (its kind and group), every file must carry a shifted branch for each of them,
 and every shifted branch `c__X` of a needed column must be declared; otherwise the skim fails.
+
+A friend is read for the samples of its kinds (`applies_to`) in its channels (`channels`, default
+all), so a channel without that friend production (e.g. a control channel) does not look for it.
 
 The manifest records the skim contract. A stored skim is reused when its skim cuts,
 normalisation and sample cut are unchanged, its recorded column variations and friends contain
@@ -172,8 +198,9 @@ sample_database: ../../KingMaker_sample_database/nanoAOD_v15/datasets.json   # r
 ntuples:
   server: root://cmsdcache-kit-disk.gridka.de
   base: /store/user/USER/CROWN/ntuples/TAG/CROWNRun
-  friends:
+  friends:                                # later friends override earlier ones; applies_to and channels default to all
     - {base: /store/user/USER/CROWN/ntuples/TAG/CROWNFriends/nn_v1, applies_to: [mc, data, embedding]}
+    - {base: /store/user/USER/CROWN/ntuples/TAG/CROWNFriends/ff_v1, channels: [et, mt, tt]}
 skim_dir: /ceph/USER/shapesmith/TAG
 output_dir: output/TAG
 ml_dir: /ceph/USER/shapesmith_ml/TAG

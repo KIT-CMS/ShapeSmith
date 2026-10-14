@@ -87,11 +87,33 @@ def test_validate_checks_estimators_and_auxiliary_processes():
         validate(_with_channel(analysis, estimators=(model.DataMinus("jetFakes", "anti_iso", ("ZTT",)),)))
     with pytest.raises(model.AnalysisError, match="template shift t: unknown process TTT"):
         validate(_with_channel(analysis, estimators=(model.TemplateShift("t", "EMB", "TTT", 0.1),)))
-    with pytest.raises(model.AnalysisError, match="ML export: ZTT is an auxiliary process"):
+    with pytest.raises(model.AnalysisError, match="ML export: ZTT is no signal or background process or estimator output of any channel"):
         validate(dataclasses.replace(analysis, ml=dataclasses.replace(analysis.ml, processes=("ZTT",))))
     mixed = channel.samples + (model.Sample("DATA_B", "EMB", "data"),)
     with pytest.raises(model.AnalysisError, match="process EMB: samples of different kinds"):
         validate(_with_channel(analysis, samples=mixed))
+
+
+def test_validate_checks_estimator_targets():
+    analysis = build()
+    channel = analysis.channel("mt")
+    qcd = (model.DataMinus("QCD", "same_sign", ("ZTT",), target="anti_iso"), model.ABCD("QCD", "same_sign", "anti_iso", "same_sign", ("ZTT",)))
+    validate(_with_channel(analysis, estimators=channel.estimators + qcd))
+    with pytest.raises(model.AnalysisError, match="estimator QCD: region nowhere does not exist"):
+        validate(_with_channel(analysis, estimators=(model.ABCD("QCD", "same_sign", "anti_iso", "same_sign", (), target="nowhere"),)))
+    with pytest.raises(model.AnalysisError, match="duplicate estimator output QCD in anti_iso"):
+        validate(_with_channel(analysis, estimators=qcd + qcd[:1]))
+
+
+def test_the_ml_processes_are_checked_per_channel():
+    """ZTT is the auxiliary template of the embedding in mt and a background in tt: exported from tt only."""
+    analysis = build_embedding()
+    channels = {"mt": analysis.channel("mt"), "tt": dataclasses.replace(build().channel("mt"), name="tt")}
+    analysis = dataclasses.replace(analysis, channels=channels, ml=dataclasses.replace(analysis.ml, processes=("ZTT", "EMB", "jetFakes")))
+    validate(analysis)
+    assert analysis.ml.exported(channels["mt"]) == ("EMB", "jetFakes") and analysis.ml.exported(channels["tt"]) == ("ZTT", "jetFakes")
+    with pytest.raises(model.AnalysisError, match="ML export: jetFakes is an estimator output of channel tt without a region in region_of"):
+        validate(dataclasses.replace(analysis, ml=dataclasses.replace(analysis.ml, region_of={})))
 
 
 def test_the_signal_is_a_process_with_the_signal_role():
@@ -101,6 +123,12 @@ def test_the_signal_is_a_process_with_the_signal_role():
     with pytest.raises(model.AnalysisError, match="signal nope is not a process"):
         validate(dataclasses.replace(analysis, signal="nope"))
     validate(dataclasses.replace(analysis, signal=None))
+
+
+def test_control_channels_are_channels_of_the_analysis():
+    validate(dataclasses.replace(build(), control_channels=("mt",)))
+    with pytest.raises(model.AnalysisError, match="control channel em is not a channel of the analysis"):
+        validate(dataclasses.replace(build(), control_channels=("em",)))
 
 
 def test_dataclasses_are_frozen():
@@ -113,14 +141,14 @@ def test_validate_checks_variation_sums():
     channel = analysis.channel("mt")
     parts = tuple(model.ColumnVariation(part_of(f"CMS_tes{d}", "dm10"), f"__tes_dm10{d}") for d in ("Up", "Down"))
     ok = model.VariationSum("CMS_tes", ("dm10",))
-    validate(_with_channel(analysis, variations=channel.variations + parts, estimators=(ok,)))
+    validate(_with_channel(analysis, variations=channel.variations + parts, estimators=(*channel.estimators, ok)))
     for estimator, problem in (
         (model.VariationSum("CMS_tesUp", ("dm10",)), "the name carries a direction"),
         (model.VariationSum("CMS_tes", ()), "no parts"),
         (model.VariationSum("CMS_tes", ("dm11",)), r"part CMS_tesUp%dm11 is not a column variation"),
     ):
         with pytest.raises(model.AnalysisError, match=problem):
-            validate(_with_channel(analysis, variations=channel.variations + parts, estimators=(estimator,)))
+            validate(_with_channel(analysis, variations=channel.variations + parts, estimators=(*channel.estimators, estimator)))
 
 
 def test_validate_checks_equal_data_binning():

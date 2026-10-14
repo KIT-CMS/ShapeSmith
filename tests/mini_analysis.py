@@ -94,3 +94,10 @@ def build_embedding(config=None) -> Analysis:
     )
     ml = dataclasses.replace(analysis.ml, processes=("EMB", "ZL", "HH", "jetFakes"), label_of={"EMB": "is_Z", "ZL": "is_Z", "HH": "is_HH", "jetFakes": "is_jetFakes"})
     return dataclasses.replace(analysis, channels={"mt": channel}, ml=ml)
+
+
+def build_with_control(config=None) -> Analysis:
+    """The mini analysis with a copy of mt as the control channel em (in every final state, never one itself)."""
+    analysis = build(config)
+    control = dataclasses.replace(analysis.channel("mt"), name="em")
+    return dataclasses.replace(analysis, channels={"mt": analysis.channel("mt"), "em": control}, control_channels=("em",))

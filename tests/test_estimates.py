@@ -76,6 +76,20 @@ def test_abcd_factor_zero_when_control_regions_empty():
     assert hset[_key("QCD", "nominal")].values.tolist() == [0.0, 0.0]
 
 
+def test_estimates_in_a_target_region():
+    """QCD in a diagnostic region: same-sign data minus MC written to the opposite-sign region, and from ABCD."""
+    analysis = _with_estimators(build(), DataMinus("QCD", "same_sign", ("ZTT",), target="os"), ABCD("QCD", "b", "c", "d", ("ZTT",), target="fail"))
+    hset = HistogramSet()
+    for region, data in (("same_sign", 10.0), ("b", 6.0), ("c", 8.0), ("d", 4.0)):
+        hset[_key("data", region)] = _hist([data, data])
+        hset[_key("ZTT", region)] = _hist([2.0, 2.0])
+    added = run_estimates(hset, analysis, ["mt"])
+    assert added == [_key("QCD", "os"), _key("QCD", "fail")]
+    assert hset[_key("QCD", "os")].values.tolist() == [8.0, 8.0]
+    assert hset[_key("QCD", "fail")].values.tolist() == [12.0, 12.0]  # B=(4,4), C=6, D=2 -> factor 3
+    assert analysis.channel("mt").backgrounds() == ("ZTT", "ZL", "QCD")
+
+
 def test_clip_negative_bins_keeps_integral():
     assert clip_negative_bins(_hist([-1.0, 5.0])).values.tolist() == [0.0, 4.0]
     assert clip_negative_bins(_hist([-3.0, 1.0])).values.tolist() == [0.0, 0.0]

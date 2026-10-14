@@ -4,6 +4,7 @@ DataMinus: data minus the subtracted processes in its region, for the nominal an
 data or a subtracted process there; an input without that variation contributes its nominal (under the fill rule it
 is unchanged). Weight variations are not propagated. Optionally negative bins are clipped.
 ABCD: (data - MC)(B) * (data - MC)(C).sum() / (data - MC)(D).sum(), nominal only, negative bins clipped.
+Both write their output to their target region (the nominal one by default, or e.g. a diagnostic region).
 TemplateShift: `process` +/- `fraction` * `template`, e.g. the ttbar contamination of the embedded sample; also on top of
 every template variation of `process`.
 VariationSum: `name`Up/Down = nominal + the sum of (part - nominal) over its parts, for every histogram with a part;
@@ -13,6 +14,7 @@ parts as for any column variation).
 from __future__ import annotations
 
 import logging
+from collections import defaultdict
 
 from dataclasses import replace
 
@@ -51,18 +53,21 @@ def categories_and_variables(hset: HistogramSet, channel: Channel, region: str) 
 
 def estimate_data_minus(hset: HistogramSet, channel: Channel, estimator: DataMinus) -> list[HistKey]:
     column_variations = {v.name for v in channel.variations if isinstance(v, ColumnVariation)}
-    inputs = (channel.data(), *estimator.subtract)
+    inputs = {channel.data(), *estimator.subtract}
+    present = defaultdict(set)  # (category, variable) -> variations of the inputs, from one pass over the keys
+    for k in hset:
+        if k.channel == channel.name and k.region == estimator.region and k.process in inputs:
+            present[k.category, k.variable].add(k.variation)
     added = []
     for category, variable in categories_and_variables(hset, channel, estimator.region):
-        present = {k.variation for process in inputs for k in hset.select(channel=channel.name, category=category, process=process, region=estimator.region, variable=variable)}
-        variations = (NOMINAL_VARIATION, *sorted(present & column_variations))
+        variations = (NOMINAL_VARIATION, *sorted(present[category, variable] & column_variations))
         for variation in variations:
             h = data_minus(hset, channel, category, variable, estimator.region, estimator.subtract, variation).scale(estimator.scale)
-            key = HistKey(channel.name, category, estimator.output, NOMINAL, variation, variable)
+            key = HistKey(channel.name, category, estimator.output, estimator.target, variation, variable)
             hset[key] = clip_negative_bins(h) if estimator.clip_negative else h
             added.append(key)
-        nominal = hset[HistKey(channel.name, category, estimator.output, NOMINAL, NOMINAL_VARIATION, variable)]
-        logger.debug(f"{channel.name}/{category}/{variable}: {estimator.output} = data - {' - '.join(estimator.subtract)} in {estimator.region}, yield {nominal.sum():.2f}, {len(variations) - 1} variations")
+        nominal = hset[HistKey(channel.name, category, estimator.output, estimator.target, NOMINAL_VARIATION, variable)]
+        logger.debug(f"{channel.name}/{category}/{variable}: {estimator.output} in {estimator.target} = data - {' - '.join(estimator.subtract)} in {estimator.region}, yield {nominal.sum():.2f}, {len(variations) - 1} variations")
     return added
 
 
@@ -93,8 +98,8 @@ def estimate_abcd(hset: HistogramSet, channel: Channel, estimator: ABCD) -> list
             factor = 0.0
         else:
             factor = yield_c / yield_d
-        logger.debug(f"{channel.name}/{category}/{variable}: ABCD {estimator.output}, B={b.sum():.2f}, C={yield_c:.2f}, D={yield_d:.2f}, C/D={factor:.4f}")
-        key = HistKey(channel.name, category, estimator.output, NOMINAL, NOMINAL_VARIATION, variable)
+        logger.debug(f"{channel.name}/{category}/{variable}: ABCD {estimator.output} in {estimator.target}, B={b.sum():.2f}, C={yield_c:.2f}, D={yield_d:.2f}, C/D={factor:.4f}")
+        key = HistKey(channel.name, category, estimator.output, estimator.target, NOMINAL_VARIATION, variable)
         hset[key] = clip_negative_bins(b.scale(factor))
         added.append(key)
     return added

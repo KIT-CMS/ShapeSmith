@@ -13,8 +13,8 @@ def dataset(tmp_path):
     return make_mini_dataset(tmp_path, n_files=2, n_events=50), tmp_path
 
 
-def _config(root, applies_to=("mc", "data", "embedding")):
-    return NtupleConfig(base=str(root / "CROWNRun"), friends=[FriendConfig(base=str(root / "CROWNFriends" / "nn"), applies_to=applies_to)])
+def _config(root, applies_to=("mc", "data", "embedding"), channels=None):
+    return NtupleConfig(base=str(root / "CROWNRun"), friends=[FriendConfig(base=str(root / "CROWNFriends" / "nn"), applies_to=applies_to, channels=channels)])
 
 
 def test_join_url():
@@ -46,8 +46,15 @@ def test_missing_friend_is_an_error(dataset):
 
 def test_friend_bases_follow_applies_to(dataset):
     _, root = dataset
-    assert friend_bases(_config(root, applies_to=("mc",)), "mc") == [str(root / "CROWNFriends" / "nn")]
-    assert friend_bases(_config(root, applies_to=("mc",)), "data") == []
+    assert friend_bases(_config(root, applies_to=("mc",)), "mc", "mt") == [str(root / "CROWNFriends" / "nn")]
+    assert friend_bases(_config(root, applies_to=("mc",)), "data", "mt") == []
+
+
+def test_friends_of_other_channels_are_not_looked_for(dataset):
+    _, root = dataset
+    assert friend_bases(_config(root, channels=("et", "mt")), "mc", "mt") == [str(root / "CROWNFriends" / "nn")]
+    assert friend_bases(_config(root, channels=("et", "mt")), "mc", "em") == []
+    assert discover(_config(root, channels=("et",)), "2018", "ZTT_1", "mt", "mc")[0].friends == ()
 
 
 def test_read_ntuple_joins_friends(dataset):

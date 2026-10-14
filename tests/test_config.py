@@ -24,6 +24,7 @@ def test_load_config_and_analysis(tmp_path):
           base: /data/CROWNRun
           friends:
             - {base: /data/CROWNFriends/nn}
+            - {base: /data/CROWNFriends/ff, channels: [et, mt]}
         skim_dir: /tmp/skims
         output_dir: /tmp/out
         workers: 2
@@ -31,6 +32,7 @@ def test_load_config_and_analysis(tmp_path):
     config = load_config(path)
     assert isinstance(config, RunConfig)
     assert config.ntuples.server == "" and config.ntuples.friends[0].applies_to == ("mc", "data", "embedding")
+    assert config.ntuples.friends[0].channels is None and config.ntuples.friends[1].channels == ("et", "mt")
     assert config.switches == {"jet_fakes": "mc", "embedding": False}
     analysis = load_analysis(config)
     assert analysis.name == "mini"
