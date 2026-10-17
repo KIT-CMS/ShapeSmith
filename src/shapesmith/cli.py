@@ -224,6 +224,24 @@ def fit(config: Path = ConfigOption, channels: Optional[str] = ChannelsOption, o
     logger.info(f"{len(results)} final states summarised")
 
 
+@app.command("combine")
+@_logged
+def combine_runs(configs: list[Path] = typer.Option(..., "--config", "-c", help="the run YAML of every era (repeat -c)"), output: Path = typer.Option(..., "--output", "-o", help="directory of the combination (combined card, fits, summaries)"), final_state: str = typer.Option("all", "--final-state", help="the final state of each run's datacards: <output_dir>/datacards/<final state>/"), overrides: Optional[list[str]] = SetOption, background_only: bool = typer.Option(False, "--background-only", help="a background-only fit to the data instead of the limits"), skip_combine: bool = typer.Option(False, "--skip-combine", help="only summarise existing combine outputs"), validate: bool = typer.Option(False, "--validate", help="also run CombineHarvester's ValidateDatacards.py on the combined card")):
+    """Combine the datacards of several runs (one per era, spec 6.9) with combineCards.py, then the limits or the background-only fit; overrides apply to every run."""
+    from shapesmith.combination import Run, run_card, run_combination
+
+    runs = []
+    for index, path in enumerate(configs):
+        cfg = load_config(path, overrides or [])
+        if index == 0:
+            logs.configure(cfg.log_level, logs.log_path(output, _command["name"]), [cfg.analysis.partition(":")[0].split(".")[0]])
+        _log_start(cfg, path, overrides or [], list(cfg.channels), None)
+        runs.append(Run(cfg, load_analysis(cfg), run_card(cfg, final_state)))
+    result = run_combination(runs, output, background_only, skip_combine, validate)
+    typer.echo((output / ("background_fit.md" if background_only else "limits.md")).read_text())
+    logger.info(f"combination of {len(runs)} runs: {json.dumps(result)[:200]}")
+
+
 @app.command()
 @_logged
 def plot(config: Path = ConfigOption, channels: Optional[str] = ChannelsOption, overrides: Optional[list[str]] = SetOption, control: bool = typer.Option(False, "--control"), category: Optional[str] = typer.Option(None), variables: Optional[str] = typer.Option(None), region: str = typer.Option("nominal", "--region", help="histogram region to plot"), blind: bool = typer.Option(False, "--blind"), log: bool = typer.Option(False, "--log"), signal_scale: Optional[float] = typer.Option(None), normalize_by_bin_width: bool = typer.Option(False, "--normalize-by-bin-width")):

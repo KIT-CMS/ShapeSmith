@@ -25,13 +25,14 @@ shapesmith validate  -c run.yaml              # build + validate the analysis, l
 shapesmith skim      -c run.yaml [--channels mt] [--samples TT,SingleMuon] [--force] [--workers 8]   # ntuples (+ friends) -> Parquet
 shapesmith hist      -c run.yaml [--control] [--regions all] [--skip-systematics] [--processes ZTT,data]  # histograms (ROOT + JSON index)
 shapesmith estimate  -c run.yaml [--control]  # estimated processes and variations (Channel.estimators)
-shapesmith measure   -c run.yaml [--suggest-binning] [--merge]   # Analysis.measurement -> <output_dir>/<measurement>/<era>/
+shapesmith measure   -c run.yaml [--suggest-binning] [--merge] [--refit]   # Analysis.measurement -> <output_dir>/<measurement>/<era>/
 shapesmith plot      -c run.yaml [--control] [--region nominal] [--blind] [--log]
 shapesmith publish   -c run.yaml --to DIR --variant KEY [--label TEXT] [--description TEXT] [--channels et,mt]   # plots + yields -> static web gallery DIR/index.html
 shapesmith sync      -c run.yaml              # combine-style shape files per channel
 shapesmith datacards -c run.yaml [--min-background 1.0] [--no-systematics]
 shapesmith fit       -c run.yaml [--final-states mt,all] [--skip-combine]   # limits, significance, best fit
 shapesmith fit       -c run.yaml --background-only [--final-states all]   # background-only fit to the data, pulls, yields
+shapesmith combine   -c run_2017.yaml -c run_2018.yaml ... -o DIR [--final-state all] [--background-only] [--validate]   # cards of several eras combined
 shapesmith ml-export -c run.yaml              # Feather training folds
 shapesmith inspect   output/shapes.root [--unchanged]   # what a histogram file contains; variations equal to their nominal
 ```
@@ -54,6 +55,12 @@ the selected channels (`all`, or the only final state), and writes
 prefit and postfit [value, error] yields (with the totals `total_background`, `total_signal`,
 `total`). It fits the observed data of every bin of the card.
 
+`combine` (the combination of eras, one run YAML each) runs `combineCards.py` over the card of one final state of
+every run (the bin names stay, they carry the era; two runs of one era are refused) into `DIR/combined.txt`, optionally
+CombineHarvester's `ValidateDatacards.py`, then the limits or the background-only fit of `fit` there, with the same
+summaries; `DIR/nuisances.md` lists every nuisance with the eras it appears in and flags names that end in another
+run's era token.
+
 `publish` copies the plots of `<output_dir>/plots/` into a web gallery (`DIR/index.html`, a static
 viewer reading `manifest.json`; also works from `file://`): one column per variant (`--variant`,
 `[a-z0-9_]+`, e.g. one run configuration), with the data, prediction and stacked-group yields of
@@ -75,12 +82,16 @@ either control plots or one measurement.
 Everything that differs by channel lives in its `Channel`: samples, cuts, processes, regions,
 categories, control variables, variations and estimators.
 
-- `Sample(nick, group, kind, xsec, nevents, generator_weight, cut, era)`: kind `data`, `mc` or
-  `embedding`; `norm_weight = xsec / (nevents * generator_weight) * sign(genWeight)` for MC.
+- `Sample(nick, group, kind, xsec, nevents, generator_weight, cut, era, lumi_scale)`: kind `data`, `mc` or
+  `embedding`; `norm_weight = xsec / (nevents * generator_weight) * lumi_scale * sign(genWeight)` for MC.
   A sample's own `cut` (e.g. one generator-level part of an inclusive sample) is applied at skim
   time; its normalisation stays that of the whole sample. `era` borrows the sample from another
-  era: its n-tuples are read from `<base>/<era>/<nick>`, and it is normalised with the luminosity
-  of the analysis that uses it (None: the era of the run).
+  era, or places it in an analysis over several eras: its n-tuples are read from `<base>/<era>/<nick>`, and it is
+  normalised with the luminosity of the analysis that uses it (None: the era of the run) times `lumi_scale`, its
+  era's share of that luminosity (e.g. 2016preVFP in a 2016 measurement of both halves; 1 otherwise).
+- `Variable(name, expr, edges)`: fixed edges, or `EqualData(n_bins, low, high, cut)`, edges with equal data counts
+  computed whenever histograms are filled, from the data of the category or, with `cut`, of that cut (common edges of
+  a pass and a fail category).
 - `Process(name, group, role, plot_group, selection)`: role `data`, `signal`, `background` or
   `auxiliary` (booked in the nominal region only, for an estimator; never in datacards, plots or
   the ML export). A process owns its whole weight set.
@@ -168,23 +179,40 @@ the results of earlier runs into one payload). Measurements:
 - `shapesmith.measurements.tau_id_es`: tau-ID scale factor and energy scale of embedded taus, the
   chain of smhtt_ul `tauID_SFs_dev`. One run per working-point combination fills the mt channel
   and the mm control region, writes the shapes in the input format of MorphingTauID2017 and runs
-  per category in CMSSW the datacards, T2W, a 2D likelihood scan, close-up 1D scans of both POIs
-  and the MultiDimFit singles fit, the result (`results.json`, plots). As in the predecessor, the
-  close-up scans and the singles fit start at the lowest grid point of the step before, within its
-  2 sigma intervals widened by a margin. The energy scale is a grid of template column variations
-  in units of 0.1 % (`grid.py`); `--merge` writes the correctionlib payload of all combinations.
-  A 1 sigma interval at the fit range or a failed crossing is an error.
+  per category in CMSSW the datacards, T2W, a 2D likelihood scan and the profiles of both POIs (v7 spec 5.4, U11):
+  ES from a 1D scan (41 points) with r profiled, r from the envelope of a 2D grid with both POIs fixed in the ES window
+  of the ES profile (the likelihood has several minima in ES, which a floating ES follows); best value from the
+  parabola at the lowest point, the 1σ interval from the interpolated ΔNLL = 0.5 crossings; a side without a crossing
+  is rescanned on a widened range, and one that still has none is a problem naming its side. The postfit shapes come
+  from a fit with both POIs fixed at the profile minima; the predecessor's singles fit runs as a cross-check
+  (`report.md` flags deviations > 20 % of the interval width). `--refit` repeats the CMSSW part from the stored
+  `synced/` shapes. The energy scale is a grid of template column variations in units of 0.1 % (`grid.py`);
+  `--merge` writes the correctionlib payload of all combinations, its pT-binned ES changing linearly across 36-42 GeV
+  (no gap in the corrected pT at 40 GeV), after checking every interval against its fit range.
 - `shapesmith.measurements.fake_factors`: the fake-factor measurement (the SM method of
-  TauFakeFactors). An analysis sets `Analysis.measurement = FakeFactorMeasurement(legs)`, built
+  TauFakeFactors). An analysis sets `Analysis.measurement = FakeFactorMeasurement(legs, name=...)`, built
   from its region and process names and per-channel tables (`Binned`, `Fit`, `Split`,
-  `ProcessFF`, `DrSr`, `DataScale`, `Fractions`, `Leg`). `shapesmith measure` writes
+  `ProcessFF`, `DrSr`, `DataScale`, `SameSignQCD`, `Fractions`, `Leg`). A leg has QCD, ttbar and optionally W+jets
+  fake factors: from data minus the MC and minus QCD from the same-sign version of each region (`SameSignQCD`), with a
+  DR->SR correction from W MC (`DrSr(target=...)`), and three-process fractions. `shapesmith measure` writes
   `fake_factors_<ch>.json.gz` and `FF_corrections_<ch>.json.gz` (the conventions of the CROWN
   fake-factor friend), the intermediate DR->SR payload, `measurement_<ch>.json` (every ratio, fit
-  input and result) and plots; `--suggest-binning` prints equipopulated edges instead. The
+  input and result) and plots into `<output_dir>/<name>/<era>/` (one name per payload variant); `--suggest-binning`
+  prints equipopulated edges instead, last as one JSON line; with `placeholder_edges` set (an era without its own
+  edges) only `--suggest-binning` runs. The
   histograms (`hist.py`: centre of mass, MC-suppressed errors), fits (`fit.py`: bands,
   SystMCShift, the compatibility-with-1 reset, sparsify) and the kernel are checked against ROOT
   and TauFakeFactors (`tests/reference/make_fake_factor_reference.py`); the normative algorithm is
   the "Algorithm reference" of the design spec.
+- `shapesmith.measurements.tau_trigger`: the efficiency of the tau leg of the di-tau trigger for the tt embedding (v7
+  E33), μτh tag and probe per isolation class (`wp_class`) and selection variant: per (decay mode, pT) bin a pass and
+  a fail category; a card with the signal (embedded taus) shape of pass + fail in both bins, the rateParams
+  `eff` [0, 1] on it in pass and `(1-@0)` in fail and a common `r_<signal>`, lnN normalisations and the
+  pass/fail anti-correlated fake trigger efficiency; a 1D profile scan of `eff` (an interval at 0 or 1 is a problem),
+  the singles fit as a cross-check; the counting cross-check in a counting region and m_vis window, ε_MC and
+  ε_EMB^mon. `--refit` from the stored shapes, `--suggest-binning` merges pT bins from the top until the relative
+  error stays below 3 %, `--merge` writes the `tau_trigger` payload (KIT/POG schema, flow clamp) with the variants
+  and a significant fit-counting difference in up/down, after checking every combination.
 
 Building blocks:
 

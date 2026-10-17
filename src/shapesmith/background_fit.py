@@ -40,6 +40,12 @@ def summarise(values: dict, analysis: Analysis) -> dict:
     (value - mean) / width and constraint error / width (None for a parameter without a Gaussian constraint, e.g. a
     free rate); and per channel and category the data and the prefit and postfit [value, error] of every process and
     of the totals."""
+    categories = {bin_name(analysis, channel, index): (channel, category.name) for channel in analysis.channels for index, category in enumerate(analysis.channel(channel).categories)}
+    return summarise_bins(values, categories)
+
+
+def summarise_bins(values: dict, categories: dict[str, tuple[str, str]]) -> dict:
+    """summarise with the map card bin -> (channel label, category) given (e.g. of a combination of eras)."""
     nuisances = {}
     for name in sorted(values["postfit"]):
         prefit, postfit = values["prefit"].get(name), values["postfit"][name]
@@ -49,7 +55,6 @@ def summarise(values: dict, analysis: Analysis) -> dict:
             "pull": (postfit[0] - prefit[0]) / prefit[1] if prefit else None,
             "constraint": postfit[1] / prefit[1] if prefit else None,
         }
-    categories = {bin_name(analysis, channel, index): (channel, category.name) for channel in analysis.channels for index, category in enumerate(analysis.channel(channel).categories)}
     yields: dict = {}
     for stage, norms in (("prefit", values["norm_prefit"]), ("postfit", values["norm_fit_b"])):
         for key, value in norms.items():

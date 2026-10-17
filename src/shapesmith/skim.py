@@ -29,7 +29,7 @@ from shapesmith import __version__, logs
 from shapesmith.config import RunConfig
 from shapesmith.events import select
 from shapesmith.expressions import columns_in, columns_of, mask, shift
-from shapesmith.model import NOMINAL_REGION, Analysis, Channel, ColumnVariation, Sample, WeightVariation, applies
+from shapesmith.model import NOMINAL_REGION, Analysis, Channel, ColumnVariation, EqualData, Sample, WeightVariation, applies
 from shapesmith.ntuples import NtupleFile, discover, friend_bases, join_url, read_ntuple
 from shapesmith.parallel import run_jobs
 from shapesmith.store import SKIM_COLUMNS, manifest_path, read_manifest, schema, skim_path, write_manifest, write_skim
@@ -59,6 +59,7 @@ def needed_columns(channel: Channel, sample: Sample) -> set[str]:
     """Every nominal column the sample's histograms, estimates and exports can read."""
     weight_variations = [v for v in channel.variations if isinstance(v, WeightVariation) and sample.kind in v.applies_to]
     exprs = [*channel.skim.values(), *(c.cut for c in channel.categories), *(c.variable.expr for c in channel.categories)]
+    exprs += [c.variable.edges.cut for c in channel.categories if isinstance(c.variable.edges, EqualData) and c.variable.edges.cut]
     exprs += [variable.expr for variable in channel.variables.values()]
     exprs += [expr for variation in column_variations(channel, sample) for expr in variation.derived.values()]
     for process in channel.processes:
