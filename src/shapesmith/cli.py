@@ -172,12 +172,12 @@ def estimate(config: Path = ConfigOption, channels: Optional[str] = ChannelsOpti
 
 @app.command()
 @_logged
-def measure(config: Path = ConfigOption, channels: Optional[str] = ChannelsOption, overrides: Optional[list[str]] = SetOption, suggest_binning: bool = typer.Option(False, "--suggest-binning", help="log proposed bin edges instead of measuring"), merge: bool = typer.Option(False, "--merge", help="combine the results of the earlier runs (e.g. one per working point) into one payload"), workers: Optional[int] = WorkersOption):
+def measure(config: Path = ConfigOption, channels: Optional[str] = ChannelsOption, overrides: Optional[list[str]] = SetOption, suggest_binning: bool = typer.Option(False, "--suggest-binning", help="log proposed bin edges instead of measuring"), merge: bool = typer.Option(False, "--merge", help="combine the results of the earlier runs (e.g. one per working point) into one payload"), refit: bool = typer.Option(False, "--refit", help="repeat the fits from the inputs an earlier run stored (e.g. synced/ shapes), without histogramming"), workers: Optional[int] = WorkersOption):
     """Run the analysis's measurement; results in <output_dir>/<measurement>/<era>/."""
     from shapesmith.measurements import run_measure
 
     cfg, analysis, selected = _setup(config, channels, workers=workers, overrides=overrides)
-    logger.info(f"measurement output: {run_measure(cfg, analysis, selected, suggest_binning, merge)}")
+    logger.info(f"measurement output: {run_measure(cfg, analysis, selected, suggest_binning, merge, refit)}")
 
 
 @app.command()

@@ -32,8 +32,9 @@ def _synced(tag):
 
 
 def test_the_payload_from_the_predecessor_fits_is_the_predecessor_payload():
+    """With the predecessor's ES steps at 40 GeV (es_transition False; the default closes the 40 GeV hole)."""
     results = {WPS[tag]: {c: combine.read_singles(_cards(tag, c) / f"higgsCombine.comb_sep_fit_{tag}_18_full_{c}.MultiDimFit.mH125.root", c) for c in CATEGORIES} for tag in WPS}
-    ours = json.loads(payloads.dumps(correction_set(results, {})))
+    ours = json.loads(payloads.dumps(correction_set(results, {}, es_transition=False)))
     reference = json.loads((AREA / "Tau_SFs_DT2p5" / "DeepTau2018v2p5_id_es_embedding2018UL.json").read_text())
     assert ours["corrections"] == reference["corrections"]
 

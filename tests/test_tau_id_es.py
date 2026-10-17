@@ -92,10 +92,18 @@ def test_commands_have_the_predecessor_options(tmp_path):
                                                 " --PO \"map=^.*/EMB_DM0:r_EMB_DM0[1,0.1,2.9]\"")
     scan = combine.scan_command("DM0", GRID)
     assert "--setParameterRanges r_EMB_DM0=0.11,2.89:ES_DM0=-19.9,19.9" in scan and "--points=289 --algo grid" in scan
-    closeup = combine.closeup_command("DM0", "ES_DM0", (0.9, -1.5), (0.6, 1.2), (-10.0, 6.0))
-    assert closeup.startswith("combineTool.py -M MultiDimFit -n .closeup_ES_DM0 -d workspace.root --setParameters ES_DM0=-1.5,r_EMB_DM0=0.9"
+    profile = combine.profile_command("DM0", "ES_DM0", (0.9, -1.5), (0.6, 1.2), (-10.0, 6.0))
+    assert profile.startswith("combineTool.py -M MultiDimFit -n .profile_ES_DM0 -d workspace.root --setParameters ES_DM0=-1.5,r_EMB_DM0=0.9"
                               " --setParameterRanges r_EMB_DM0=0.6,1.2:ES_DM0=-10.0,6.0")
-    assert closeup.endswith("--redefineSignalPOIs ES_DM0 --algo grid -m 125 --cminDefaultMinimizerStrategy 0 --floatOtherPOIs=1 --points=17 --alignEdges=1")
+    assert profile.endswith("--redefineSignalPOIs ES_DM0 --algo grid -m 125 --cminDefaultMinimizerStrategy 0 --floatOtherPOIs=1 --points=41 --alignEdges=1"
+                            " --trackParameters r_EMB_DM0")
+    envelope = combine.profile_command("DM0", "r_EMB_DM0", (0.9, -1.5), (0.6, 1.2), (-10.0, 6.0), attempt=2)
+    assert " -n .envelope_r_EMB_DM0_2 " in envelope and envelope.endswith("--redefineSignalPOIs r_EMB_DM0,ES_DM0 --floatOtherPOIs=1 --algo grid -m 125"
+                                                                          " --cminDefaultMinimizerStrategy 0 --gridPoints 41,25 --alignEdges=1")
+    bestfit = combine.bestfit_command("DM0", (0.93, -1.2), (0.11, 2.89), (-19.9, 19.9))
+    assert "--setParameters r_EMB_DM0=0.93,ES_DM0=-1.2" in bestfit and "--freezeParameters r_EMB_DM0,ES_DM0" in bestfit
+    assert "--algo none" in bestfit and "--saveFitResult" in bestfit and " -n .bestfit_DM0 " in bestfit
+    assert combine.postfit_command("DM0").endswith("-f multidimfit.bestfit_DM0.root:fit_mdf --postfit")
     singles = combine.singles_command("DM0", (0.9, -1.5), (0.7, 1.1), (-8.0, 4.0))
     assert "--setParameters ES_DM0=-1.5,r_EMB_DM0=0.9 --setParameterRanges r_EMB_DM0=0.7,1.1:ES_DM0=-8.0,4.0" in singles
     assert "--algo singles" in singles and "--cminFallbackAlgo Minuit2,Migrad,0:0.001,Minuit2,Migrad,0:0.01" in singles
@@ -122,7 +130,7 @@ def test_read_singles_and_its_problems(tmp_path):
     sf, es = combine.read_singles(tmp_path / "fit.root", "DM0")
     assert (sf.best, sf.low, sf.high) == pytest.approx((0.9, 0.85, 0.95)) and (es.low, es.high) == pytest.approx((-4.4, -0.1))
     assert combine.interval_problems("r", sf, (0.7, 1.1)) == []
-    assert combine.interval_problems("r", sf, (0.85, 1.1))[0].startswith("r: interval [0.85, 0.95] at the fit range")
+    assert combine.interval_problems("r", sf, (0.85, 1.1))[0] == "r: interval [0.85, 0.95] at the fit range [0.85, 1.1] (low side)"
     assert "no interval" in combine.interval_problems("ES", Interval(1.0, 1.0, 2.0), (-5.0, 5.0))[0]
 
 
@@ -147,11 +155,11 @@ def test_scan_profiles_and_the_inputs_of_the_next_steps():
     small = Scan(np.array([1.0, 2.0, 1.0, 2.0]), np.array([0.0, 0.0, 5.0, 5.0]), np.array([0.5, 3.0, 1.0, np.nan]))
     assert small.profile(0).dnll.tolist() == [0.5, 3.0] and small.profile(1).dnll.tolist() == [0.5, 1.0]  # the lowest over the other POI
     scan = _scan()
-    start, r_range, es_range = combine.closeup_inputs(scan, GRID)
+    start, r_range, es_range = combine.profile_inputs(scan, GRID)
     assert start == pytest.approx((0.97875, -2.4875))  # the lowest grid point
     two_sigma = 0.2 * np.sqrt(6.18 - 2 * scan.profile(0).dnll.min())
     assert r_range == pytest.approx((0.9 - two_sigma - 0.2, 0.9 + two_sigma + 0.2), abs=0.01)  # interpolated on the grid, plus the margin
-    assert combine.closeup_inputs(_scan(best=(0.9, 18.0)), GRID)[2][1] == 19.9  # no crossing: the scan end, within the scan range
+    assert combine.profile_inputs(_scan(best=(0.9, 18.0)), GRID)[2][1] == 19.9  # no crossing: the scan end, within the scan range
     closeups = (Profile.of(np.linspace(0.6, 1.2, 17), 0.5 * ((np.linspace(0.6, 1.2, 17) - 0.9) / 0.1) ** 2), scan.profile(1))
     start, r_range, _ = combine.singles_inputs(closeups, GRID)
     assert start[0] == pytest.approx(0.9) and r_range == pytest.approx((0.9 - 0.2486 - 0.05, 0.9 + 0.2486 + 0.05), abs=2e-3)

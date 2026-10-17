@@ -15,7 +15,7 @@ import correctionlib
 import correctionlib.schemav2 as cs
 import numpy as np
 
-Node = cs.Binning | cs.Category | cs.Transform | float
+Node = cs.Binning | cs.Category | cs.Transform | cs.Formula | float
 
 
 def _leaf(value):
@@ -37,6 +37,12 @@ def category(input: str, content: Mapping[str | int, Node], default: Node | None
     items = [cs.CategoryItem(key=key, value=_leaf(value)) for key, value in content.items()]
     fields = {"default": _leaf(default)} if default is not None else {}
     return cs.Category(nodetype="category", input=input, content=items, **fields)
+
+
+def formula(expression: str, variables: Sequence[str], parameters: Sequence[float] = ()) -> cs.Formula:
+    """A TFormula of the inputs `variables` (x, y, ... in order) with the parameters [0], [1], ..."""
+    fields = {"parameters": [float(p) for p in parameters]} if parameters else {}
+    return cs.Formula(nodetype="formula", expression=expression, parser="TFormula", variables=list(variables), **fields)
 
 
 def transform(input: str, expression: str, content: Node) -> cs.Transform:
