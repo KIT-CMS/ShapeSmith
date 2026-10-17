@@ -1,13 +1,15 @@
 """A synthetic tau-leg trigger measurement: data, the embedded genuine taus (EMB, the signal) and DY in one mu tau_h
 channel, written straight into skims. The probe passes the monitoring leg with a known efficiency per decay mode
 (EFFICIENCY); two decay-mode groups (0 and all) times two pT bins, each with a pass and a fail category whose m_vis
-edges come from the data of the bin (EqualData with the bin cut); QCD from same sign, the counting region mt_1 < 30.
+edges come from the data of the bin (EqualData with the bin cut); QCD from same sign, the counting region mt_1 < 30;
+the signal's shape nuisances: its energy scale (column variations) and a template shift by the genuine MC taus (as the
+ttbar contamination of the embedded sample).
 """
 import numpy as np
 import pandas as pd
 
 from shapesmith.measurements.tau_trigger import Bin, TauTriggerMeasurement
-from shapesmith.model import Analysis, Category, Channel, ColumnVariation, DataMinus, EqualData, Process, Region, Sample, Selection, Variable
+from shapesmith.model import Analysis, Category, Channel, ColumnVariation, DataMinus, EqualData, Process, Region, Sample, Selection, TemplateShift, Variable
 from shapesmith.store import skim_path, write_skim
 
 EFFICIENCY = {0: 0.85, 1: 0.75}
@@ -37,10 +39,14 @@ def _events(rng: np.random.Generator, n: int, kind: str, genuine: float) -> pd.D
     return frame
 
 
-def write_skims(skim_dir, seed: int = 7) -> None:
+def write_skims(skim_dir, seed: int = 7, embedding_monitor: bool = True) -> None:
+    """embedding_monitor False: the embedded sample has no monitoring-path decisions (mon 0 everywhere, as the 2018
+    mu tau embedding)."""
     rng = np.random.default_rng(seed)
     for nick, kind, n, genuine in (("DATA", "data", 40000, 0.7), ("EMB", "embedding", 30000, 1.0), ("DY", "mc", 60000, 0.5)):
         frame = _events(rng, n, kind, genuine)
+        if kind == "embedding" and not embedding_monitor:
+            frame["mon"] = 0
         frame["sample_nick"] = pd.array([nick] * n, dtype="string")
         write_skim(frame, skim_path(skim_dir, "mt", nick, "file_0.root"))
 
@@ -61,7 +67,7 @@ def categories() -> tuple[Category, ...]:
 
 def measurement(**options) -> TauTriggerMeasurement:
     return TauTriggerMeasurement(
-        "Medium", BINS, "EMB", signal_template="emb_es", signal_shapes=("emb_es_shift",),
+        "Medium", BINS, "EMB", signal_template="emb_es", signal_shapes=("emb_es_shift", "emb_ttbar"),
         normalisations={"norm_zj": (("ZJ",), 1.2), "norm_qcd": (("QCD",), 1.2)}, fake_processes=("ZJ", "QCD"),
         mc_process="ZTT", monitor_process="EMB", counting_regions=("counting", "counting_same_sign"), qcd_subtract=("EMB", "ZJ"),
         **options,
@@ -87,6 +93,6 @@ def build(config=None) -> Analysis:
                  Region("counting_same_sign", replace_cuts={"mt_cut": "(mt_1 < 30)", "charge": SS})),
         categories=categories(),
         variations=tuple(es.values()),
-        estimators=(DataMinus("QCD", "same_sign", ("EMB", "ZJ"), clip_negative=True),),
+        estimators=(DataMinus("QCD", "same_sign", ("EMB", "ZJ"), clip_negative=True), TemplateShift("emb_ttbar", "EMB", "ZTT", 0.1)),
     )
     return Analysis("trigger_mini", "2018", 1.0, None, {"mt": channel}, measurement=measurement())

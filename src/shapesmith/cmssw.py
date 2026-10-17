@@ -54,6 +54,13 @@ def _last_lines(tail: deque) -> str:
     return ", last output:\n" + "\n".join(tail) if tail else ", no output"
 
 
+def failure(error: subprocess.CalledProcessError | subprocess.TimeoutExpired) -> str:
+    """A short description of a failed CMSSW step (the full command is in the log)."""
+    if isinstance(error, subprocess.TimeoutExpired):
+        return f"no result within {error.timeout:g} s"
+    return f"exit code {error.returncode}"
+
+
 def run(commands: Sequence[str], combine: CombineConfig | None, cwd: Path, timeout: float | None = None) -> None:
     """Raise CalledProcessError on a failing command, TimeoutExpired after `timeout` seconds."""
     if combine is None:

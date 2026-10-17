@@ -73,8 +73,35 @@ class RunConfig(BaseModel):
     def _upper_case(cls, value: Any) -> Any:
         return value.upper() if isinstance(value, str) else value
 
+    @field_validator("era", mode="before")
+    @classmethod
+    def _era_as_text(cls, value: Any) -> Any:
+        # `era: 2018` or `-s era=2017` parse as YAML integers
+        return str(value) if isinstance(value, int) and not isinstance(value, bool) else value
+
 
 RELATIVE_PATH_FIELDS = ("skim_dir", "output_dir", "ml_dir", "sample_database", "web.dir")
+ERA_PLACEHOLDER = "{era}"
+
+
+def fill_era(raw: dict) -> dict:
+    """Every `{era}` in a string of the configuration (paths, switches, texts; not in `era` itself) becomes the era of
+    the run, so that one run YAML serves every era: `-s era=2017`."""
+    era = raw.get("era")
+    if era is None:
+        return raw
+    era = str(era)
+
+    def fill(value: Any) -> Any:
+        if isinstance(value, str):
+            return value.replace(ERA_PLACEHOLDER, era)
+        if isinstance(value, dict):
+            return {key: fill(item) for key, item in value.items()}
+        if isinstance(value, list):
+            return [fill(item) for item in value]
+        return value
+
+    return {key: value if key == "era" else fill(value) for key, value in raw.items()}
 
 
 def apply_overrides(raw: dict, overrides: Iterable[str]) -> dict:
@@ -94,10 +121,11 @@ def apply_overrides(raw: dict, overrides: Iterable[str]) -> dict:
 
 
 def load_config(path: str | Path, overrides: Iterable[str] = ()) -> RunConfig:
-    """Load the run YAML (+ `key=value` overrides); relative paths are relative to the YAML's directory, not to the working directory."""
+    """Load the run YAML (+ `key=value` overrides), then fill `{era}` with the era of the run (fill_era); relative
+    paths are relative to the YAML's directory, not to the working directory."""
     path = Path(path).absolute()
     with open(path) as handle:
-        raw = apply_overrides(yaml.safe_load(handle), overrides)
+        raw = fill_era(apply_overrides(yaml.safe_load(handle), overrides))
     for field in RELATIVE_PATH_FIELDS:
         *parents, leaf = field.split(".")
         section = raw

@@ -92,6 +92,16 @@ def test_the_payload_schema_follows_kit_and_pog_with_flow_clamp():
         correction_set(missing, {})
 
 
+def test_the_payload_check_evaluates_every_booked_class():
+    """12.6: the consumer books eff_data of both classes for every decay mode and syst, measured or not."""
+    results = _results()
+    assert check_payload(correction_set(results, {}), results, booked=("Medium", "VVVLoose_not_Medium")) == []
+    only_medium = {"Medium": results["Medium"]}
+    problems = check_payload(correction_set(only_medium, {}), only_medium, booked=("Medium", "VVVLoose_not_Medium"))
+    assert problems == ["VVVLoose_not_Medium eff_data: booked by the consumer but not evaluable for "
+                        + ", ".join(f"DM{dm} {syst}" for dm in (-1, 0, 1, 10, 11) for syst in ("nom", "up", "down"))]
+
+
 def test_the_payload_check_finds_values_outside_and_unordered():
     bad = _results()
     bad["Medium"]["eff_data"][0] = [(40.0, 60.0, {"nom": 1.02, "up": 1.03, "down": 1.0}), (60.0, None, {"nom": 0.8, "up": 0.7, "down": 0.75})]
@@ -170,14 +180,48 @@ def test_measure_writes_cards_results_and_plots(mini, monkeypatch):
     assert entry["emb_monitor"]["value"] == pytest.approx(trigger_mini.EFFICIENCY[0], abs=0.03)
     assert 0.0 < entry["counting"]["value"] < 1.0 and entry["counting"]["error"] > 0
     card = (directory / "fits" / "DM0_PT40_60" / "card.txt").read_text()
-    assert "eff rateParam DM0_PT40_60_pass EMB 0.8 [0,1]" in card and "emb_es_shift shape" in card and "QCD" in card
+    assert "eff rateParam DM0_PT40_60_pass EMB 0.8 [0,1]" in card and "emb_es_shift shape" in card and "emb_ttbar shape" in card and "QCD" in card
     with uproot.open(directory / "fits" / "DM0_PT40_60" / "shapes.root") as f:
         signal_pass, signal_fail = f["DM0_PT40_60_pass/EMB"].values(), f["DM0_PT40_60_fail/EMB"].values()
         assert np.array_equal(signal_pass, signal_fail)  # one template, pass + fail
         assert f["DM0_PT40_60_pass/EMB_emb_es_shiftUp"].values().sum() != signal_pass.sum()
+        # the template shift of the signal (an estimator output), on top of its ES template
+        assert f["DM0_PT40_60_pass/EMB_emb_ttbarUp"].values().sum() > signal_pass.sum() > f["DM0_PT40_60_pass/EMB_emb_ttbarDown"].values().sum()
     binning = json.loads((output / "Medium" / "nominal" / "binning.json").read_text())["mt"]
     assert binning["DM0_PT40_60_pass"]["m_vis"]["edges"] == binning["DM0_PT40_60_fail"]["m_vis"]["edges"]  # EqualData with the bin cut
     assert (directory / "report.md").exists() and (directory / "plots" / "eff_DM0.png").exists() and (directory / "plots" / "eff_DMall.png").exists()
+
+
+def test_measure_without_monitoring_decisions_in_the_embedding(tmp_path, monkeypatch):
+    """The 2018 mu tau embedding has no monitoring-path decisions (v7_tt_emb_trigger 12.3): its pass categories stay
+    empty and the measurement has no monitor process. The fit runs on the one signal template (pass + fail), every
+    bin has emb_monitor None, the report a dash in its column and the plots no embedding series."""
+    import dataclasses
+
+    from shapesmith.histogram import NOMINAL_VARIATION, HistogramSet
+
+    trigger_mini.write_skims(tmp_path / "skims", embedding_monitor=False)
+    config = RunConfig(analysis="tests.trigger_mini:build", era="2018", channels=["mt"], ntuples=NtupleConfig(base=str(tmp_path)), skim_dir=tmp_path / "skims",
+                       output_dir=tmp_path / "out", workers=1, combine=CombineConfig(cmssw_dir="/unused"))
+    analysis = trigger_mini.build(config)
+    analysis = dataclasses.replace(analysis, measurement=dataclasses.replace(analysis.measurement, monitor_process=None))
+    validate(analysis)
+    monkeypatch.setattr(cmssw, "run", FakeCombine())
+    directory = run_measure(config, analysis, ["mt"]) / "Medium" / "nominal"
+    record = json.loads((directory / "results.json").read_text())
+    assert set(record["bins"]) == {b.name for b in trigger_mini.BINS}
+    for name, entry in record["bins"].items():
+        assert entry["problems"] == [] and entry["fit"]["best"] == pytest.approx(0.8, abs=1e-3) and entry["emb_monitor"] is None, name
+        assert entry["mc"] is not None and entry["counting"] is not None
+    hset = HistogramSet.load(directory / "shapes.root")
+    keys = [k for k in hset.select(channel="mt", process="EMB", region="nominal") if k.variation in (NOMINAL_VARIATION, "emb_es")]  # not the template shift by ZTT
+    assert len(keys) == 4 * len(trigger_mini.BINS)
+    assert all(hset[k].sum() == 0 for k in keys if k.category.endswith("_pass")) and all(hset[k].sum() > 0 for k in keys if k.category.endswith("_fail"))
+    with uproot.open(directory / "fits" / "DM0_PT40_60" / "shapes.root") as f:
+        assert f["DM0_PT40_60_pass/EMB"].values().sum() > 0  # the template of pass and fail, from the fail events
+    rows = [line for line in (directory / "report.md").read_text().splitlines() if "| DM0_PT40_60 |" in line]
+    assert len(rows) == 1 and rows[0].split("|")[7].strip() == "-"
+    assert (directory / "plots" / "eff_DM0.png").exists()
 
 
 def test_refit_reuses_the_shapes_and_the_counting(mini, monkeypatch):
@@ -247,6 +291,12 @@ def test_merge_refuses_problems_and_a_missing_nominal(mini, tmp_path):
     _write_record(tmp_path / "b", "Medium", "tag_pt", 0.8)
     with pytest.raises(ValueError, match="Medium: the nominal variant is missing"):
         merge(analysis.measurement, MeasureContext(config, analysis, ["mt"], tmp_path / "b", merge=True))
+    both = __import__("dataclasses").replace(analysis.measurement, wp_classes=("Medium", "VVVLoose_not_Medium"))
+    _write_record(tmp_path / "d", "Medium", "nominal", 0.8)
+    with pytest.raises(ValueError, match="VVVLoose_not_Medium: no measurement, but the consumer books it"):  # 12.6: CROWN books both classes
+        merge(both, MeasureContext(config, analysis, ["mt"], tmp_path / "d", merge=True))
+    _write_record(tmp_path / "d", "VVVLoose_not_Medium", "nominal", 0.6)
+    assert merge(both, MeasureContext(config, analysis, ["mt"], tmp_path / "d", merge=True)).exists()
     _write_record(tmp_path / "c", "Medium", "nominal", 0.995)  # up beyond 1 is cut at 1; the payload stays valid
     path = merge(analysis.measurement, MeasureContext(config, analysis, ["mt"], tmp_path / "c", merge=True))
     assert correctionlib.CorrectionSet.from_string(payloads.dumps(payloads.read(path)))["tau_trigger"].evaluate(50.0, 0, "ditau", "Medium", "eff_data", "up") == 1.0
@@ -259,3 +309,67 @@ def test_check_names_what_is_missing(mini):
     broken = dataclasses.replace(analysis.measurement, bins=(*analysis.measurement.bins, Bin("DM1_PT40_60", (1,), (40.0, 60.0))), signal_template="es_unknown")
     with pytest.raises(ValueError, match="category DM1_PT40_60_pass is missing.*the signal template es_unknown"):
         check(analysis, broken)
+
+
+def test_check_takes_the_signal_variations_of_the_estimators(mini):
+    """A signal shape may be an estimator output: a template shift of the signal or a summed variation; a template
+    shift of another process gives the signal no variation."""
+    import dataclasses
+
+    from shapesmith.model import TemplateShift, VariationSum
+
+    _, analysis = mini
+    channel = analysis.channel("mt")
+    check(analysis, analysis.measurement)  # emb_ttbar: the template shift of EMB
+    other = dataclasses.replace(channel, estimators=tuple(dataclasses.replace(e, process="ZJ") if isinstance(e, TemplateShift) else e for e in channel.estimators))
+    with pytest.raises(ValueError, match="shape variation emb_ttbarUp is missing; shape variation emb_ttbarDown is missing"):
+        check(dataclasses.replace(analysis, channels={"mt": other}), analysis.measurement)
+    summed = dataclasses.replace(channel, estimators=(*channel.estimators, VariationSum("emb_sum", ("dm0",))))
+    check(dataclasses.replace(analysis, channels={"mt": summed}), dataclasses.replace(analysis.measurement, signal_shapes=("emb_sum",)))
+
+
+def test_closure_with_pseudo_data_and_split_signal_shapes(mini, monkeypatch, tmp_path):
+    """12.7: the signal with its own pass and fail shapes and the data replaced by the processes: the fit must give the
+    counted efficiency of the signal."""
+    import dataclasses
+
+    config, analysis = mini
+    measurement = dataclasses.replace(analysis.measurement, variant="closure", split_signal_shapes=True, pseudo_data=True, signal_shapes=())
+    closure = dataclasses.replace(analysis, measurement=measurement)
+    monkeypatch.setattr(cmssw, "run", FakeCombine())
+    directory = run_measure(config.model_copy(update={"output_dir": tmp_path}), closure, ["mt"]) / "Medium" / "closure"
+    with uproot.open(directory / "fits" / "DM0_PT40_60" / "shapes.root") as f:
+        passing, failing = f["DM0_PT40_60_pass/EMB"].values(), f["DM0_PT40_60_fail/EMB"].values()
+        assert passing.sum() == pytest.approx(failing.sum()) and not np.allclose(passing / passing.sum(), failing / failing.sum())
+        data = f["DM0_PT40_60_pass/data_obs"].values()
+        processes = [f[f"DM0_PT40_60_pass/{name}"].values() for name in ("ZJ", "QCD") if f"DM0_PT40_60_pass/{name}" in f]
+        record = json.loads((directory / "results.json").read_text())
+        efficiency = record["bins"]["DM0_PT40_60"]["emb_monitor"]["value"]
+        assert data.sum() == pytest.approx(efficiency * passing.sum() + sum(p.sum() for p in processes), rel=1e-6)  # the signal's own pass yield
+    with pytest.raises(ValueError, match="split signal shapes take no signal shape variations"):
+        check(analysis, dataclasses.replace(measurement, signal_shapes=("emb_es_shift",)))
+
+
+def test_the_plots_draw_the_reference_payloads(mini, tmp_path):
+    """12.5: eps(pT) with the POG eff_data and eff_mc and the KIT embedding file (correction tauTriggerSF, eff_mc the
+    efficiency of the embedded taus), each where it has the class, decay mode and corrtype."""
+    import dataclasses
+
+    from shapesmith.measurements.tau_trigger import Reference, _references, plot_record
+
+    _, analysis = mini
+    pog = payloads.write(correction_set(_results(), {}), tmp_path / "pog.json.gz")
+    kit_set = correction_set({"Medium": _results()["Medium"]}, {})
+    kit_set.corrections[0].name = "tauTriggerSF"
+    kit = payloads.write(kit_set, tmp_path / "kit.json.gz")
+    references = (Reference(str(pog), labels={"eff_data": "POG eff_data", "eff_mc": "POG eff_mc"}),
+                  Reference(str(kit), "tauTriggerSF", {"eff_data": "KIT eff_data", "eff_mc": "KIT eff_emb", "sf": "KIT sf"}))
+    measurement = dataclasses.replace(analysis.measurement, references=references)
+    curves = _references(measurement, "Medium", 0)
+    assert list(curves) == ["POG eff_data", "POG eff_mc", "KIT eff_data", "KIT eff_emb"]  # the payload has no sf
+    assert curves["KIT eff_emb"](50.0) == pytest.approx(0.85) and curves["POG eff_data"](30.0) == pytest.approx(0.8)
+    assert list(_references(measurement, "VVVLoose_not_Medium", 0)) == ["POG eff_data", "POG eff_mc"]  # KIT lacks the class
+    entries = {b.name: {"decay_modes": list(b.decay_modes), "pt": list(b.pt), "fit": {"best": 0.8, "low": 0.78, "high": 0.82}, "counting": None, "mc": None, "emb_monitor": None}
+               for b in trigger_mini.BINS}
+    paths = plot_record({"wp_class": "Medium", "variant": "nominal", "bins": entries}, tmp_path / "plots", measurement)
+    assert sorted(p.name for p in paths) == ["eff_DM0.pdf", "eff_DM0.png", "eff_DMall.pdf", "eff_DMall.png"]

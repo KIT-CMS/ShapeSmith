@@ -6,7 +6,9 @@ efficiency of the tau leg, in [0, 1]) on the signal in pass, `eff_fail` = (1 - @
 `r_<signal>` on the signal in both. The backgrounds are split by their own pass/fail flags; their normalisations are
 lnN correlated between pass and fail, and the trigger efficiency of the fakes an lnN that moves `fake_efficiency` of
 a fake process's pass yield from fail to pass (kappa 1 + f in pass, 1 - f P / F in fail). The signal's Up/Down shape
-variations are shape nuisances. MC statistics: autoMCStats 0. No process is a signal of combine (text2workspace
+variations are shape nuisances. With `signal_sides` the signal has its own shape in pass and in fail instead, each
+normalised to the pass + fail yield (the shapes of the MC genuine taus, a cross-check of the common shape). MC
+statistics: autoMCStats 0. No process is a signal of combine (text2workspace
 --X-allow-no-signal); the scans redefine `eff` as the POI.
 """
 from __future__ import annotations
@@ -34,6 +36,7 @@ class TriggerBin:
     signal: Histogram
     backgrounds: Mapping[str, Mapping[str, Histogram]]  # "pass"/"fail" -> process -> histogram
     signal_shapes: Mapping[str, Histogram] = field(default_factory=dict)  # <nuisance>Up/Down -> template variation
+    signal_sides: Mapping[str, Histogram] | None = None  # "pass"/"fail" -> the signal shape of the side, normalised to the pass + fail yield
 
     def bin(self, side: str) -> str:
         return f"{self.name}_{side}"
@@ -50,7 +53,7 @@ def rate_parameters(name: str, signal: str, start: float = 0.8) -> list[str]:
 
 def _yields(trigger_bin: TriggerBin, side: str, signal: str) -> dict[str, Histogram]:
     """The processes of one side with a positive rate, the signal first."""
-    processes = {signal: trigger_bin.signal}
+    processes = {signal: trigger_bin.signal if trigger_bin.signal_sides is None else trigger_bin.signal_sides[side]}
     processes.update({name: h for name, h in trigger_bin.backgrounds[side].items() if h.sum() > 0})
     return processes
 

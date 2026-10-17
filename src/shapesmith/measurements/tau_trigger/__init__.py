@@ -17,7 +17,8 @@ eff_mc from the MC count.
 Output, below <output_dir>/tau_trigger/<era>/:
 - <wp_class>/<variant>/: shapes.root, fits/<bin>/ (card, shapes, scans, fits), results.json, report.md, plots/;
 - ditau_trigger_DeepTau2018v2p5_embedding<era>UL.json.gz, report.md and plots/, written by --merge.
-A bin with a problem (no interval inside [0, 1], a failed CMSSW step) is an error; --merge refuses it.
+A bin with a problem (no interval inside [0, 1], a failed CMSSW step) is an error; --merge refuses it, and a class the
+consumer books (`wp_classes`) without a measurement.
 """
 from __future__ import annotations
 
@@ -43,7 +44,7 @@ from shapesmith.measurements.tau_trigger.counting import Count, data_efficiency,
 from shapesmith.measurements.tau_trigger.fit import fit_or_failure
 from shapesmith.measurements.tau_trigger.payload import check as check_payload
 from shapesmith.measurements.tau_trigger.payload import correction_set, payload_name
-from shapesmith.model import NOMINAL, Analysis
+from shapesmith.model import NOMINAL, Analysis, Channel, TemplateShift, VariationSum
 
 logger = logging.getLogger(__name__)
 SIDES = ("pass", "fail")
@@ -61,6 +62,17 @@ class Bin:
 
     def category(self, side: str) -> str:
         return f"{self.name}_{side}"
+
+
+@dataclass(frozen=True)
+class Reference:
+    """A payload whose efficiencies the plots draw against pT: its correction `correction` in the schema of tau_trigger
+    (pt, dm, trigtype, wp, corrtype, syst), `labels` corrtype -> legend label (e.g. the POG eff_data and eff_mc, or the
+    KIT embedding file, whose eff_mc is the efficiency of the embedded taus)."""
+
+    path: str
+    correction: str = "tau_trigger"
+    labels: Mapping[str, str] = field(default_factory=lambda: {"eff_data": "reference eff_data", "eff_mc": "reference eff_mc"})
 
 
 @dataclass(frozen=True)
@@ -83,7 +95,10 @@ class TauTriggerMeasurement:
     qcd_subtract: tuple[str, ...] = ()  # the simulated processes subtracted from the same-sign data in a counting
     suggest_regions: tuple[str, str] = (NOMINAL, "same_sign")
     max_relative_error: float = 0.03  # --suggest-binning: of eps_data per bin
-    reference: str | None = None  # a payload with tau_trigger (the POG file) drawn in the plots
+    references: tuple[Reference, ...] = ()  # payloads drawn in the plots (the POG file, the KIT embedding file)
+    wp_classes: tuple[str, ...] = ()  # every class the consumer books: --merge needs each, the payload check evaluates each
+    split_signal_shapes: bool = False  # the signal with its own pass and fail shapes (each normalised to pass + fail)
+    pseudo_data: bool = False  # data replaced by the sum of the processes, the signal with its own pass and fail (the closure test)
     trigtype: str = "ditau"
     name: str = "tau_trigger"
 
@@ -96,20 +111,30 @@ class TauTriggerMeasurement:
             measure(self, context)
 
 
+def _signal_estimates(channel: Channel, signal: str) -> set[str]:
+    """The Up/Down variations of the signal that estimators make: its template shifts (e.g. the ttbar contamination
+    of the embedded sample) and every summed variation (VariationSum varies each process with a part)."""
+    names = {e.name for e in channel.estimators if (isinstance(e, TemplateShift) and e.process == signal) or isinstance(e, VariationSum)}
+    return {f"{name}{d}" for name in names for d in ("Up", "Down")}
+
+
 def check(analysis: Analysis, measurement: TauTriggerMeasurement) -> None:
-    """The analysis has the channel, the pass and fail categories of every bin, the processes, variations and regions
-    the measurement names."""
+    """The analysis has the channel, the pass and fail categories of every bin, the processes, variations (of the
+    channel, or made by an estimator) and regions the measurement names."""
     if measurement.channel not in analysis.channels:
         raise ValueError(f"tau_trigger: channel {measurement.channel} is missing")
     channel = analysis.channel(measurement.channel)
     categories = {c.name for c in channel.categories}
     processes = {p.name for p in channel.processes}
     variations = {v.name for v in channel.variations}
+    shapes = variations | _signal_estimates(channel, measurement.signal)
     problems = [f"category {b.category(side)} is missing" for b in measurement.bins for side in SIDES if b.category(side) not in categories]
+    if measurement.split_signal_shapes and measurement.signal_shapes:
+        problems.append("split signal shapes take no signal shape variations")
     problems += [f"process {name} is missing" for name in (measurement.signal, measurement.mc_process, measurement.monitor_process, *measurement.qcd_subtract) if name and name not in processes]
     if measurement.signal_template and measurement.signal_template not in variations:
         problems.append(f"the signal template {measurement.signal_template} is not a variation of {measurement.channel}")
-    problems += [f"shape variation {name}{d} is missing" for name in measurement.signal_shapes for d in ("Up", "Down") if f"{name}{d}" not in variations]
+    problems += [f"shape variation {name}{d} is missing" for name in measurement.signal_shapes for d in ("Up", "Down") if f"{name}{d}" not in shapes]
     regions = {NOMINAL, *(r.name for r in channel.regions)}
     problems += [f"region {name} is missing" for name in (*(measurement.counting_regions or ()), *measurement.suggest_regions) if name not in regions]
     names = [b.name for b in measurement.bins]
@@ -131,11 +156,16 @@ def collect(hset: HistogramSet, analysis: Analysis, measurement: TauTriggerMeasu
         category = trigger_bin.category(side)
         return hset.get(HistKey(measurement.channel, category, process, NOMINAL, variation, _variable(analysis, measurement, category)))
 
+    def side_of(side: str, variation: str) -> Histogram:
+        """The signal of a side under a variation, its nominal where the variation changed nothing (not filled)."""
+        h = get(measurement.signal, side, variation)
+        h = h if h is not None else get(measurement.signal, side)
+        if h is None:
+            raise KeyError(f"{trigger_bin.name}: the {measurement.signal} histograms are missing")
+        return h
+
     def signal(variation: str) -> Histogram:
-        parts = [get(measurement.signal, side, variation) for side in SIDES]
-        if any(h is None for h in parts):
-            raise KeyError(f"{trigger_bin.name}: the {measurement.signal} histograms of variation {variation} are missing")
-        return parts[0].copy().add(parts[1])
+        return side_of("pass", variation).copy().add(side_of("fail", variation))
 
     template = measurement.signal_template or NOMINAL_VARIATION
     shapes = {}
@@ -144,11 +174,25 @@ def collect(hset: HistogramSet, analysis: Analysis, measurement: TauTriggerMeasu
             variation = f"{name}{direction}"
             on_top = on_template(variation, template) if measurement.signal_template else None
             shapes[variation] = signal(on_top if on_top and get(measurement.signal, "pass", on_top) is not None else variation)
-    data = {side: get(channel.data(), side) for side in SIDES}
+    backgrounds = {side: {name: h for name in channel.backgrounds() if name != measurement.signal and (h := get(name, side)) is not None} for side in SIDES}
+    combined = signal(template)
+    sides = {side: side_of(side, template) for side in SIDES}
+    if measurement.pseudo_data:
+        data = {}
+        for side in SIDES:
+            data[side] = sides[side].copy()
+            for h in backgrounds[side].values():
+                data[side].add(h)
+    else:
+        data = {side: get(channel.data(), side) for side in SIDES}
     if any(h is None for h in data.values()):
         raise KeyError(f"{trigger_bin.name}: data histograms missing")
-    backgrounds = {side: {name: h for name in channel.backgrounds() if name != measurement.signal and (h := get(name, side)) is not None} for side in SIDES}
-    return cards.TriggerBin(trigger_bin.name, data, signal(template), backgrounds, shapes)
+    signal_sides = None
+    if measurement.split_signal_shapes:
+        if shapes:
+            raise ValueError("tau_trigger: split signal shapes take no signal shape variations")
+        signal_sides = {side: h.copy().scale(combined.sum() / h.sum()) if h.sum() > 0 else combined.copy() for side, h in sides.items()}
+    return cards.TriggerBin(trigger_bin.name, data, combined, backgrounds, shapes, signal_sides)
 
 
 def _histogram_count(hset: HistogramSet, analysis: Analysis, measurement: TauTriggerMeasurement, trigger_bin: Bin, process: str, variation: str) -> dict | None:
@@ -282,17 +326,23 @@ def _by_decay_mode(bins: Mapping[str, dict]) -> dict[tuple[int, ...], list[dict]
     return {modes: sorted(entries, key=lambda e: e["pt"][0]) for modes, entries in groups.items()}
 
 
-def _reference(measurement: TauTriggerMeasurement, wp: str, dm: int):
-    if measurement.reference is None:
-        return None
+def _references(measurement: TauTriggerMeasurement, wp: str, dm: int) -> dict:
+    """label -> eff(pT) of every reference's corrtypes for the class and decay mode, where the reference has them (the
+    POG files know no VVVLoose_not_Medium); evaluated from 40 GeV, where the POG binning starts."""
+    if not measurement.references:
+        return {}
     import correctionlib
 
-    evaluator = correctionlib.CorrectionSet.from_file(measurement.reference)["tau_trigger"]
-    try:
-        evaluator.evaluate(60.0, dm, measurement.trigtype, wp, "eff_data", "nom")
-    except Exception:  # noqa: BLE001 - the reference lacks this class or decay mode
-        return None
-    return lambda pt: evaluator.evaluate(max(pt, 40.0), dm, measurement.trigtype, wp, "eff_data", "nom")
+    result = {}
+    for reference in measurement.references:
+        evaluator = correctionlib.CorrectionSet.from_file(reference.path)[reference.correction]
+        for corrtype, label in reference.labels.items():
+            try:
+                evaluator.evaluate(60.0, dm, measurement.trigtype, wp, corrtype, "nom")
+            except Exception:  # noqa: BLE001 - the reference lacks this class, decay mode or corrtype
+                continue
+            result[label] = lambda pt, evaluator=evaluator, corrtype=corrtype: evaluator.evaluate(max(pt, 40.0), dm, measurement.trigtype, wp, corrtype, "nom")
+    return result
 
 
 def plot_record(record: dict, directory: Path, measurement: TauTriggerMeasurement) -> list[Path]:
@@ -300,7 +350,7 @@ def plot_record(record: dict, directory: Path, measurement: TauTriggerMeasuremen
     for modes, entries in _by_decay_mode(record["bins"]).items():
         label = "all decay modes" if modes == (-1,) else "DM " + "+".join(map(str, modes))
         tag = "DMall" if modes == (-1,) else "DM" + "".join(map(str, modes))
-        paths += plots.plot_efficiencies(entries, f"{record['wp_class']}, {record['variant']}, {label}", Path(directory) / f"eff_{tag}", _reference(measurement, record["wp_class"], modes[0]))
+        paths += plots.plot_efficiencies(entries, f"{record['wp_class']}, {record['variant']}, {label}", Path(directory) / f"eff_{tag}", _references(measurement, record["wp_class"], modes[0]))
     return paths
 
 
@@ -379,7 +429,9 @@ def merged_values(measurement: TauTriggerMeasurement, variants: Mapping[str, dic
 
 
 def merge(measurement: TauTriggerMeasurement, context: MeasureContext) -> Path:
-    """The payload of every class measured below the output directory (its nominal variant and the others)."""
+    """The payload of every class measured below the output directory (its nominal variant and the others; a variant
+    that is no systematic one, e.g. the closure test, is listed in the report only). Refuses a class of `wp_classes`
+    without a measurement and a payload that the consumer cannot evaluate for each of them."""
     output = Path(context.output)
     records: dict[str, dict[str, dict]] = {}
     for path in sorted(output.glob("*/*/results.json")):
@@ -387,7 +439,8 @@ def merge(measurement: TauTriggerMeasurement, context: MeasureContext) -> Path:
         records.setdefault(record["wp_class"], {})[record["variant"]] = record
     if not records:
         raise ValueError(f"tau_trigger: no results.json below {output}; run the measurement per class first")
-    problems = [f"{wp}: the nominal variant is missing" for wp, variants in records.items() if "nominal" not in variants]
+    problems = [f"{wp}: no measurement, but the consumer books it" for wp in measurement.wp_classes if wp not in records]
+    problems += [f"{wp}: the nominal variant is missing" for wp, variants in records.items() if "nominal" not in variants]
     problems += [f"{wp}/nominal/{name}: {problem}" for wp, variants in records.items() for name, entry in variants.get("nominal", {}).get("bins", {}).items() for problem in entry["problems"]]
     problems += [f"{wp}/nominal/{name}: no fit" for wp, variants in records.items() for name, entry in variants.get("nominal", {}).get("bins", {}).items() if not entry["problems"] and entry.get("fit") is None]
     if problems:
@@ -399,7 +452,7 @@ def merge(measurement: TauTriggerMeasurement, context: MeasureContext) -> Path:
         warnings += [f"{wp}: {note}" for note in notes]
     sources = {f"{wp}/{variant}": record["provenance"] for wp, variants in records.items() for variant, record in variants.items()}
     cset = correction_set(results, context.provenance(classes=sorted(records), measurements=sources), measurement.trigtype)
-    problems = check_payload(cset, results, measurement.trigtype)
+    problems = check_payload(cset, results, measurement.trigtype, measurement.wp_classes)
     (output / "report.md").write_text(report(records) + "".join(f"\n- {warning}" for warning in warnings) + "\n")
     if problems:
         raise ValueError("tau_trigger: the payload fails its checks:\n" + "\n".join(problems))

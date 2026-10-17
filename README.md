@@ -33,6 +33,7 @@ shapesmith datacards -c run.yaml [--min-background 1.0] [--no-systematics]
 shapesmith fit       -c run.yaml [--final-states mt,all] [--skip-combine]   # limits, significance, best fit
 shapesmith fit       -c run.yaml --background-only [--final-states all]   # background-only fit to the data, pulls, yields
 shapesmith combine   -c run_2017.yaml -c run_2018.yaml ... -o DIR [--final-state all] [--background-only] [--validate]   # cards of several eras combined
+shapesmith combine   -c run.yaml --era 2017 --era 2018 ... -o DIR   # the same with one run YAML loaded per era ({era} filled)
 shapesmith ml-export -c run.yaml              # Feather training folds
 shapesmith inspect   output/shapes.root [--unchanged]   # what a histogram file contains; variations equal to their nominal
 ```
@@ -55,7 +56,7 @@ the selected channels (`all`, or the only final state), and writes
 prefit and postfit [value, error] yields (with the totals `total_background`, `total_signal`,
 `total`). It fits the observed data of every bin of the card.
 
-`combine` (the combination of eras, one run YAML each) runs `combineCards.py` over the card of one final state of
+`combine` (the combination of eras, one run YAML each, or one run YAML loaded once per `--era`) runs `combineCards.py` over the card of one final state of
 every run (the bin names stay, they carry the era; two runs of one era are refused) into `DIR/combined.txt`, optionally
 CombineHarvester's `ValidateDatacards.py`, then the limits or the background-only fit of `fit` there, with the same
 summaries; `DIR/nuisances.md` lists every nuisance with the eras it appears in and flags names that end in another
@@ -212,7 +213,10 @@ the results of earlier runs into one payload). Measurements:
   the singles fit as a cross-check; the counting cross-check in a counting region and m_vis window, ε_MC and
   ε_EMB^mon. `--refit` from the stored shapes, `--suggest-binning` merges pT bins from the top until the relative
   error stays below 3 %, `--merge` writes the `tau_trigger` payload (KIT/POG schema, flow clamp) with the variants
-  and a significant fit-counting difference in up/down, after checking every combination.
+  and a significant fit-counting difference in up/down, after checking every combination; it refuses a class the
+  consumer books (`wp_classes`) without a measurement. A signal shape may be a variation of the channel or an
+  estimator output (a template shift of the signal, a summed variation). The ε(pT) plots draw any number of
+  reference payloads (`references`, e.g. the POG and the KIT embedding file).
 
 Building blocks:
 
@@ -247,6 +251,12 @@ log_level: INFO                           # DEBUG | INFO | WARNING | ERROR
 combine: {cmssw_dir: /work/USER/CMSSW_14_1_9, scram_arch: el9_amd64_gcc12}
 web: {dir: /web/USER/public_html/TAG, variant: emb_ff, label: "embedding + FF"}   # shapesmith publish
 ```
+
+`-s key=value` overrides an entry (values parsed as YAML). Then every `{era}` in a string of the configuration
+(paths, friends, switches, web texts; not `era` itself) becomes the era of the run, so one YAML serves every era:
+`skim_dir: /ceph/USER/shapesmith/TAG/skims/{era}`, `switches: {sample_lists: ["list_{era}"]}`, run with
+`-s era=2017`. Inside a flow collection (`[...]`, `{...}`) a value with `{era}` is quoted. An era written as a
+number (`era: 2018`, `-s era=2017`) is read as text.
 
 ## Logging
 

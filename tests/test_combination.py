@@ -112,6 +112,26 @@ def test_combine_background_only_maps_the_bins_of_every_era(runs, monkeypatch):
     assert "| mt 2018 | bkg | 6 | 4.0 | 5.0 | 1.500 | 1.200 |" in result.output
 
 
+def test_one_run_yaml_for_every_era(runs, monkeypatch):
+    """--era loads a run YAML once per era (its {era} filled): the same combination as one YAML per era."""
+    directory, configs = runs
+    generic = directory / "run.yaml"
+    generic.write_text(configs[0].read_text().replace(f"output_dir: {directory / ERAS[0]}", f"output_dir: {directory}/{{era}}"))
+    calls = []
+
+    def fake_run(commands, combine, cwd, timeout=None):
+        calls.append(commands)
+        with uproot.recreate(cwd / "higgsCombine.Limit.AsymptoticLimits.mH125.root") as f:
+            f["limit"] = {"quantileExpected": np.array([0.025, 0.16, 0.5, 0.84, 0.975], dtype=np.float32), "limit": np.array([2.0, 3.0, 4.0, 6.0, 8.0])}
+
+    monkeypatch.setattr(cmssw, "run", fake_run)
+    output = directory / "run2_generic"
+    result = CliRunner().invoke(app, ["combine", "-c", str(generic), *[a for era in ERAS for a in ("--era", era)], "-o", str(output)])
+    assert result.exit_code == 0, result.output
+    assert calls[0][0] == combine_cards_command([directory / era / "datacards" / "all" / "combined.txt" for era in ERAS])
+    assert "CMS_ff_QCDStatShift_mt_2017 (2018 card): ends in the era 2017 of another run" in (output / "nuisances.md").read_text()
+
+
 def test_two_runs_of_one_era_or_a_missing_card_are_refused(runs, monkeypatch):
     directory, configs = runs
     monkeypatch.setattr(cmssw, "run", lambda *args, **kwargs: None)

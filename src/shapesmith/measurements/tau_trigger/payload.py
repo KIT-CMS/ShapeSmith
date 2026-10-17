@@ -20,8 +20,10 @@ NAME = "tau_trigger"
 DECAY_MODES = (-1, 0, 1, 10, 11)
 SYSTS = ("nom", "up", "down")
 CORRTYPES = ("eff_data", "eff_mc")
+BOOKED_CORRTYPES = ("eff_data",)  # what the consumer (CROWN, the tt embedding weight of variant A) reads per booked class
 TAU_ID = "DeepTau2018v2p5"
 PT_MAX = 1000.0  # the upper edge of the open last pT bin
+BOOKED_PTS = (40.0, 60.0, 2.0 * PT_MAX)  # the tt threshold, the plateau and beyond the last edge
 
 # a measured bin: (low pT, high pT or None, {"nom": value, "up": value, "down": value})
 Values = tuple[float, float | None, Mapping[str, float]]
@@ -80,11 +82,24 @@ def payload_name(era: str) -> str:
     return f"ditau_trigger_{TAU_ID}_embedding{era}UL.json.gz"
 
 
-def check(cset: cs.CorrectionSet, results: Results, trigtype: str = "ditau") -> list[str]:
+def check(cset: cs.CorrectionSet, results: Results, trigtype: str = "ditau", booked: Sequence[str] = ()) -> list[str]:
     """Every combination (wp, corrtype, dm, syst) evaluates in and beyond its pT range, to 0 < eps <= 1, with
-    down <= nom <= up; the problems."""
+    down <= nom <= up; and every combination the consumer books (the classes `booked` with BOOKED_CORRTYPES, every
+    decay mode and syst) evaluates, measured or not. The problems."""
     evaluator = correctionlib.CorrectionSet.from_string(payloads.dumps(cset))[NAME]
     problems = []
+    for wp in booked:
+        for corrtype in BOOKED_CORRTYPES:
+            failed = []
+            for dm in DECAY_MODES:
+                for syst in SYSTS:
+                    try:
+                        for pt in BOOKED_PTS:
+                            evaluator.evaluate(pt, dm, trigtype, wp, corrtype, syst)
+                    except Exception:  # noqa: BLE001 - any evaluation failure is a payload problem
+                        failed.append(f"DM{dm} {syst}")
+            if failed:
+                problems.append(f"{wp} {corrtype}: booked by the consumer but not evaluable for {', '.join(failed)}")
     for wp, by_corrtype in results.items():
         for corrtype, by_dm in by_corrtype.items():
             for dm, bins in by_dm.items():

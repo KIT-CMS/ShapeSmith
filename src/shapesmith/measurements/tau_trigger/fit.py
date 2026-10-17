@@ -96,7 +96,7 @@ def fit_bin(combine: CombineConfig | None, directory: Path) -> dict:
         try:
             cmssw.run([f"{bestfit_command(interval.best)} > bestfit.log 2>&1", f"{postfit_command()} > postfit.log 2>&1"], combine, directory, STEP_TIMEOUT)
         except CMSSW_FAILURES as error:
-            result["warnings"].append(f"postfit at the profile minimum failed: {error}")
+            result["warnings"].append(f"postfit at the profile minimum failed: {cmssw.failure(error)}")
     try:
         cmssw.run([f"{singles_command(profile.minimum)} > singles.log 2>&1"], combine, directory, SINGLES_TIMEOUT)
         singles = read_singles(output_path(directory, "singles"))
@@ -104,7 +104,7 @@ def fit_bin(combine: CombineConfig | None, directory: Path) -> dict:
         if interval is not None:
             result["warnings"] += deviations(POI, interval, singles)
     except CMSSW_FAILURES as error:
-        result["warnings"].append(f"singles cross-check failed: {error}")
+        result["warnings"].append(f"singles cross-check failed: {cmssw.failure(error)}")
     return result
 
 

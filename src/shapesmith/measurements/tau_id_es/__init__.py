@@ -129,7 +129,7 @@ def fit_category(combine_config: CombineConfig | None, category: str, synced: Pa
         try:
             cmssw.run([f"{combine.bestfit_command(category, best, r_bounds, es_bounds)} > bestfit.log 2>&1", f"{combine.postfit_command(category)} > postfit.log 2>&1"], combine_config, cards, STEP_TIMEOUT)
         except CMSSW_FAILURES as error:
-            result["warnings"].append(f"postfit at the profile minima failed: {error}")
+            result["warnings"].append(f"postfit at the profile minima failed: {cmssw.failure(error)}")
     result["singles"] = singles_cross_check(combine_config, category, (r_profile, es_profile), grid, cards, intervals)
     result["warnings"] += result["singles"].get("deviations", []) + ([result["singles"]["error"]] if "error" in result["singles"] else [])
     return result
@@ -143,7 +143,7 @@ def singles_cross_check(combine_config: CombineConfig | None, category: str, pro
         cmssw.run([f"{combine.singles_command(category, start, r_range, es_range)} > singles.log 2>&1"], combine_config, cards, SINGLES_TIMEOUT)
         sf, es = combine.read_singles(combine.output_path(cards, f"singles_{category}"), category)
     except CMSSW_FAILURES as error:
-        return {**record, "error": f"singles cross-check failed: {error}"}
+        return {**record, "error": f"singles cross-check failed: {cmssw.failure(error)}"}
     record.update(sf=asdict(sf), es=asdict(es), problems=combine.interval_problems("r", sf, r_range) + combine.interval_problems("ES", es, es_range))
     record["deviations"] = [d for key, name, singles in (("sf", "r", sf), ("es", "ES", es)) if intervals[key] is not None for d in combine.deviations(name, intervals[key], singles)]
     return record
