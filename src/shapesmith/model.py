@@ -38,16 +38,19 @@ class Sample:
     nevents: int = 1
     generator_weight: float = 1.0
     cut: str | None = None  # per-sample event selection applied at skim time, e.g. to keep one generator-level part of a sample
-    # the era of its n-tuples when it is borrowed from another era (None: the era of the run); it is normalised with the
-    # luminosity of the analysis that uses it
+    # the era of its n-tuples when it is borrowed from another era or the analysis spans several eras (None: the era
+    # of the run); it is normalised with the luminosity of the analysis that uses it, times lumi_scale
     era: str | None = None
+    # the share of the analysis luminosity that its era contributes, for an analysis over several eras (e.g. one
+    # fake-factor measurement of 2016preVFP and 2016postVFP: 19.52 / 36.33 and 16.81 / 36.33); 1 otherwise
+    lumi_scale: float = 1.0
 
     @property
     def norm_weight(self) -> float:
         """Per-event normalisation constant (without lumi and without sign(genWeight))."""
         if self.kind != "mc":
             return 1.0
-        return self.xsec / (self.nevents * self.generator_weight)
+        return self.xsec / (self.nevents * self.generator_weight) * self.lumi_scale
 
 
 @dataclass(frozen=True)

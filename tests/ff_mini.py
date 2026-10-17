@@ -1,11 +1,16 @@
 """A synthetic fake-factor measurement: data, a genuine-tau MC process (ZT) and ttbar jet fakes (TTJ) in one
 lepton-tau channel, written straight into skims. The regions follow the SM measurement: same sign for the QCD fake
 factors, a lepton-isolation sideband for the DR->SR correction, OS with inverted lepton vetoes for the ttbar scale.
+build_w adds W+jets (WJ) and its fake factors: the DR mt_1 > 70 and no b tag, QCD from its same-sign version, the
+DR->SR correction from W MC to the baseline (mt_1 < 70 and any b tag), three-process fractions. The W columns (mt_1,
+n_bjets) and sample come from their own random stream, so that the other columns stay those of build.
 """
+import dataclasses
+
 import numpy as np
 import pandas as pd
 
-from shapesmith.measurements.fake_factors import Binned, DataScale, DrSr, Equipopulated, FakeFactorMeasurement, Fit, Fractions, Leg, ProcessFF, Split
+from shapesmith.measurements.fake_factors import Binned, DataScale, DrSr, Equipopulated, FakeFactorMeasurement, Fit, Fractions, Leg, ProcessFF, SameSignQCD, Split
 from shapesmith.model import Analysis, Channel, Process, Region, Sample, Selection
 from shapesmith.store import skim_path, write_skim
 
@@ -32,9 +37,11 @@ def _events(rng: np.random.Generator, n: int, kind: str) -> pd.DataFrame:
 
 
 def write_skims(skim_dir, seed: int = 3) -> None:
-    rng = np.random.default_rng(seed)
-    for nick, kind, n in (("DATA", "data", 30000), ("DY", "mc", 30000), ("TT", "mc", 60000)):
-        frame = _events(rng, n, kind)
+    rng, w_rng = np.random.default_rng(seed), np.random.default_rng(seed + 100)
+    for nick, kind, n in (("DATA", "data", 30000), ("DY", "mc", 30000), ("TT", "mc", 60000), ("WJ", "mc", 30000)):
+        frame = _events(rng if nick != "WJ" else w_rng, n, kind)
+        frame["mt_1"] = w_rng.uniform(0, 150, n).astype(np.float32)
+        frame["n_bjets"] = w_rng.choice([0, 1, 2], n, p=[0.5, 0.35, 0.15]).astype(np.int32)
         frame["sample_nick"] = pd.array([nick] * n, dtype="string")
         write_skim(frame, skim_path(skim_dir, "mt", nick, "file_0.root"))
 
@@ -84,3 +91,47 @@ def build(config=None) -> Analysis:
         regions=_regions(),
     )
     return Analysis("ff_mini", "2018", 1.0, None, {"mt": channel}, measurement=measurement())
+
+
+W_SUBTRACT = ("ZT", "TTJ")  # the W fake factors subtract the other MC and QCD
+ALL_MC = ("ZT", "TTJ", "WJ")  # the same-sign QCD subtracts every MC
+W_DR = {"mt_cut": "(mt_1 > 70)", "btag": "(n_bjets == 0)"}
+
+
+def _w_regions() -> tuple[Region, ...]:
+    def region(name: str, **cuts: str) -> Region:
+        return Region(name, replace_cuts=cuts)
+
+    return (
+        region("Wjets_sr_like", **W_DR), region("Wjets_ar_like", **W_DR, tau_iso=FAIL),
+        region("Wjets_sr_like_ss", **W_DR, charge=SS), region("Wjets_ar_like_ss", **W_DR, charge=SS, tau_iso=FAIL),
+        region("Wjets_sr"), region("Wjets_ar", tau_iso=FAIL),
+    )
+
+
+def measurement_w() -> FakeFactorMeasurement:
+    """measurement() with the W+jets fake factors and the three-process fractions."""
+    (leg,) = measurement().legs["mt"]
+    split = Split("n_jets", (1.5, 2.5, 5.5))
+    smoothed = Fit("smoothed", 30.0)
+    qcd = SameSignQCD({"Wjets_sr_like": "Wjets_sr_like_ss", "Wjets_ar_like": "Wjets_ar_like_ss"}, ALL_MC)
+    dr_sr = DrSr("Wjets_sr_like", "Wjets_ar_like", "Wjets_sr", "Wjets_ar", (), binned("mt_1", (0.0, 25.0, 50.0, 70.0), Fit("smoothed", 20.0)), target="WJ")
+    wjets = ProcessFF("Wjets", "data", W_SUBTRACT, "Wjets_sr_like", "Wjets_ar_like", split, binned("pt_2", (30.0, 50.0, 80.0, 150.0), smoothed),
+                      (binned("met", (0.0, 30.0, 60.0, 200.0), Fit("smoothed", 40.0)),), dr_sr, qcd=qcd)
+    qcd_ff = dataclasses.replace(leg.qcd, subtract=ALL_MC, dr_sr=dataclasses.replace(leg.qcd.dr_sr, subtract=ALL_MC))
+    ttbar = dataclasses.replace(leg.ttbar, scale=dataclasses.replace(leg.ttbar.scale, subtract=ALL_MC))
+    fractions = dataclasses.replace(leg.fractions, subtract=ALL_MC, wjets="WJ")
+    return FakeFactorMeasurement({"mt": (Leg("", qcd_ff, ttbar, fractions, wjets),)}, name="fake_factors_w")
+
+
+def build_w(config=None) -> Analysis:
+    weights = Selection(weights={"sf": "sf"})
+    channel = build().channel("mt")
+    channel = dataclasses.replace(
+        channel,
+        samples=(*channel.samples, Sample("WJ", "W", "mc")),
+        cuts={**channel.cuts, "mt_cut": "(mt_1 < 70)", "btag": "(n_bjets >= 0)"},
+        processes=(*channel.processes, Process("WJ", "W", "background", "W", weights)),
+        regions=(*channel.regions, *_w_regions()),
+    )
+    return Analysis("ff_mini_w", "2018", 1.0, None, {"mt": channel}, measurement=measurement_w())

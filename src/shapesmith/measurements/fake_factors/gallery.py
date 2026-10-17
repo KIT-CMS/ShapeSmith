@@ -97,7 +97,8 @@ def content(measurement: FakeFactorMeasurement, output: Path, channels: list[str
                 for stage in ("", DR_SR_STAGE):
                     for entry in record.get(f"{stage}{name}_data_scale", []):
                         facts.append({"key": f"{stage}{name}_data_scale".replace("/", "_"), "label": f"{result.labels['regions'].get(name, name)}{' for DR→SR' if stage else ''} data/MC factor", "value": f"{entry['factor']:.3f}"})
-            add(f"fractions{leg.suffix}", "process_fractions", "QCD and ttbar fractions", f"process_fractions{leg.suffix}", leg.fractions.split, False)
+            fractions_label = " and ".join(["QCD", *(["W+jets"] if leg.fractions.wjets else []), "ttbar"]) + " fractions"
+            add(f"fractions{leg.suffix}", "process_fractions", fractions_label, f"process_fractions{leg.suffix}", leg.fractions.split, False)
 
         unknown = sorted(p for p in directory.iterdir() if p not in used) if directory.is_dir() else []
         if unknown:

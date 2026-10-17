@@ -7,7 +7,8 @@ they exist. The bookkeeping columns (store.SKIM_COLUMNS) are never read: the ski
 is_data, is_mc and is_embedding exist before the skim cuts, so that a cut can depend on the sample kind.
 Rows: an event is kept if the skim cuts pass nominally or under a column variation of its kind; then the sample cut
 applies (the normalisation stays that of the whole sample).
-Era: a sample borrowed from another era (Sample.era) is read from the n-tuples of that era.
+Era: a sample borrowed from another era, or one of an analysis over several eras (Sample.era), is read from the
+n-tuples of its era; its normalisation carries its share of the analysis luminosity (Sample.lumi_scale).
 Checks, per file, where the channel declares CROWN shifts for the sample (its kind and group): every declared shift
 has a shifted branch, and every shifted branch `c__X` of a needed column has a declared suffix `__X`.
 Reuse: a stored skim serves when its skim cuts, normalisation and sample cut are equal, its column variations and
@@ -136,7 +137,9 @@ def select_samples(channel: Channel, names: list[str] | None) -> tuple[Sample, .
 
 
 def normalisation(sample: Sample) -> dict:
-    return {"kind": sample.kind, "xsec": sample.xsec, "nevents": sample.nevents, "generator_weight": sample.generator_weight}
+    """The normalisation fields of a sample; lumi_scale only where it is not 1, so that earlier skims stay reusable."""
+    result = {"kind": sample.kind, "xsec": sample.xsec, "nevents": sample.nevents, "generator_weight": sample.generator_weight}
+    return result if sample.lumi_scale == 1.0 else {**result, "lumi_scale": sample.lumi_scale}
 
 
 def contract(config: RunConfig, channel: Channel, sample: Sample, columns: set[str]) -> dict:

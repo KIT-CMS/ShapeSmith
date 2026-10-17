@@ -2,12 +2,16 @@
 (FF_Updated _equipopulated_binned_variable and get_binning).
 
 Per category: the |weight|-weighted quantiles (inverted CDF) of the variable in [low, high], the outer edges set to
-low and high, rounded, the `add_left` edges put in front. The data are those of the quantity's region: the SR-like
-region of the process for its fake factors and non-closures (the data/MC scale region for an MC fake factor), the
-orthogonal SR-like region for the DR->SR correction and its non-closures, the fraction region for the fractions.
+low and high, rounded, the `add_left` edges put in front. The events are the data of the quantity's region: the
+SR-like region of the process for its fake factors and non-closures (the data/MC scale region for an MC fake factor),
+the orthogonal SR-like region for the DR->SR correction and its non-closures, the fraction region for the fractions;
+a DR->SR correction from MC (W+jets) takes its MC target, in the SR for the correction and in the orthogonal
+SR-like region for its non-closures. The last log line holds
+every suggestion as JSON (quantity -> edges per category), to be entered into the analysis tables of an era.
 """
 from __future__ import annotations
 
+import json
 import logging
 from typing import TYPE_CHECKING, Iterator
 
@@ -27,28 +31,33 @@ def equipopulated(x: np.ndarray, weights: np.ndarray, options: Equipopulated, n_
     return [*options.add_left, *(round(edge, options.rounding) for edge in np.round(edges, options.rounding).tolist())]
 
 
-def quantities(measurement: FakeFactorMeasurement, channel: str) -> Iterator[tuple[str, Binned, Split, str]]:
-    """(name, quantity, split, region) of every quantity with equipopulated options."""
+def quantities(measurement: FakeFactorMeasurement, channel: str, data: str = "data") -> Iterator[tuple[str, Binned, Split, str, str]]:
+    """(name, quantity, split, region, process) of every quantity: the events of `process` (the data, or the MC
+    target of a DR->SR correction from MC) in `region` give its equipopulated edges."""
     for leg in measurement.legs[channel]:
         for process in leg.processes:
             name = process.name + leg.suffix
             region = process.scale.sr_like if process.scale is not None else process.sr_like
-            yield f"{name}_fake_factors", process.fake_factors, process.split, region
-            yield from ((f"{name}_non_closure_{b.variable}", b, process.split, region) for b in process.non_closures)
+            yield f"{name}_fake_factors", process.fake_factors, process.split, region, data
+            yield from ((f"{name}_non_closure_{b.variable}", b, process.split, region, data) for b in process.non_closures)
             if process.dr_sr is not None:
                 dr_sr = process.dr_sr
-                yield f"{name}_DR_SR", dr_sr.correction, process.split, dr_sr.sr_like
-                yield from ((f"{name}_for_DRtoSR_non_closure_{b.variable}", b, process.split, dr_sr.sr_like) for b in dr_sr.non_closures)
-        yield f"process_fractions{leg.suffix}", leg.fractions.binned, leg.fractions.split, leg.fractions.region
+                if dr_sr.target is None:
+                    yield f"{name}_DR_SR", dr_sr.correction, process.split, dr_sr.sr_like, data
+                    yield from ((f"{name}_for_DRtoSR_non_closure_{b.variable}", b, process.split, dr_sr.sr_like, data) for b in dr_sr.non_closures)
+                else:
+                    yield f"{name}_DR_SR", dr_sr.correction, process.split, dr_sr.sr, dr_sr.target
+                    yield from ((f"{name}_for_DRtoSR_non_closure_{b.variable}", b, process.split, dr_sr.sr_like, dr_sr.target) for b in dr_sr.non_closures)
+        yield f"process_fractions{leg.suffix}", leg.fractions.binned, leg.fractions.split, leg.fractions.region, data
 
 
 def suggestions(measurement: FakeFactorMeasurement, source: EventSource) -> list[tuple[str, int, list[float], list[float]]]:
     """(quantity, category, suggested edges, current edges)."""
     result = []
-    for name, binned, split, region in quantities(measurement, source.channel):
+    for name, binned, split, region, process in quantities(measurement, source.channel, source.data):
         if binned.equipopulated is None:
             continue
-        events = source.events(source.data, region)
+        events = source.events(process, region)
         split_values = events.frame[split.variable].to_numpy()
         for category in split.categories:
             selected = (split_values >= split.edges[category]) & (split_values < split.edges[category + 1])
@@ -58,6 +67,11 @@ def suggestions(measurement: FakeFactorMeasurement, source: EventSource) -> list
     return result
 
 
-def log_suggestions(measurement: FakeFactorMeasurement, source: EventSource) -> None:
+def log_suggestions(measurement: FakeFactorMeasurement, source: EventSource) -> dict[str, list[list[float]]]:
+    """Log every suggestion and, last, all of them as JSON; returns quantity -> suggested edges per category."""
+    collected: dict[str, list[list[float]]] = {}
     for name, category, suggested, current in suggestions(measurement, source):
         logger.info(f"{source.channel} {name} category {category}: suggested {suggested}, current {current}")
+        collected.setdefault(name, []).append(suggested)
+    logger.info(f"{source.channel} suggested edges (JSON): {json.dumps(collected)}")
+    return collected
