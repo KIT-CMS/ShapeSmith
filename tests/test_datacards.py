@@ -1,7 +1,12 @@
+import dataclasses
+
+import pytest
 import uproot
 
 from shapesmith.datacards import bin_name, rebin_edges, run_datacards, write_datacard
 from shapesmith.histogram import HistKey, Histogram, HistogramSet, part_of
+from shapesmith.model import AnalysisError, LnN
+from shapesmith.validate import validate
 from tests.mini_analysis import build, build_embedding
 
 
@@ -94,3 +99,32 @@ def test_parts_of_a_summed_variation_stay_out_of_the_card_and_the_shapes(tmp_pat
         names = f.keys(recursive=True, cycle=False)
         assert "htt_mt_1_2018/EMB_CMS_tesUp" in names and not [name for name in names if "%" in name]
 
+
+
+def test_lnn_entries_with_one_name_share_a_line(tmp_path):
+    """E.g. a lepton-ID nuisance with one value on MC and another on the embedded sample."""
+    analysis = dataclasses.replace(build(), lnn=(LnN("eff_m", ("ZTT",), 1.02), LnN("lumi", ("HH",), 1.01), LnN("eff_m", ("ZL",), 1.01)))
+    text = write_datacard(_hset(), analysis, ["mt"], tmp_path / "mt").read_text()
+    lines = [line for line in text.splitlines() if " lnN " in line]
+    assert lines == ["eff_m lnN - 1.02 1.01 - - 1.02 1.01 -", "lumi lnN 1.01 - - - 1.01 - - -"]
+    overlap = dataclasses.replace(analysis, lnn=(LnN("eff_m", ("ZTT",), 1.02), LnN("eff_m", ("*",), 1.01)))
+    with pytest.raises(ValueError, match="lnN eff_m: two entries apply to ZTT in htt_mt_1_2018"):
+        write_datacard(_hset(), overlap, ["mt"], tmp_path / "overlap")
+
+
+def test_lnn_variations_become_an_lnn_of_the_yield_ratios(tmp_path):
+    """A variation of Analysis.lnn_variations: down/up yield ratios per bin and process, neither a shape line nor a
+    shapes-file histogram; the processes without it get '-'."""
+    analysis = dataclasses.replace(build(), lnn_variations=("CMS_pu",))
+    card = write_datacard(_hset(), analysis, ["mt"], tmp_path / "mt")
+    text = card.read_text()
+    assert "CMS_pu lnN 0.9000/1.1000 0.9000/1.1000 - - 0.9000/1.1000 0.9000/1.1000 - -" in text
+    assert "CMS_pu shape" not in text
+    with uproot.open(card.parent / "common" / "htt_input_2018.root") as f:
+        assert not [name for name in f.keys(recursive=True, cycle=False) if "CMS_pu" in name]
+
+
+def test_lnn_variations_must_exist():
+    with pytest.raises(AnalysisError, match="lnN variation CMS_prefiring: no variations CMS_prefiringUp and CMS_prefiringDown"):
+        validate(dataclasses.replace(build(), lnn_variations=("CMS_prefiring",)))
+    validate(dataclasses.replace(build(), lnn_variations=("CMS_pu",)))

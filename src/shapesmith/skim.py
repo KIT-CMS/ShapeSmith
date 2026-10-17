@@ -3,9 +3,11 @@
 Columns: per sample, the columns of every expression its processes can use (all regions, categories, variables and
 the variations of its kind), the skim cuts, keep_columns, `event`, `genWeight` for MC and those of its own cut. For
 every CROWN shift of its kind (a ColumnVariation with a suffix) the shifted branches `c + suffix` are read where
-they exist.
+they exist. The bookkeeping columns (store.SKIM_COLUMNS) are never read: the skim adds them, and the kind flags
+is_data, is_mc and is_embedding exist before the skim cuts, so that a cut can depend on the sample kind.
 Rows: an event is kept if the skim cuts pass nominally or under a column variation of its kind; then the sample cut
 applies (the normalisation stays that of the whole sample).
+Era: a sample borrowed from another era (Sample.era) is read from the n-tuples of that era.
 Checks, per file, where the channel declares CROWN shifts for the sample (its kind and group): every declared shift
 has a shifted branch, and every shifted branch `c__X` of a needed column has a declared suffix `__X`.
 Reuse: a stored skim serves when its skim cuts, normalisation and sample cut are equal, its column variations and
@@ -33,7 +35,8 @@ from shapesmith.store import SKIM_COLUMNS, manifest_path, read_manifest, schema,
 
 logger = logging.getLogger(__name__)
 
-ROW_FIELDS = ("selection", "normalisation", "sample_cut", "column_variations", "friends")  # the contract fields that define the rows
+ROW_FIELDS = ("selection", "normalisation", "sample_cut", "ntuple_era", "column_variations", "friends")  # the contract fields that define the rows
+KIND_FLAGS = {"is_data": "data", "is_mc": "mc", "is_embedding": "embedding"}  # bookkeeping columns: the sample kind
 
 
 @dataclass(frozen=True)
@@ -65,7 +68,7 @@ def needed_columns(channel: Channel, sample: Sample) -> set[str]:
                 selection = select(channel, process, region, variation)
                 if selection is not None:
                     exprs += selection[0] + selection[1]
-    columns = columns_of(exprs) | set(channel.keep_columns) | {"event"}
+    columns = (columns_of(exprs) - set(SKIM_COLUMNS)) | set(channel.keep_columns) | {"event"}  # the skim adds its own
     if sample.kind == "mc":
         columns.add("genWeight")
     if sample.cut is not None:
@@ -96,6 +99,8 @@ def skim_one(ntuple: NtupleFile, sample: Sample, channel: Channel, columns: set[
     if len(frame):  # the friends of a file without events have no branches, so no shifted ones either
         check_shifts(channel, sample, columns, branches)
     n_in = len(frame)
+    for column, kind in KIND_FLAGS.items():  # before the skim cuts, which may depend on the kind
+        frame[column] = np.full(len(frame), sample.kind == kind, dtype=bool)
     nominal = list(channel.skim.values())
     selected = mask(frame, nominal)
     for variation in variations:
@@ -109,8 +114,6 @@ def skim_one(ntuple: NtupleFile, sample: Sample, channel: Channel, columns: set[
     sign[sign == 0] = 1.0
     frame["sample_nick"] = pd.array([sample.nick] * len(frame), dtype="string")  # typed even for empty files
     frame["norm_weight"] = (sample.norm_weight * sign).astype(np.float64)
-    for column, kind in (("is_data", "data"), ("is_mc", "mc"), ("is_embedding", "embedding")):
-        frame[column] = np.full(len(frame), sample.kind == kind, dtype=bool)
     write_skim(frame, out_path)
     logger.debug(
         f"{channel.name}/{sample.nick}/{ntuple.basename}: {n_in} -> {len(frame)} events, {len(frame.columns)} columns "
@@ -142,6 +145,8 @@ def contract(config: RunConfig, channel: Channel, sample: Sample, columns: set[s
     result = {"selection": dict(channel.skim), "required_columns": sorted(columns), "normalisation": normalisation(sample)}
     if sample.cut is not None:
         result["sample_cut"] = sample.cut
+    if sample.era is not None:
+        result["ntuple_era"] = sample.era
     variations = {v.name: v.suffix or dict(v.derived) for v in column_variations(channel, sample)}
     if variations:
         result["column_variations"] = variations
@@ -153,7 +158,7 @@ def contract(config: RunConfig, channel: Channel, sample: Sample, columns: set[s
 
 def reuse_problems(stored: dict, expected: dict, stored_columns: set[str]) -> list[str]:
     """Why a stored skim cannot serve: its rows must be a superset of the needed rows, its columns of the needed columns."""
-    problems = [f"{name} changed" for name in ("selection", "normalisation", "sample_cut") if stored.get(name) != expected.get(name)]
+    problems = [f"{name} changed" for name in ("selection", "normalisation", "sample_cut", "ntuple_era") if stored.get(name) != expected.get(name)]
     recorded = stored.get("column_variations", {})
     missing = sorted(name for name, spec in expected.get("column_variations", {}).items() if recorded.get(name) != spec)
     if missing:
@@ -229,7 +234,7 @@ def run_skim(config: RunConfig, analysis: Analysis, channels: list[str] | None =
         channel = analysis.channel(channel_name)
         chosen = select_samples(channel, samples)
         with ThreadPoolExecutor(max_workers=min(8, max(1, len(chosen)))) as listing:  # directory listings are latency bound
-            discovered = list(listing.map(lambda s: discover(config.ntuples, config.era, s.nick, channel_name, s.kind), chosen))
+            discovered = list(listing.map(lambda s: discover(config.ntuples, s.era or config.era, s.nick, channel_name, s.kind), chosen))
         logger.info(f"{channel_name}: {len(chosen)} samples, {sum(len(files) for files in discovered)} files in {join_url(config.ntuples.server, config.ntuples.base)}")
         counts = dict.fromkeys(("reused", "resumed", "new", "empty", "pending"), 0)
         for sample, files in zip(chosen, discovered):

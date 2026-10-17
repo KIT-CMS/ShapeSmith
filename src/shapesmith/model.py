@@ -38,6 +38,9 @@ class Sample:
     nevents: int = 1
     generator_weight: float = 1.0
     cut: str | None = None  # per-sample event selection applied at skim time, e.g. to keep one generator-level part of a sample
+    # the era of its n-tuples when it is borrowed from another era (None: the era of the run); it is normalised with the
+    # luminosity of the analysis that uses it
+    era: str | None = None
 
     @property
     def norm_weight(self) -> float:
@@ -299,6 +302,9 @@ class Analysis:
     style: Style | None = None
     ml: MLExportConfig | None = None
     measurement: Measurement | None = None  # run by `shapesmith measure`
+    # Up/Down variations (name without the direction) that datacards write as an lnN instead of a shape: per bin and
+    # process the ratio of the varied to the nominal yield, e.g. a weight variation whose shape effect is negligible
+    lnn_variations: tuple[str, ...] = ()
 
     def channel(self, name: str) -> Channel:
         return self.channels[name]

@@ -1,9 +1,11 @@
 """Native combine datacards: text card + shapes file, optional rebinning.
 
 One card per final state lists every bin (channel x category); processes with a non-positive rate in a bin are left
-out of that bin. Systematics: lnN from Analysis.lnn, `shape` for every Up/Down pair of variations present (names
-without a direction are templates and never become shape lines; parts of summed variations are left out of the shapes
-file), `* autoMCStats 0`.
+out of that bin. Systematics: lnN from Analysis.lnn (entries with the same name make one line; at most one of them may
+apply to a column), `shape` for every Up/Down pair of variations present (names without a direction are templates and
+never become shape lines; parts of summed variations are left out of the shapes file), except the variations of
+Analysis.lnn_variations, which become an lnN of the varied to the nominal yield and stay out of the shapes file,
+`* autoMCStats 0`.
 """
 from __future__ import annotations
 
@@ -87,21 +89,51 @@ def _value(lnn: LnN) -> str:
     return f"{lnn.value:g}"
 
 
+def _concrete(lnn: LnN, analysis: Analysis, b: Bin) -> str:
+    return lnn.name.replace("$CHANNEL", b.channel).replace("$ERA", analysis.era)
+
+
 def lnn_lines(analysis: Analysis, bins: list[Bin]) -> list[str]:
-    """One `<name> lnN ...` line per concrete nuisance name ($CHANNEL/$ERA expanded), columns = (bin, process) pairs."""
-    lines = []
+    """One `<name> lnN ...` line per concrete nuisance name ($CHANNEL/$ERA expanded), in the order of first
+    appearance, columns = (bin, process) pairs; entries with the same concrete name share the line."""
+    columns = [(b, process) for b in bins for process in b.processes]
+    values: dict[str, list[str]] = {}
     for lnn in analysis.lnn:
-        concrete_names = sorted({lnn.name.replace("$CHANNEL", b.channel).replace("$ERA", analysis.era) for b in bins})
-        for name in concrete_names:
-            columns = []
-            for b in bins:
-                this_name = lnn.name.replace("$CHANNEL", b.channel).replace("$ERA", analysis.era)
-                for process in b.processes:
-                    applies = this_name == name and (lnn.channels is None or b.channel in lnn.channels) and ("*" in lnn.processes or process in lnn.processes)
-                    columns.append(_value(lnn) if applies else "-")
-            if any(column != "-" for column in columns):
-                lines.append(f"{name} lnN " + " ".join(columns))
+        for name in sorted({_concrete(lnn, analysis, b) for b in bins}):
+            for index, (b, process) in enumerate(columns):
+                applies = _concrete(lnn, analysis, b) == name and (lnn.channels is None or b.channel in lnn.channels) and ("*" in lnn.processes or process in lnn.processes)
+                if not applies:
+                    continue
+                row = values.setdefault(name, ["-"] * len(columns))
+                if row[index] != "-":
+                    raise ValueError(f"lnN {name}: two entries apply to {process} in {b.name}")
+                row[index] = _value(lnn)
+    return [f"{name} lnN " + " ".join(row) for name, row in values.items()]
+
+
+def _ratio(varied: Histogram, nominal: Histogram) -> float:
+    return varied.sum() / nominal.sum()
+
+
+def variation_lnn_lines(analysis: Analysis, bins: list[Bin]) -> list[str]:
+    """The lnN `down/up` (yield ratios to the nominal) of every Analysis.lnn_variations pair, per (bin, process)."""
+    lines = []
+    for name in analysis.lnn_variations:
+        row = []
+        for b in bins:
+            for process, nominal in b.processes.items():
+                varied = b.variations[process]
+                pair = (varied.get(f"{name}Down"), varied.get(f"{name}Up"))
+                row.append("-" if None in pair else f"{_ratio(pair[0], nominal):.4f}/{_ratio(pair[1], nominal):.4f}")
+        if any(column != "-" for column in row):
+            lines.append(f"{name} lnN " + " ".join(row))
     return lines
+
+
+def _shape_variations(analysis: Analysis, variations: dict[str, Histogram]) -> dict[str, Histogram]:
+    """The variations that are written as shapes: all but the pairs of Analysis.lnn_variations."""
+    as_lnn = {f"{name}{d}" for name in analysis.lnn_variations for d in ("Up", "Down")}
+    return {name: h for name, h in variations.items() if name not in as_lnn}
 
 
 def shape_lines(bins: list[Bin]) -> list[str]:
@@ -131,7 +163,8 @@ def card_text(analysis: Analysis, bins: list[Bin], systematics: bool) -> str:
     lines.append("rate " + " ".join("-1" for _ in columns))
     lines.append("-" * 60)
     if systematics:
-        lines += lnn_lines(analysis, bins) + shape_lines(bins)
+        shapes = [Bin(b.channel, b.name, b.data, b.processes, {p: _shape_variations(analysis, v) for p, v in b.variations.items()}) for b in bins]
+        lines += lnn_lines(analysis, bins) + variation_lnn_lines(analysis, bins) + shape_lines(shapes)
     lines.append("* autoMCStats 0")
     return "\n".join(lines) + "\n"
 
@@ -149,7 +182,7 @@ def write_datacard(hset: HistogramSet, analysis: Analysis, channels: list[str], 
         entries.append((b.name, "data_obs", b.data))
         for process, h in b.processes.items():
             entries.append((b.name, process, h))
-            entries += [(b.name, shape_name(process, variation), varied) for variation, varied in b.variations[process].items()]
+            entries += [(b.name, shape_name(process, variation), varied) for variation, varied in _shape_variations(analysis, b.variations[process]).items()]
     write_shapes(output_dir / "common" / f"htt_input_{analysis.era}.root", entries)
     card = output_dir / "combined.txt"
     text = card_text(analysis, bins, systematics)

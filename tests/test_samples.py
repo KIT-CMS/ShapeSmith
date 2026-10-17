@@ -46,8 +46,14 @@ def test_a_duplicate_nick_raises(tmp_path):
 
 def test_normalisation_by_nick(database):
     values = normalisation(database, ("TT_1", "DATA_A", "EMB_A"))
-    assert values["TT_1"] == {"kind": "mc", "xsec": 88.5, "nevents": 1000, "generator_weight": 0.99}
-    assert values["DATA_A"]["kind"] == "data" and values["EMB_A"] == {"kind": "embedding", "xsec": 1.0, "nevents": 5000, "generator_weight": 1.0}
+    assert values["TT_1"] == {"kind": "mc", "xsec": 88.5, "nevents": 1000, "generator_weight": 0.99, "era": "2018"}
+    assert values["DATA_A"]["kind"] == "data" and values["EMB_A"] == {"kind": "embedding", "xsec": 1.0, "nevents": 5000, "generator_weight": 1.0, "era": "2018"}
+
+
+def test_the_era_of_an_entry_is_a_string_or_none(tmp_path):
+    path = tmp_path / "datasets.json"
+    path.write_text(json.dumps({"OLD": {**DB["TT_1"], "era": 2017}, "NONE": {k: v for k, v in DB["TT_1"].items() if k != "era"}}))
+    assert {nick: row["era"] for nick, row in normalisation(path, ("OLD", "NONE")).items()} == {"OLD": "2017", "NONE": None}
 
 
 def test_normalisation_lists_every_missing_nick(database):

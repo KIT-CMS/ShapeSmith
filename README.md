@@ -75,10 +75,12 @@ either control plots or one measurement.
 Everything that differs by channel lives in its `Channel`: samples, cuts, processes, regions,
 categories, control variables, variations and estimators.
 
-- `Sample(nick, group, kind, xsec, nevents, generator_weight, cut)`: kind `data`, `mc` or
+- `Sample(nick, group, kind, xsec, nevents, generator_weight, cut, era)`: kind `data`, `mc` or
   `embedding`; `norm_weight = xsec / (nevents * generator_weight) * sign(genWeight)` for MC.
   A sample's own `cut` (e.g. one generator-level part of an inclusive sample) is applied at skim
-  time; its normalisation stays that of the whole sample.
+  time; its normalisation stays that of the whole sample. `era` borrows the sample from another
+  era: its n-tuples are read from `<base>/<era>/<nick>`, and it is normalised with the luminosity
+  of the analysis that uses it (None: the era of the run).
 - `Process(name, group, role, plot_group, selection)`: role `data`, `signal`, `background` or
   `auxiliary` (booked in the nominal region only, for an estimator; never in datacards, plots or
   the ML export). A process owns its whole weight set.
@@ -105,6 +107,11 @@ categories, control variables, variations and estimators.
 - `Analysis.control_channels`: channels that `datacards` and `fit` put into every final state
   (each selected channel and `all`) but never make a final state themselves, e.g. a ttbar
   control channel fitted together with the signal channels; `ml-export` skips them.
+- `Analysis.lnn`: `LnN(name, processes, value, channels)`, `$CHANNEL` and `$ERA` expanded per bin;
+  entries with the same name share one datacard line (at most one may apply to a column), e.g. one
+  value on MC and another on the embedded sample. `Analysis.lnn_variations`: Up/Down variations
+  (names without the direction) that datacards write as an lnN instead of a shape, `down/up` = the
+  varied over the nominal yield per bin and process.
 
 **The event rule** (`shapesmith.events`, used by hist, the ML export and measurements): cuts are
 the channel cuts with the region's replacements, the process cuts and the skim cuts; weights are
@@ -125,7 +132,10 @@ variations. `hist` always refills the requested scopes and keeps the other histo
 
 Per sample, the skim keeps the columns of every expression its processes can use and the
 shifted branches of its column variations. An event is kept if the skim cuts pass nominally or
-under any column variation of its kind (hist re-applies the varied skim cuts). Where the channel
+under any column variation of its kind (hist re-applies the varied skim cuts). The skim adds the
+bookkeeping columns `sample_nick`, `norm_weight`, `is_data`, `is_mc` and `is_embedding`; the kind
+flags exist before the skim cuts, so a cut may depend on the kind (e.g. a trigger cut the
+embedded sample does without). Where the channel
 declares CROWN shifts for a sample (its kind and group), every file must carry a shifted branch for each of them,
 and every shifted branch `c__X` of a needed column must be declared; otherwise the skim fails.
 
@@ -133,7 +143,7 @@ A friend is read for the samples of its kinds (`applies_to`) in its channels (`c
 all), so a channel without that friend production (e.g. a control channel) does not look for it.
 
 The manifest records the skim contract. A stored skim is reused when its skim cuts,
-normalisation and sample cut are unchanged, its recorded column variations and friends contain
+normalisation, sample cut and n-tuple era (of a borrowed sample) are unchanged, its recorded column variations and friends contain
 the current ones, and its Parquet schema holds the needed columns; so one skim made with all
 variations and friends serves every subset. Incompatible skims are listed together, with the
 `skim --force --samples ...` fix. A new friend version gets a new friend base (a friend rewritten

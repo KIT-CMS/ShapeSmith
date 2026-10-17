@@ -300,3 +300,46 @@ def test_read_skims_missing_nick(config):
 
 def test_skim_path():
     assert skim_path(Path("/s"), "mt", "N", "N_0.root") == Path("/s") / "mt" / "N" / "N_0.parquet"
+
+
+def test_skim_cuts_can_depend_on_the_sample_kind(config):
+    """The kind flags exist before the skim cuts and are never read from the n-tuples, e.g. a trigger cut that the
+    embedded sample does not need."""
+    kind_cut = _replace_channel(build(), skim={**build().channel("mt").skim, "trigger": "is_data | (m_vis > 100)"})
+    channel = kind_cut.channel("mt")
+    assert not {"is_data", "is_mc", "is_embedding"} & needed_columns(channel, _sample(kind_cut, "ZTT_1"))
+    run_skim(config, kind_cut)
+    data, mc = (read_skims(config.skim_dir, "mt", [nick], ["m_vis"]) for nick in ("DATA_A", "ZTT_1"))
+    assert (data["m_vis"] <= 100).any() and (mc["m_vis"] > 100).all() and len(mc)
+    contract = read_manifest(config.skim_dir / "mt" / "ZTT_1" / "manifest.json")["contract"]
+    assert "is_data" not in contract["required_columns"]
+    assert all(r.skipped for r in run_skim(config, kind_cut))  # the kind flags of the Parquet files are not "missing"
+
+
+def test_a_borrowed_sample_is_read_from_the_ntuples_of_its_era(tmp_path):
+    """Sample.era: the n-tuples (and friends) of another era, normalised as every other sample; the era is part of
+    the contract."""
+    config = _config(tmp_path, workers=1)
+
+    def move(nick, source, target):  # main n-tuples and friends
+        for base in ("CROWNRun", "CROWNFriends/nn"):
+            (tmp_path / "data" / base / target).mkdir(parents=True, exist_ok=True)
+            (tmp_path / "data" / base / source / nick).rename(tmp_path / "data" / base / target / nick)
+
+    def borrowed(analysis, era):
+        return _replace_channel(analysis, samples=tuple(dataclasses.replace(s, era=era) if s.nick == "SIG_1" else s for s in analysis.channel("mt").samples))
+
+    move("SIG_1", "2018", "2017")
+    plain = build()
+    with pytest.raises(FileNotFoundError, match="2018/SIG_1"):
+        run_skim(config, plain)
+    results = run_skim(config, borrowed(plain, "2017"))
+    assert {r.nick for r in results} == {"DATA_A", "ZTT_1", "SIG_1"} and all(r.n_in == 200 for r in results)
+    manifest = read_manifest(config.skim_dir / "mt" / "SIG_1" / "manifest.json")
+    assert manifest["contract"]["ntuple_era"] == "2017" and all("/2017/SIG_1/" in path for path in manifest["files"])
+    assert "ntuple_era" not in read_manifest(config.skim_dir / "mt" / "ZTT_1" / "manifest.json")["contract"]
+    frame = read_skims(config.skim_dir, "mt", ["SIG_1"], ["norm_weight"])
+    assert np.allclose(np.abs(frame["norm_weight"]), 1.0 / 50)
+    move("SIG_1", "2017", "2016preVFP")
+    with pytest.raises(ValueError, match="mt/SIG_1: ntuple_era changed"):
+        run_skim(config, borrowed(plain, "2016preVFP"))
