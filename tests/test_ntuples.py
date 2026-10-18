@@ -4,7 +4,7 @@ import numpy as np
 import pytest
 
 from shapesmith.config import FriendConfig, NtupleConfig
-from shapesmith.ntuples import MissingColumnsError, NtupleFile, discover, friend_bases, join_url, list_root_files, read_ntuple
+from shapesmith.ntuples import MissingColumnsError, NtupleFile, describe, discover, friend_bases, join_url, list_root_files, read_ntuple
 from shapesmith.testing import make_mini_dataset, make_ntuple
 
 
@@ -29,6 +29,30 @@ def test_list_and_discover(dataset):
     assert [f.basename for f in files] == ["ZTT_1_0.root", "ZTT_1_1.root"]
     assert files[0].friends == (str(root / "CROWNFriends" / "nn" / "2018" / "ZTT_1" / "mt" / "ZTT_1_0.root"),)
     assert files[0].nick == "ZTT_1" and files[0].channel == "mt"
+
+
+def test_a_kind_with_its_own_base_is_read_there(dataset):
+    """ntuples.bases: the MC from a second production, the data from the base; a friend split by kind follows."""
+    _, root = dataset
+    second = root / "second"
+    for nick in ("ZTT_1", "SIG_1"):
+        for base in ("CROWNRun", "CROWNFriends/nn"):
+            (second / base / "2018").mkdir(parents=True, exist_ok=True)
+            (root / base / "2018" / nick).rename(second / base / "2018" / nick)
+    friends = [FriendConfig(base=str(root / "CROWNFriends" / "nn"), applies_to=("data",)), FriendConfig(base=str(second / "CROWNFriends" / "nn"), applies_to=("mc", "embedding"))]
+    ntuples = NtupleConfig(base=str(root / "CROWNRun"), bases={"mc": str(second / "CROWNRun")}, friends=friends)
+    mc = discover(ntuples, "2018", "ZTT_1", "mt", "mc")
+    assert [f.path for f in mc] == [str(second / "CROWNRun" / "2018" / "ZTT_1" / "mt" / f"ZTT_1_{i}.root") for i in range(2)]
+    assert mc[0].friends == (str(second / "CROWNFriends" / "nn" / "2018" / "ZTT_1" / "mt" / "ZTT_1_0.root"),)
+    data = discover(ntuples, "2018", "DATA_A", "mt", "data")
+    assert data[0].path.startswith(str(root / "CROWNRun" / "2018" / "DATA_A")) and data[0].friends[0].startswith(str(root / "CROWNFriends" / "nn" / "2018"))
+    with pytest.raises(FileNotFoundError, match="ZTT_1"):
+        discover(ntuples.model_copy(update={"bases": {}}), "2018", "ZTT_1", "mt", "mc")  # the MC is no longer in the base
+
+
+def test_describe_names_the_kinds_with_their_own_base():
+    assert describe(NtupleConfig(server="root://s", base="/store/a")) == "root://s//store/a"
+    assert describe(NtupleConfig(server="root://s", base="/store/a", bases={"mc": "/store/b", "embedding": "/store/b"})) == "root://s//store/a (mc root://s//store/b, embedding root://s//store/b)"
 
 
 def test_friend_applies_to_filters_kinds(dataset):

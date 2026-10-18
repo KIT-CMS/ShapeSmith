@@ -14,7 +14,7 @@ from rich.table import Table
 
 from shapesmith import __version__, logs
 from shapesmith.config import RunConfig, WebConfig, load_analysis, load_config
-from shapesmith.ntuples import join_url
+from shapesmith.ntuples import describe
 from shapesmith.provenance import record, write_versions
 
 app = typer.Typer(help=f"ShapeSmith {__version__}: CROWN ntuples -> skims -> histograms -> datacards, fits, plots, ML folds, measurements.", no_args_is_help=True)
@@ -60,7 +60,7 @@ def _log_start(config: RunConfig, config_path: Path, overrides: list[str], selec
     logger.info(f"ShapeSmith {__version__} {_command['name']}: {Path(config_path).absolute()}" + (f", overrides {' '.join(overrides)}" if overrides else ""))
     logger.info(f"analysis {config.analysis}{_git(versions['analysis'])}, era {config.era}, channels {','.join(selected)}, {config.workers} workers, log level {config.log_level}")
     database = f", sample database {config.sample_database}{_git(versions['sample_database'])}" if config.sample_database else ""
-    logger.info(f"shapesmith{_git(versions['shapesmith'])}{database}, ntuples {join_url(config.ntuples.server, config.ntuples.base)}")
+    logger.info(f"shapesmith{_git(versions['shapesmith'])}{database}, ntuples {describe(config.ntuples)}")
     if log_file is not None:
         logger.info(f"log file {log_file}")
     logger.debug(f"resolved configuration: {json.dumps(versions['config'], sort_keys=True)}")

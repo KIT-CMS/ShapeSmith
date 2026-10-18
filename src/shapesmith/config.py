@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any, Iterable, Literal
 
 import yaml
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, SerializerFunctionWrapHandler, field_validator, model_serializer
 
 from shapesmith.model import Analysis, SampleKind
 from shapesmith.validate import validate
@@ -28,7 +28,22 @@ class NtupleConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
     server: str = ""  # e.g. root://cmsdcache-kit-disk.gridka.de ; empty = local file system
     base: str  # .../CROWNRun
+    # the main n-tuples of a sample kind from another base, e.g. the MC and embedding of a re-production beside the data
+    # of the first one ({mc: .../TAG_B/CROWNRun, embedding: ...}); the kinds not listed read `base`
+    bases: dict[SampleKind, str] = Field(default_factory=dict)
     friends: list[FriendConfig] = Field(default_factory=list)
+
+    def base_of(self, kind: str) -> str:
+        """The base of the main n-tuples of a sample kind: its entry in `bases`, else `base`."""
+        return self.bases.get(kind, self.base)
+
+    @model_serializer(mode="wrap")
+    def _without_empty_bases(self, handler: SerializerFunctionWrapHandler) -> dict:
+        # without per-kind bases the configuration dumps as before, so its resolved form and hash (versions/) stay
+        data = handler(self)
+        if not self.bases:
+            data.pop("bases", None)
+        return data
 
 
 class CombineConfig(BaseModel):

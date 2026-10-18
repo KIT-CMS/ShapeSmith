@@ -130,3 +130,39 @@ def test_write_versions(tmp_path):
     assert record["shapesmith"]["version"] and record["analysis"]["module"] == "tests.mini_analysis:build"
     assert record["sample_database"] is None and record["config"]["channels"] == ["mt"] and record["ntuples"] == "/data"
     assert len(record["config_sha256"]) == 64
+
+
+def test_a_kind_reads_its_own_base(tmp_path):
+    """ntuples.bases: the MC and embedding of a re-production beside the data of the first production; {era} and -s
+    reach it; an unknown kind is refused."""
+    path = _yaml(tmp_path, """
+        analysis: tests.mini_analysis:build
+        era: "2018"
+        channels: [mt]
+        ntuples:
+          base: /store/v7/CROWNRun
+          bases: {mc: /store/v7b/CROWNRun, embedding: "/store/v7b_{era}/CROWNRun"}
+          friends:
+            - {base: /store/v7/CROWNFriend/fastmtt, applies_to: [data]}
+            - {base: /store/v7b/CROWNFriend/fastmtt, applies_to: [mc, embedding]}
+        skim_dir: /tmp/skims
+        output_dir: /tmp/out
+    """)
+    ntuples = load_config(path, ["era=2017"]).ntuples
+    assert ntuples.base_of("data") == "/store/v7/CROWNRun" and ntuples.base_of("mc") == "/store/v7b/CROWNRun"
+    assert ntuples.base_of("embedding") == "/store/v7b_2017/CROWNRun"
+    assert load_config(path, ["ntuples.bases.data=/store/other/CROWNRun"]).ntuples.base_of("data") == "/store/other/CROWNRun"
+    assert NtupleConfig(base="/b").base_of("mc") == "/b"
+    with pytest.raises(ValueError, match="signal"):
+        NtupleConfig(base="/b", bases={"signal": "/c"})
+    record = json.loads(write_versions(load_config(path), "mini", tmp_path / "o").read_text())
+    assert record["config"]["ntuples"]["bases"] == record["ntuple_bases"] == {"mc": "/store/v7b/CROWNRun", "embedding": "/store/v7b_2018/CROWNRun"}
+
+
+def test_a_single_base_is_recorded_as_before(tmp_path):
+    """Without ntuples.bases the resolved configuration (and so its hash) and the record have no new key."""
+    config = RunConfig(analysis="tests.mini_analysis:build", era="2018", channels=["mt"], ntuples=NtupleConfig(base="/data"), skim_dir=tmp_path / "s", output_dir=tmp_path / "o")
+    record = json.loads(write_versions(config, "mini", tmp_path / "o").read_text())
+    assert record["config"]["ntuples"] == {"server": "", "base": "/data", "friends": []}
+    assert "ntuple_bases" not in record and record["ntuples"] == "/data"
+    assert RunConfig.model_validate(json.loads(config.model_dump_json())) == config  # the dump still loads

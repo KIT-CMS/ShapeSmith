@@ -35,6 +35,7 @@ def record(config: RunConfig) -> dict:
         "analysis": {"module": config.analysis, "git": git_hash(Path(module.__file__))},
         "sample_database": {"path": str(config.sample_database), "git": git_hash(config.sample_database)} if config.sample_database else None,
         "ntuples": config.ntuples.base,
+        **({"ntuple_bases": dict(config.ntuples.bases)} if config.ntuples.bases else {}),  # the kinds with their own base
         "config": resolved,
         "config_sha256": hashlib.sha256(json.dumps(resolved, sort_keys=True).encode()).hexdigest(),
     }

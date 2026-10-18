@@ -64,3 +64,16 @@ def test_compare_two_payloads_on_their_grid(tmp_path):
     assert grid(corr, {"syst": "nominal"}) == [(30.0, "nominal"), (70.0, "nominal")]
     result = compare(first, second, {"syst": "nominal"})
     assert result["ff"]["points"] == 2 and result["ff"]["max"] == pytest.approx(0.1) and result["ff"]["mean"] == pytest.approx(0.05)
+    assert result["ff"]["unmatched"] == 0
+
+
+def test_compare_leaves_out_the_keys_of_only_one_payload(tmp_path):
+    """Fractions with the process Wjets against fractions without it: the common keys are compared, the others counted."""
+    from shapesmith.payloads import binning, category, compare, correction, correction_set, variable, write
+
+    def payload(processes, path):
+        data = category("process", {p: binning("pt", [20.0, 40.0, 100.0], [0.5, 0.25]) for p in processes})
+        return write(correction_set([correction("fractions", [variable("process", "string"), variable("pt")], data)], {}), path)
+
+    result = compare(payload(("QCD", "ttbar"), tmp_path / "a.json.gz"), payload(("QCD", "Wjets", "ttbar"), tmp_path / "b.json.gz"))
+    assert result["fractions"] == {"points": 4, "max": 0.0, "mean": 0.0, "unmatched": 2}

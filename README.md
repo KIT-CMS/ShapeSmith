@@ -87,7 +87,8 @@ categories, control variables, variations and estimators.
   `embedding`; `norm_weight = xsec / (nevents * generator_weight) * lumi_scale * sign(genWeight)` for MC.
   A sample's own `cut` (e.g. one generator-level part of an inclusive sample) is applied at skim
   time; its normalisation stays that of the whole sample. `era` borrows the sample from another
-  era, or places it in an analysis over several eras: its n-tuples are read from `<base>/<era>/<nick>`, and it is
+  era, or places it in an analysis over several eras: its n-tuples are read from `<base>/<era>/<nick>` (the base of
+  its kind), and it is
   normalised with the luminosity of the analysis that uses it (None: the era of the run) times `lumi_scale`, its
   era's share of that luminosity (e.g. 2016preVFP in a 2016 measurement of both halves; 1 otherwise).
 - `Variable(name, expr, edges)`: fixed edges, or `EqualData(n_bins, low, high, cut)`, edges with equal data counts
@@ -154,8 +155,13 @@ and every shifted branch `c__X` of a needed column must be declared; otherwise t
 A friend is read for the samples of its kinds (`applies_to`) in its channels (`channels`, default
 all), so a channel without that friend production (e.g. a control channel) does not look for it.
 
+A sample is read from the base of its kind: `ntuples.bases` (e.g. `{mc: .../TAG_B/CROWNRun, embedding: ...}`, the
+MC and embedding of a re-production beside the data of the first one), else `ntuples.base`; a friend split by kind is
+two friends with their `applies_to`. A configuration without `bases` behaves, logs and is recorded (resolved
+configuration, its hash) exactly as before.
+
 The manifest records the skim contract. A stored skim is reused when its skim cuts,
-normalisation, sample cut and n-tuple era (of a borrowed sample) are unchanged, its recorded column variations and friends contain
+normalisation, sample cut, n-tuple era (of a borrowed sample) and n-tuple base (of a kind in `ntuples.bases`) are unchanged, its recorded column variations and friends contain
 the current ones, and its Parquet schema holds the needed columns; so one skim made with all
 variations and friends serves every subset. Incompatible skims are listed together, with the
 `skim --force --samples ...` fix. A new friend version gets a new friend base (a friend rewritten
@@ -240,7 +246,8 @@ switches: {jet_fakes: mc, embedding: false}   # free-form, interpreted by the an
 sample_database: ../../KingMaker_sample_database/nanoAOD_v15/datasets.json   # relative paths: relative to this file
 ntuples:
   server: root://cmsdcache-kit-disk.gridka.de
-  base: /store/user/USER/CROWN/ntuples/TAG/CROWNRun
+  base: /store/user/USER/CROWN/ntuples/TAG/CROWNRun      # <base>/<era>/<nick>/<channel>/*.root
+  bases: {mc: /store/user/USER/CROWN/ntuples/TAG_B/CROWNRun}   # optional: the kinds with their own base (default: base)
   friends:                                # later friends override earlier ones; applies_to and channels default to all
     - {base: /store/user/USER/CROWN/ntuples/TAG/CROWNFriends/nn_v1, applies_to: [mc, data, embedding]}
     - {base: /store/user/USER/CROWN/ntuples/TAG/CROWNFriends/ff_v1, channels: [et, mt, tt]}

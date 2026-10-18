@@ -9,10 +9,13 @@ Rows: an event is kept if the skim cuts pass nominally or under a column variati
 applies (the normalisation stays that of the whole sample).
 Era: a sample borrowed from another era, or one of an analysis over several eras (Sample.era), is read from the
 n-tuples of its era; its normalisation carries its share of the analysis luminosity (Sample.lumi_scale).
+Base: a sample is read from the base of its kind (ntuples.bases, else ntuples.base); a kind with its own base records it
+in the contract (ntuple_base), so that a skim of another production is not reused for it.
 Checks, per file, where the channel declares CROWN shifts for the sample (its kind and group): every declared shift
 has a shifted branch, and every shifted branch `c__X` of a needed column has a declared suffix `__X`.
-Reuse: a stored skim serves when its skim cuts, normalisation and sample cut are equal, its column variations and
-friends contain the current ones and its Parquet schema holds the needed columns; see reuse_problems.
+Reuse: a stored skim serves when its skim cuts, normalisation, sample cut, n-tuple era and n-tuple base are equal, its
+column variations and friends contain the current ones and its Parquet schema holds the needed columns; see
+reuse_problems.
 """
 from __future__ import annotations
 
@@ -30,13 +33,13 @@ from shapesmith.config import RunConfig
 from shapesmith.events import select
 from shapesmith.expressions import columns_in, columns_of, mask, shift
 from shapesmith.model import NOMINAL_REGION, Analysis, Channel, ColumnVariation, EqualData, Sample, WeightVariation, applies
-from shapesmith.ntuples import NtupleFile, discover, friend_bases, join_url, read_ntuple
+from shapesmith.ntuples import NtupleFile, describe, discover, friend_bases, read_ntuple
 from shapesmith.parallel import run_jobs
 from shapesmith.store import SKIM_COLUMNS, manifest_path, read_manifest, schema, skim_path, write_manifest, write_skim
 
 logger = logging.getLogger(__name__)
 
-ROW_FIELDS = ("selection", "normalisation", "sample_cut", "ntuple_era", "column_variations", "friends")  # the contract fields that define the rows
+ROW_FIELDS = ("selection", "normalisation", "sample_cut", "ntuple_era", "ntuple_base", "column_variations", "friends")  # the contract fields that define the rows
 KIND_FLAGS = {"is_data": "data", "is_mc": "mc", "is_embedding": "embedding"}  # bookkeeping columns: the sample kind
 
 
@@ -151,6 +154,8 @@ def contract(config: RunConfig, channel: Channel, sample: Sample, columns: set[s
         result["sample_cut"] = sample.cut
     if sample.era is not None:
         result["ntuple_era"] = sample.era
+    if sample.kind in config.ntuples.bases:  # only a kind with its own base, so that the skims of a single base stay reusable
+        result["ntuple_base"] = config.ntuples.base_of(sample.kind)
     variations = {v.name: v.suffix or dict(v.derived) for v in column_variations(channel, sample)}
     if variations:
         result["column_variations"] = variations
@@ -162,7 +167,7 @@ def contract(config: RunConfig, channel: Channel, sample: Sample, columns: set[s
 
 def reuse_problems(stored: dict, expected: dict, stored_columns: set[str]) -> list[str]:
     """Why a stored skim cannot serve: its rows must be a superset of the needed rows, its columns of the needed columns."""
-    problems = [f"{name} changed" for name in ("selection", "normalisation", "sample_cut", "ntuple_era") if stored.get(name) != expected.get(name)]
+    problems = [f"{name} changed" for name in ("selection", "normalisation", "sample_cut", "ntuple_era", "ntuple_base") if stored.get(name) != expected.get(name)]
     recorded = stored.get("column_variations", {})
     missing = sorted(name for name, spec in expected.get("column_variations", {}).items() if recorded.get(name) != spec)
     if missing:
@@ -239,7 +244,7 @@ def run_skim(config: RunConfig, analysis: Analysis, channels: list[str] | None =
         chosen = select_samples(channel, samples)
         with ThreadPoolExecutor(max_workers=min(8, max(1, len(chosen)))) as listing:  # directory listings are latency bound
             discovered = list(listing.map(lambda s: discover(config.ntuples, s.era or config.era, s.nick, channel_name, s.kind), chosen))
-        logger.info(f"{channel_name}: {len(chosen)} samples, {sum(len(files) for files in discovered)} files in {join_url(config.ntuples.server, config.ntuples.base)}")
+        logger.info(f"{channel_name}: {len(chosen)} samples, {sum(len(files) for files in discovered)} files in {describe(config.ntuples)}")
         counts = dict.fromkeys(("reused", "resumed", "new", "empty", "pending"), 0)
         for sample, files in zip(chosen, discovered):
             if not files:

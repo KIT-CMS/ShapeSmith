@@ -343,3 +343,33 @@ def test_a_borrowed_sample_is_read_from_the_ntuples_of_its_era(tmp_path):
     move("SIG_1", "2017", "2016preVFP")
     with pytest.raises(ValueError, match="mt/SIG_1: ntuple_era changed"):
         run_skim(config, borrowed(plain, "2016preVFP"))
+
+
+def test_a_kind_with_its_own_base_is_skimmed_from_it(tmp_path):
+    """ntuples.bases: the MC (main n-tuples, and its friend by applies_to) of a second production, the data of the
+    first; the base of such a kind is in its contract, so the skims of the first production are not reused for it."""
+    import shutil
+
+    config = _config(tmp_path, workers=1)
+    second = tmp_path / "second"
+    for nick in ("ZTT_1", "SIG_1"):
+        for base in ("CROWNRun", "CROWNFriends/nn"):
+            shutil.copytree(tmp_path / "data" / base / "2018" / nick, second / base / "2018" / nick)
+    plain = build()
+    run_skim(config, plain)  # the first production alone
+    assert "ntuple_base" not in read_manifest(config.skim_dir / "mt" / "ZTT_1" / "manifest.json")["contract"]
+    friends = [FriendConfig(base=str(tmp_path / "data" / "CROWNFriends" / "nn"), applies_to=("data",)), FriendConfig(base=str(second / "CROWNFriends" / "nn"), applies_to=("mc", "embedding"))]
+    split = config.model_copy(update={"ntuples": NtupleConfig(base=config.ntuples.base, bases={"mc": str(second / "CROWNRun")}, friends=friends)})
+    with pytest.raises(ValueError, match="shapesmith skim --force") as excinfo:
+        run_skim(split, plain)
+    assert all(f"mt/{nick}: ntuple_base changed" in str(excinfo.value) for nick in ("ZTT_1", "SIG_1")) and "DATA_A" not in str(excinfo.value)
+    fresh = split.model_copy(update={"skim_dir": tmp_path / "skims_b"})
+    run_skim(fresh, plain)
+    manifest = read_manifest(fresh.skim_dir / "mt" / "ZTT_1" / "manifest.json")
+    assert manifest["contract"]["ntuple_base"] == str(second / "CROWNRun") and manifest["contract"]["friends"] == [str(second / "CROWNFriends" / "nn")]
+    assert len(manifest["files"]) == 2 and all(path.startswith(str(second / "CROWNRun" / "2018" / "ZTT_1")) for path in manifest["files"])
+    data = read_manifest(fresh.skim_dir / "mt" / "DATA_A" / "manifest.json")
+    assert data["contract"] == read_manifest(config.skim_dir / "mt" / "DATA_A" / "manifest.json")["contract"] and "ntuple_base" not in data["contract"]
+    assert all(path.startswith(str(tmp_path / "data" / "CROWNRun")) for path in data["files"])
+    assert read_skims(fresh.skim_dir, "mt", ["ZTT_1"], None).equals(read_skims(config.skim_dir, "mt", ["ZTT_1"], None))  # the copies skim alike
+    assert all(r.skipped for r in run_skim(fresh, plain))

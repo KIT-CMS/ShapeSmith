@@ -98,6 +98,15 @@ class EventSource:
         return weights
 
 
+def usable_scale(scale: float) -> float:
+    """The data/MC scale factor of an MC fake factor as applied: itself if positive and finite, else 1. The factor is
+    the ratio of data minus MC in the scale regions and can turn negative with few events there; the smoothing clips
+    the negative ratios to 0, and every fake factor and non-closure of the process would be 0. A positive factor
+    cancels in the corrected fake factor (the first non-closure, measured on top of it, absorbs it), so 1 changes only
+    the raw fake factor."""
+    return scale if np.isfinite(scale) and scale > 0 else 1.0
+
+
 def evaluator(correction: cs.Correction) -> Callable:
     """The nominal of a payload correction per event, with the inputs as float (as TauFakeFactors and the friend)."""
     evaluate = payloads.correction_set([correction], {}).to_evaluator()[correction.name].evaluate
@@ -150,7 +159,15 @@ class ChannelMeasurement:
         scale = None if process.scale is None or stage else self.data_scale(process)
         if scale is not None:
             logger.info(f"{self.source.channel} {stage}{name}: data/MC scale factor {scale:.4f}")
-            self.record[f"{stage}{name}_data_scale"] = [{"factor": scale}]
+            entry = {"factor": usable_scale(scale)}
+            if entry["factor"] != scale:
+                logger.warning(
+                    f"{self.source.channel} {stage}{name}: the data/MC scale factor {scale:.4f} is not positive, 1 is used instead "
+                    "(a negative factor makes every fake factor 0; a positive one cancels in the corrected fake factor)"
+                )
+                entry["measured"] = scale
+            self.record[f"{stage}{name}_data_scale"] = [entry]
+            scale = entry["factor"]
 
         def measure(category: int) -> Ratio:
             ratio = self.ratio(process.split, process.fake_factors, category, steps)

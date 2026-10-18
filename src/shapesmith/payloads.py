@@ -134,7 +134,9 @@ def grid(correction: dict, fixed: Mapping[str, object] | None = None) -> list[tu
 
 def compare(first: Path, second: Path, fixed: Mapping[str, object] | None = None) -> dict[str, dict]:
     """Every correction of both payloads evaluated on the grid of both (their edges and keys): correction -> number
-    of points, max and mean of |second / first - 1| (points where the first is 0 are left out)."""
+    of points, max and mean of |second / first - 1| (points where the first is 0 are left out) and the number of
+    points with a category key that only one of them has (`unmatched`, left out too; e.g. the process Wjets of the
+    fractions of a fake-factor payload with W+jets against one without)."""
     sets = [json.loads(gzip.decompress(Path(p).read_bytes()) if Path(p).suffix == ".gz" else Path(p).read_bytes()) for p in (first, second)]
     evaluators = [correctionlib.CorrectionSet.from_string(json.dumps(s)) for s in sets]
     by_name = [{c["name"]: c for c in s["corrections"]} for s in sets]
@@ -143,10 +145,14 @@ def compare(first: Path, second: Path, fixed: Mapping[str, object] | None = None
         if name not in by_name[1]:
             continue
         points = sorted(set(grid(by_name[0][name], fixed)) | set(grid(by_name[1][name], fixed)), key=str)
-        deviations = []
+        deviations, unmatched = [], 0
         for point in points:
-            a, b = (evaluator[name].evaluate(*point) for evaluator in evaluators)
+            try:
+                a, b = (evaluator[name].evaluate(*point) for evaluator in evaluators)
+            except IndexError:  # a category key of only one payload
+                unmatched += 1
+                continue
             if a != 0:
                 deviations.append(abs(b / a - 1.0))
-        result[name] = {"points": len(deviations), "max": max(deviations, default=0.0), "mean": float(np.mean(deviations)) if deviations else 0.0}
+        result[name] = {"points": len(deviations), "max": max(deviations, default=0.0), "mean": float(np.mean(deviations)) if deviations else 0.0, "unmatched": unmatched}
     return result

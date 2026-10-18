@@ -65,9 +65,16 @@ def friend_bases(ntuples: NtupleConfig, kind: str, channel: str) -> list[str]:
     return [friend.base for friend in ntuples.friends if kind in friend.applies_to and (friend.channels is None or channel in friend.channels)]
 
 
+def describe(ntuples: NtupleConfig) -> str:
+    """The base of the main n-tuples for the logs, with the kinds that read their own base (`ntuples.bases`)."""
+    others = ", ".join(f"{kind} {join_url(ntuples.server, base)}" for kind, base in ntuples.bases.items())
+    return join_url(ntuples.server, ntuples.base) + (f" ({others})" if others else "")
+
+
 def discover(ntuples: NtupleConfig, era: str, nick: str, channel: str, kind: str) -> list[NtupleFile]:
-    """Main files of one sample and channel with their friend files; missing friends are an error."""
-    main_dir = f"{ntuples.base.rstrip('/')}/{era}/{nick}/{channel}"
+    """Main files of one sample and channel, below the base of its kind, with their friend files; missing friends are
+    an error."""
+    main_dir = f"{ntuples.base_of(kind).rstrip('/')}/{era}/{nick}/{channel}"
     basenames = list_root_files(ntuples.server, main_dir)
     friend_dirs = [f"{base.rstrip('/')}/{era}/{nick}/{channel}" for base in friend_bases(ntuples, kind, channel)]
     friend_listings = [set(list_root_files(ntuples.server, directory)) for directory in friend_dirs]
