@@ -13,9 +13,10 @@ from shapesmith import cmssw, payloads
 from shapesmith.config import CombineConfig, NtupleConfig, RunConfig
 from shapesmith.histogram import Histogram
 from shapesmith.measurements import MeasureContext, run_measure
-from shapesmith.measurements.tau_trigger import Bin, check, merge, merged_values
+from shapesmith.measurements.tau_trigger import Bin, check, merge, merged_values, pseudo_data
 from shapesmith.measurements.tau_trigger.cards import TriggerBin, card_text, fake_kappas, rate_parameters
 from shapesmith.measurements.tau_trigger.counting import Count, data_efficiency, efficiency
+from shapesmith.measurements.tau_trigger import fit as fit_module
 from shapesmith.measurements.tau_trigger.fit import COARSE_RANGE, fit_bin, scan_command, workspace_command
 from shapesmith.measurements.tau_trigger.payload import PT_MAX, check as check_payload, correction_set, edges_of, payload_name
 from shapesmith.validate import validate
@@ -113,8 +114,8 @@ class FakeCombine:
     """cmssw.run for the trigger fit: the delta NLL of a Gaussian in eff around `mean` with `sigma` (the fine scans may
     have their own width)."""
 
-    def __init__(self, mean=0.8, sigma=0.02, fine_sigma=None):
-        self.mean, self.sigma, self.fine_sigma, self.commands = mean, sigma, fine_sigma, []
+    def __init__(self, mean=0.8, sigma=0.02, fine_sigma=None, nan_above=None):
+        self.mean, self.sigma, self.fine_sigma, self.nan_above, self.commands = mean, sigma, fine_sigma, nan_above, []
 
     def __call__(self, commands, config, cwd, timeout=None):
         for command in commands:
@@ -127,7 +128,10 @@ class FakeCombine:
                 low, high = (float(x) for x in re.search(r"--setParameterRanges eff=([-\d.e]+),([-\d.e]+)", command).groups())
                 x = np.linspace(low, high, 41)
                 sigma = self.sigma if name == "coarse" or self.fine_sigma is None else self.fine_sigma
-                self.write(cwd, name, np.r_[self.mean, x], np.r_[0.0, 0.5 * ((x - self.mean) / sigma) ** 2])
+                dnll = 0.5 * ((x - self.mean) / sigma) ** 2
+                if self.nan_above is not None and name != "coarse":
+                    dnll[x > self.nan_above] = np.nan
+                self.write(cwd, name, np.r_[self.mean, x], np.r_[0.0, dnll])
             elif "--algo singles" in command:
                 self.write(cwd, name, np.array([self.mean, self.mean - self.sigma, self.mean + self.sigma]), np.zeros(3))
 
@@ -154,6 +158,31 @@ def test_the_fit_is_the_profile_interval_with_rescans_and_fails_at_the_boundary(
     monkeypatch.setattr(cmssw, "run", FakeCombine(mean=0.995, sigma=0.01))
     result = fit_bin(None, tmp_path / "edge")
     assert result["fit"] is None and any("eff: no crossing of delta NLL = 0.5 on the high side" in p for p in result["problems"])
+
+
+def test_a_profile_with_points_without_likelihood_is_a_problem(tmp_path, monkeypatch):
+    """Scan points with a NaN delta NLL (combine without a likelihood there) leave the interval unresolved."""
+    monkeypatch.setattr(cmssw, "run", FakeCombine(nan_above=0.81))
+    result = fit_bin(None, tmp_path)
+    assert result["fit"] is None and any("points of the profile scan have no likelihood (NaN)" in p for p in result["problems"])
+
+
+def test_pseudo_data_is_the_sum_of_the_processes_without_negative_bins():
+    signal, backgrounds = _h(5.0, 1.0), [_h(2.0, -3.0), _h(1.0, 0.5)]
+    data = pseudo_data(signal, backgrounds)
+    assert list(data.values) == [8.0, 0.0] and list(signal.values) == [5.0, 1.0]
+
+
+def test_a_singles_fit_without_a_result_is_a_warning(tmp_path, monkeypatch):
+    monkeypatch.setattr(cmssw, "run", FakeCombine())
+
+    def empty(path):  # the limit tree of a singles fit that wrote no entry
+        raise IndexError("index 0 is out of bounds for axis 0 with size 0")
+
+    monkeypatch.setattr(fit_module, "read_singles", empty)
+    result = fit_bin(None, tmp_path)
+    assert result["problems"] == [] and result["fit"]["best"] == pytest.approx(0.8, abs=1e-3) and "singles" not in result
+    assert result["warnings"] == ["singles cross-check failed: no result in its output (IndexError: index 0 is out of bounds for axis 0 with size 0)"]
 
 
 @pytest.fixture(scope="module")
@@ -239,8 +268,8 @@ def test_suggest_binning_merges_from_the_top(mini, caplog):
     config, analysis = mini
     import dataclasses
 
-    loose = dataclasses.replace(analysis, measurement=dataclasses.replace(analysis.measurement, max_relative_error=0.5))
-    strict = dataclasses.replace(analysis, measurement=dataclasses.replace(analysis.measurement, max_relative_error=1e-6))
+    loose = dataclasses.replace(analysis, measurement=dataclasses.replace(analysis.measurement, max_error=0.5))
+    strict = dataclasses.replace(analysis, measurement=dataclasses.replace(analysis.measurement, max_error=1e-6))
     with caplog.at_level(logging.INFO, logger="shapesmith"):
         run_measure(config.model_copy(update={"output_dir": config.output_dir / "suggest"}), loose, ["mt"], suggest_binning=True)
         run_measure(config.model_copy(update={"output_dir": config.output_dir / "suggest"}), strict, ["mt"], suggest_binning=True)
@@ -248,6 +277,32 @@ def test_suggest_binning_merges_from_the_top(mini, caplog):
     assert json.loads(lines[0].split("(JSON): ")[1]) == {"DM0": [40.0, 60.0, None], "DMall": [40.0, 60.0, None]}  # both bins qualify
     assert json.loads(lines[1].split("(JSON): ")[1]) == {"DM0": [40.0, None], "DMall": [40.0, None]}  # none qualifies: one bin
     assert not (config.output_dir / "suggest").exists()
+
+
+def test_suggest_binning_counts_in_its_regions_and_window_with_an_absolute_or_relative_error(mini, monkeypatch, caplog):
+    config, analysis = mini
+    import dataclasses
+
+    from shapesmith.measurements import tau_trigger
+
+    seen = []
+    counts = tau_trigger.event_counts
+
+    def recorded(context, measurement, processes, regions, window):
+        seen.append((regions, window))
+        return counts(context, measurement, processes, regions, window)
+
+    monkeypatch.setattr(tau_trigger, "event_counts", recorded)
+    windowed = dataclasses.replace(analysis.measurement, suggest_regions=("counting", "counting_same_sign"), suggest_window=(40.0, 90.0))
+    with caplog.at_level(logging.INFO, logger="shapesmith"):
+        result = tau_trigger.suggest(windowed, MeasureContext(config, dataclasses.replace(analysis, measurement=windowed), ["mt"], config.output_dir / "suggest"))
+    assert seen == [(("counting", "counting_same_sign"), (40.0, 90.0))] and set(result) == {"DM0", "DMall"}
+    assert any("(max relative error 0.03)" in r.getMessage() for r in caplog.records)
+    entry = {"value": 0.4, "error": 0.02}
+    assert tau_trigger._error(entry, relative=True) == pytest.approx(0.05) and tau_trigger._error(entry, relative=False) == pytest.approx(0.02)
+    assert tau_trigger._error(None, relative=False) == float("inf") and tau_trigger._error({"value": 0.0, "error": 0.1}, relative=False) == float("inf")
+    # a subtracted fail count near 0: eps >= 1 with a degenerate error never qualifies (2016postVFP DM10, DM11 above 120 GeV)
+    assert tau_trigger._error({"value": 1.001, "error": 0.001}, relative=False) == float("inf") == tau_trigger._error({"value": 1.0, "error": 0.0}, relative=True)
 
 
 MERGE_BINS = (*trigger_mini.BINS, Bin("DM1_PT40", (1,), (40.0, None)), Bin("DM1011_PT40", (10, 11), (40.0, None)))

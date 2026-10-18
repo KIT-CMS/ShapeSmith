@@ -211,8 +211,9 @@ the results of earlier runs into one payload). Measurements:
   `eff` [0, 1] on it in pass and `(1-@0)` in fail and a common `r_<signal>`, lnN normalisations and the
   pass/fail anti-correlated fake trigger efficiency; a 1D profile scan of `eff` (an interval at 0 or 1 is a problem),
   the singles fit as a cross-check; the counting cross-check in a counting region and m_vis window, ε_MC and
-  ε_EMB^mon. `--refit` from the stored shapes, `--suggest-binning` merges pT bins from the top until the relative
-  error stays below 3 %, `--merge` writes the `tau_trigger` payload (KIT/POG schema, flow clamp) with the variants
+  ε_EMB^mon. `--refit` from the stored shapes, `--suggest-binning` merges pT bins from the top until the statistical
+  error of ε_data, counted in `suggest_regions` and `suggest_window`, stays below `max_error` (relative or
+  absolute), `--merge` writes the `tau_trigger` payload (KIT/POG schema, flow clamp) with the variants
   and a significant fit-counting difference in up/down, after checking every combination; it refuses a class the
   consumer books (`wp_classes`) without a measurement. A signal shape may be a variation of the channel or an
   estimator output (a template shift of the signal, a summed variation). The ε(pT) plots draw any number of

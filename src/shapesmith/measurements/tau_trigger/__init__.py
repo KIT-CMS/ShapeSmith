@@ -8,8 +8,9 @@ and a fail category, m_vis, the probe passing or failing the monitoring leg. Per
 CMSSW (fit.py: a 1D profile scan of the efficiency, the 1 sigma interval from its delta NLL = 0.5 crossings, rescans
 on a widened range; the singles fit as a cross-check), the counting cross-check in a counting region and m_vis window,
 eps_MC (genuine MC taus) and eps_EMB^mon (the embedded taus with the monitoring flags) by counting. `--refit` repeats
-the fits from the stored shapes.root; `--suggest-binning` proposes per decay mode the pT edges where the relative error
-of eps_data (counting) stays below `max_relative_error`, merging bins from the top; `--merge` writes the payload
+the fits from the stored shapes.root; `--suggest-binning` proposes per decay mode the pT edges where the statistical
+error of eps_data (counting in `suggest_regions` and `suggest_window`) stays below `max_error` (relative or absolute),
+merging bins from the top; `--merge` writes the payload
 (payload.py) of every class: eff_data with up/down the quadratic sum of the fit interval, of the variants (each change
 times its weight in `systematic_variants`) and of the fit-counting difference where it exceeds their combined error;
 eff_mc from the MC count.
@@ -93,8 +94,10 @@ class TauTriggerMeasurement:
     counting_regions: tuple[str, str] | None = None  # the counting cross-check: (region, its same-sign version)
     counting_window: tuple[float, float] = (40.0, 90.0)  # of the category variable (m_vis) in the counting
     qcd_subtract: tuple[str, ...] = ()  # the simulated processes subtracted from the same-sign data in a counting
-    suggest_regions: tuple[str, str] = (NOMINAL, "same_sign")
-    max_relative_error: float = 0.03  # --suggest-binning: of eps_data per bin
+    suggest_regions: tuple[str, str] = (NOMINAL, "same_sign")  # --suggest-binning: the counting region and its same-sign version
+    suggest_window: tuple[float, float] | None = None  # --suggest-binning: the window of the category variable (m_vis), None: all
+    max_error: float = 0.03  # --suggest-binning: the largest statistical error of eps_data per bin
+    relative_max_error: bool = True  # max_error relative to eps_data; False: absolute
     references: tuple[Reference, ...] = ()  # payloads drawn in the plots (the POG file, the KIT embedding file)
     wp_classes: tuple[str, ...] = ()  # every class the consumer books: --merge needs each, the payload check evaluates each
     split_signal_shapes: bool = False  # the signal with its own pass and fail shapes (each normalised to pass + fail)
@@ -147,6 +150,16 @@ def _variable(analysis: Analysis, measurement: TauTriggerMeasurement, category: 
     return next(c.variable.name for c in analysis.channel(measurement.channel).categories if c.name == category)
 
 
+def pseudo_data(signal: Histogram, backgrounds) -> Histogram:
+    """The sum of the processes as data, bins below 0 set to 0: MC with negative weights can sum below 0 (2018 Medium
+    DM1 above 120 GeV, fail), where combine has no likelihood."""
+    data = signal.copy()
+    for h in backgrounds:
+        data.add(h)
+    data.values = np.maximum(data.values, 0.0)
+    return data
+
+
 def collect(hset: HistogramSet, analysis: Analysis, measurement: TauTriggerMeasurement, trigger_bin: Bin) -> cards.TriggerBin:
     """The histograms of a bin for its card: data, the signal template (pass + fail, its template variation if
     any) with its shape variations, the backgrounds (the estimator outputs included) of pass and fail."""
@@ -178,11 +191,7 @@ def collect(hset: HistogramSet, analysis: Analysis, measurement: TauTriggerMeasu
     combined = signal(template)
     sides = {side: side_of(side, template) for side in SIDES}
     if measurement.pseudo_data:
-        data = {}
-        for side in SIDES:
-            data[side] = sides[side].copy()
-            for h in backgrounds[side].values():
-                data[side].add(h)
+        data = {side: pseudo_data(sides[side], backgrounds[side].values()) for side in SIDES}
     else:
         data = {side: get(channel.data(), side) for side in SIDES}
     if any(h is None for h in data.values()):
@@ -355,21 +364,23 @@ def plot_record(record: dict, directory: Path, measurement: TauTriggerMeasuremen
 
 
 def suggest(measurement: TauTriggerMeasurement, context: MeasureContext) -> dict:
-    """Per decay-mode group the pT edges where every bin keeps the relative counting error of eps_data at most
-    `max_relative_error`: from the highest-pT bin down, a bin is merged with the next lower one until it qualifies
-    (a remainder at the low end joins the bin above it). Logs the edges, writes nothing."""
+    """Per decay-mode group the pT edges where every bin keeps the statistical error of eps_data, counted in
+    `suggest_regions` and `suggest_window`, at most `max_error` (relative to eps_data or absolute): from the highest-pT
+    bin down, a bin is merged with the next lower one until it qualifies (a remainder at the low end joins the bin
+    above it). Logs the edges, writes nothing."""
     check(context.analysis, measurement)
     data = context.analysis.channel(measurement.channel).data()
     backgrounds = _background_processes(context.analysis, measurement)
     processes = tuple(dict.fromkeys((data, *backgrounds, *measurement.qcd_subtract)))
-    counts = event_counts(context, measurement, processes, measurement.suggest_regions, None)
+    counts = event_counts(context, measurement, processes, measurement.suggest_regions, measurement.suggest_window)
+    limit = f"max {'relative' if measurement.relative_max_error else 'absolute'} error {measurement.max_error:g}"
     suggestions = {}
     for modes, entries in _by_decay_mode({b.name: {"decay_modes": b.decay_modes, "pt": b.pt} for b in measurement.bins}).items():
         groups, current = [], []
         for entry in reversed(entries):
             current.insert(0, entry["name"])
             eff = data_efficiency(lambda process, region, side, names=tuple(current): _sum(counts, process, region, names, side), data, backgrounds, measurement.qcd_subtract, *measurement.suggest_regions)
-            if relative_error(eff) <= measurement.max_relative_error:
+            if _error(eff, measurement.relative_max_error) <= measurement.max_error:
                 groups.insert(0, current)
                 current = []
         if current:
@@ -380,9 +391,17 @@ def suggest(measurement: TauTriggerMeasurement, context: MeasureContext) -> dict
         pts = {e["name"]: e["pt"] for e in entries}
         edges = [pts[group[0]][0] for group in groups] + [pts[groups[-1][-1]][1]]
         suggestions["DMall" if modes == (-1,) else "DM" + "".join(map(str, modes))] = edges
-        logger.info(f"tau_trigger {measurement.wp_class} {modes}: suggested pT edges {edges} (max relative error {measurement.max_relative_error:g})")
+        logger.info(f"tau_trigger {measurement.wp_class} {modes}: suggested pT edges {edges} ({limit})")
     logger.info(f"tau_trigger {measurement.wp_class} suggested edges (JSON): {json.dumps(suggestions)}")
     return suggestions
+
+
+def _error(entry: dict | None, relative: bool) -> float:
+    """The error of a counted efficiency, relative to it or absolute; infinite without one or outside (0, 1), where the
+    propagated error degenerates (a subtracted fail count near 0 gives eps >= 1 with an error near 0)."""
+    if not entry or not 0.0 < entry["value"] < 1.0:
+        return math.inf
+    return relative_error(entry) if relative else entry["error"]
 
 
 def _sum(counts: dict, process: str, region: str, names: tuple[str, ...], side: str) -> Count:

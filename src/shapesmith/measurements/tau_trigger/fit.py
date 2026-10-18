@@ -10,6 +10,7 @@ import subprocess
 from dataclasses import asdict
 from pathlib import Path
 
+import numpy as np
 import uproot
 
 from shapesmith import cmssw
@@ -70,6 +71,13 @@ def read_singles(path: Path) -> Interval:
     return Interval(float(values[0]), float(values[1:].min()), float(values[1:].max()))
 
 
+def scan_failures(path: Path) -> int:
+    """The grid points of a scan whose delta NLL is not finite (read_profile drops them)."""
+    with uproot.open(path) as f:
+        dnll = f["limit"].arrays(["deltaNLL"], library="np")["deltaNLL"][1:]
+    return int((~np.isfinite(dnll)).sum())
+
+
 def fine_range(coarse: Profile) -> tuple[float, float]:
     """The window of the coarse profile at WINDOW_LEVEL widened by WINDOW_MARGIN, within [0, 1]."""
     return coarse.window(WINDOW_MARGIN, BOUNDS, WINDOW_LEVEL)
@@ -91,6 +99,10 @@ def fit_bin(combine: CombineConfig | None, directory: Path) -> dict:
         logger.info(f"{directory.name}: no 1 sigma crossing on a side of {profile.range}, rescanning on {new_range}")
         scan_range = new_range
     interval, problems = profile_interval(POI, profile, BOUNDS)
+    missing = scan_failures(output_path(directory, scan_name(attempt)))
+    if missing:
+        problems.append(f"{POI}: {missing} points of the profile scan have no likelihood (NaN), the interval is not resolved there")
+        interval = None
     result = {"fit": None if interval is None else asdict(interval), "range": list(profile.range), "widenings": attempt, "points": len(profile.values), "problems": problems, "warnings": []}
     if interval is not None:
         try:
@@ -105,6 +117,8 @@ def fit_bin(combine: CombineConfig | None, directory: Path) -> dict:
             result["warnings"] += deviations(POI, interval, singles)
     except CMSSW_FAILURES as error:
         result["warnings"].append(f"singles cross-check failed: {cmssw.failure(error)}")
+    except (IndexError, KeyError, OSError) as error:  # a singles fit that wrote no result (2016preVFP Medium, 2017 VVVLoose_not_Medium)
+        result["warnings"].append(f"singles cross-check failed: no result in its output ({type(error).__name__}: {error})")
     return result
 
 
