@@ -8,7 +8,9 @@ the fit range. Now the best value of a POI is the minimum of its profile (PROFIL
 through the lowest point and its neighbours) and its 1 sigma interval the outermost crossings of delta NLL = 0.5 on
 either side, linearly interpolated. A side without a crossing widens the scan range on that side and scans again, up
 to MAX_WIDENINGS times within the bounds of the 2D scan; a side that still has no crossing (the interval would end at
-the range) is a problem, which stops `--merge` with the category and the side.
+the range) is a problem, which stops `--merge` with the category and the side. An interval with fewer than
+MIN_INTERVAL_POINTS grid points inside is scanned again on a narrower range around it, up to MAX_REFINEMENTS times; a
+best value outside its interval (an unresolved interval) is a problem.
 
 The profiles. ES: a 1D scan with r profiled (r has one minimum). r: the likelihood has several minima in ES (the
 morphing between the templates of the ES grid), and a 1D scan of r with ES floating follows whichever minimum its
@@ -19,7 +21,8 @@ ENVELOPE_MARGIN), the lowest delta NLL over ES at each r. The ES at that minimum
 the interval.
 
 Ranges: as in the predecessor (plot_2D_scan.py), each step starts at the lowest grid point of the previous one. The
-profiles of the 2D scan give the scan ranges (their 2 sigma windows widened by PROFILE_MARGIN); the r profiled in the
+profiles of the 2D scan give the scan ranges (their 2 sigma windows above the lowest grid point, widened by
+PROFILE_MARGIN); the r profiled in the
 ES scan stays within its window, so that the scan points do not wander into a far minimum. The profiles give the
 ranges of the singles cross-check (SINGLES_MARGIN).
 
@@ -50,6 +53,9 @@ PROFILE_MARGIN = (0.2, 2.0)  # (r, ES): widening of the 2D scan's windows to the
 SINGLES_MARGIN = (0.05, 0.5)  # (r, ES): widening of the profiles' windows to the singles ranges
 MAX_WIDENINGS = 3  # rescans of a 1D profile whose 1 sigma interval leaves its range on a side
 WIDENING = 1.0  # a rescan moves the open side of the range out by this times the range width
+MIN_INTERVAL_POINTS = 5  # grid points inside a 1 sigma interval below which the profile is rescanned on a narrower range
+MAX_REFINEMENTS = 2  # such rescans of a 1D profile
+REFINEMENT = 1.0  # a narrower range is the interval widened on both sides by this times its width
 SINGLES_DEVIATION = 0.2  # singles and profile intervals differ by more than this fraction of the profile interval width
 ROBUST_FIT = "--robustFit=1 --setRobustFitAlgo=Minuit2 --X-rtd FITTER_NEW_CROSSING_ALGO --X-rtd FITTER_NEVER_GIVE_UP"
 SCAN_FIT = f"{ROBUST_FIT} --cminFallbackAlgo Minuit2,Migrad,0:0.001 --cminFallbackAlgo Minuit2,Migrad,1:0.01 --cminPreScan"
@@ -131,9 +137,12 @@ class Profile:
         return (crossing(low[0]) if low else None), (crossing(high[-1]) if high else None)
 
     def window(self, margin: float, bounds: Pair, level: float = LEVEL) -> Pair:
-        """The window of `level` (default the 2 sigma level of two parameters; an end of the scan where it does not
-        cross), widened by `margin`, within `bounds`."""
-        low, high = self.crossings(level)
+        """The window of `level` above the lowest grid point (default the 2 sigma level of two parameters; an end of
+        the scan where it does not cross), widened by `margin`, within `bounds`. Above the lowest grid point, not the
+        fit: on a grid coarse against the width of the likelihood every grid point can lie above `level` (2016preVFP
+        Medium/Tight DM0: the lowest point of the 2D scan 4.7 above the fit), and a window of the fit's level would
+        then be the whole scan range."""
+        low, high = self.crossings(level + float(self.dnll.min()))
         low, high = self.values[0] if low is None else low, self.values[-1] if high is None else high
         return max(float(low) - margin, bounds[0]), min(float(high) + margin, bounds[1])
 
@@ -257,9 +266,13 @@ def bestfit_command(category: str, best: Pair, r_range: Pair, es: Pair) -> str:
             f" --algo none -m {MASS} --saveFitResult --cminDefaultMinimizerStrategy=1")
 
 
-def postfit_command(category: str) -> str:
+def postfit_command(category: str, best: Pair) -> str:
+    """The postfit shapes of the fit at the profile minima. PostFitShapesFromWorkspace takes the floating parameters
+    of the fit result only, so the frozen POIs are set with --freeze; without it the shapes had r = 1 and ES = 0
+    (2018 Medium/VVLoose DM1: data/postfit 1.07 in the EMB bins at r = 1.09)."""
+    r, es = pois(category)
     return (f"PostFitShapesFromWorkspace -m {MASS} -w workspace.root --output postfit_shapes.root"
-            f" -f multidimfit.bestfit_{category}.root:fit_mdf --postfit")
+            f" -f multidimfit.bestfit_{category}.root:fit_mdf --postfit --freeze {r}={best[0]!r},{es}={best[1]!r}")
 
 
 def output_path(cards: Path, name: str) -> Path:
@@ -323,6 +336,30 @@ def widened(profile: Profile, limits: Pair) -> Pair | None:
     return None if (new_start, new_end) == (start, end) else (new_start, new_end)
 
 
+def refined(profile: Profile, limits: Pair) -> Pair | None:
+    """The scan range for a rescan of a profile that resolves its 1 sigma interval with fewer than
+    MIN_INTERVAL_POINTS grid points: the interval widened on both sides by REFINEMENT times its width, at least by
+    one grid step, within `limits`. Where no grid point lies below delta NLL = 0.5 (the minimum between two grid points far apart), the
+    interval is taken at 0.5 above the lowest grid point. None if the interval is resolved, has an open side (that
+    is `widened`'s case) or the range would not change.
+
+    2016preVFP Medium/Tight DM0: the r profile on the whole scan range had a spacing of 0.07 against an interval of
+    +-0.02; its crossings came from one segment on either side and the parabola put the best value outside them."""
+    low, high = profile.crossings(ONE_SIGMA)
+    if low is None or high is None:
+        if profile.dnll.min() < ONE_SIGMA:
+            return None
+        low, high = profile.crossings(ONE_SIGMA + float(profile.dnll.min()))
+        if low is None or high is None:
+            return None
+    if np.count_nonzero((profile.values > low) & (profile.values < high)) >= MIN_INTERVAL_POINTS:
+        return None
+    margin = max(REFINEMENT * (high - low), float(np.max(np.diff(profile.values))))  # at least a grid step: coarse crossings are off by up to one
+    new = (max(limits[0], low - margin), min(limits[1], high + margin))
+    tolerance = _tolerance(limits)
+    return None if abs(new[0] - profile.range[0]) < tolerance and abs(new[1] - profile.range[1]) < tolerance else new
+
+
 def profile_interval(name: str, profile: Profile, limits: Pair, profiled_name: str | None = None, profiled_range: Pair | None = None) -> tuple[Interval | None, list[str]]:
     """The interval of a 1D profile and its problems: a side without a crossing of delta NLL = 0.5 (the interval
     would end at the scan range; named by the side), a best value at an end of the scan, and a profiled parameter at
@@ -341,6 +378,9 @@ def profile_interval(name: str, profile: Profile, limits: Pair, profiled_name: s
         if at_edge.any():
             problems.append(f"{name}: the profiled {profiled_name} reaches an end of its range [{profiled_range[0]:g}, {profiled_range[1]:g}] inside the interval")
     if low is None or high is None:
+        return None, problems
+    if not low < best < high:
+        problems.append(f"{name}: best value {best:g} outside its interval [{low:g}, {high:g}] (the scan does not resolve the interval)")
         return None, problems
     return Interval(best, low, high), problems
 

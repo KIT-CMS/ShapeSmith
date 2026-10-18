@@ -136,6 +136,8 @@ def test_the_result_is_the_profile_interval_with_singles_as_cross_check(tmp_path
     assert "--redefineSignalPOIs r_EMB_DM0,ES_DM0" in envelope and "--gridPoints 41,25" in envelope  # both POIs fixed per point
     bestfit = next(c for c in runner.commands if ".bestfit_DM0" in c)
     assert f"r_EMB_DM0={fit['sf']['best']!r},ES_DM0={fit['es']['best']!r}" in bestfit  # the postfit at the profile minima
+    postfit = next(c for c in runner.commands if c.startswith("PostFitShapesFromWorkspace"))
+    assert f"--freeze r_EMB_DM0={fit['sf']['best']!r},ES_DM0={fit['es']['best']!r}" in postfit  # the frozen POIs are not in the fit result
 
 
 def test_an_open_side_is_rescanned_on_a_widened_range(tmp_path, fake):
@@ -145,6 +147,52 @@ def test_an_open_side_is_rescanned_on_a_widened_range(tmp_path, fake):
     assert fit["es"]["low"] == pytest.approx(-7.0, abs=0.1) and fit["es"]["high"] == pytest.approx(5.0, abs=0.1)
     assert fit["ranges"]["ES"][0] < fit["scan_2d"]["ranges"]["ES"][0]
     assert sum(" -n .profile_ES_DM0 " in c for c in runner.commands) == 1 and sum(" -n .profile_ES_DM0_1 " in c for c in runner.commands) == 1
+
+
+def test_the_window_is_taken_above_the_lowest_grid_point():
+    x = np.linspace(0.11, 2.89, 17)  # the r axis of the 2D scan: a spacing of 0.17 against a width of 0.02
+    coarse = Profile.of(x, 0.5 * ((x - 0.8965) / 0.02) ** 2)
+    assert coarse.dnll.min() > combine.LEVEL  # every grid point above the 2 sigma level of the fit
+    low, high = coarse.window(0.2, (0.11, 2.89))
+    assert low < 0.8965 < high and high - low < 1.0  # around the minimum, not the whole scan range (v7 2016preVFP Medium/Tight DM0)
+    fine = Profile.of(np.linspace(0.6, 1.2, 41), 0.5 * ((np.linspace(0.6, 1.2, 41) - 0.9) / 0.1) ** 2)
+    assert fine.window(0.0, (0.11, 2.89)) == pytest.approx((0.9 - 0.1 * np.sqrt(6.18), 0.9 + 0.1 * np.sqrt(6.18)), abs=2e-3)  # a point at the minimum: as before
+
+
+def test_a_profile_that_does_not_resolve_its_interval_is_scanned_on_a_narrower_range():
+    x = np.linspace(0.11, 2.89, 41)  # spacing 0.07 against an interval of +-0.02
+    coarse = Profile.of(x, 0.5 * ((x - 0.8965) / 0.02) ** 2 - 0.5 * ((0.8964949 - 0.8965) / 0.02) ** 2)
+    narrower = combine.refined(coarse, (0.11, 2.89))
+    assert narrower is not None and narrower[0] < 0.8765 and narrower[1] > 0.9165 and narrower[1] - narrower[0] < 0.5
+    x = np.linspace(0.6, 1.2, 41)
+    assert combine.refined(Profile.of(x, 0.5 * ((x - 0.9) / 0.1) ** 2), (0.11, 2.89)) is None  # 13 points inside: resolved
+    assert combine.refined(Profile.of(x, 0.5 * ((x - 1.15) / 0.1) ** 2), (0.11, 2.89)) is None  # an open side: widened's case
+    between = Profile.of(np.array([0.7, 0.8, 0.9, 1.0]), np.array([30.0, 0.7, 0.9, 30.0]))  # no grid point below 0.5
+    assert between.crossings(0.5) == (None, None) and combine.widened(between, (0.11, 2.89)) is not None
+    low, high = combine.refined(between, (0.11, 2.89))
+    assert low < 0.8 and high > 0.9 and high - low < 0.4
+
+
+def test_a_best_value_outside_its_interval_is_a_problem():
+    profile = Profile.of(np.array([0.736, 0.805, 0.875, 0.944, 1.014]), np.array([14.93, 4.59, 0.326, 1.582, 7.826]))  # v7 2016preVFP Medium/Tight DM0 r
+    assert profile.best > profile.crossings(0.5)[1]
+    interval, problems = combine.profile_interval("r", profile, (0.11, 2.89))
+    assert interval is None and problems == [f"r: best value {profile.best:g} outside its interval [{profile.crossings(0.5)[0]:g}, {profile.crossings(0.5)[1]:g}] (the scan does not resolve the interval)"]
+
+
+def test_a_narrow_likelihood_on_the_coarse_2d_grid_gives_resolved_intervals(tmp_path, fake):
+    runner = fake(r=(0.8965, 0.02), es=(-1.71, 0.7))  # every point of the 17 x 17 grid far above the fit
+    fit = fit_category(None, "DM0", tmp_path / "synced", tmp_path, "2018", GRID)
+    assert fit["problems"] == []
+    assert (fit["sf"]["best"], fit["sf"]["low"], fit["sf"]["high"]) == pytest.approx((0.8965, 0.8765, 0.9165), abs=2e-3)
+    assert (fit["es"]["best"], fit["es"]["low"], fit["es"]["high"]) == pytest.approx((-1.71, -2.41, -1.01), abs=2e-2)
+    for name, (low, high) in fit["ranges"].items():
+        bounds = combine.bounds(GRID)[0 if name == "r" else 1]
+        assert high - low < 0.5 * (bounds[1] - bounds[0])  # not the whole scan range
+    for name, key in (("r", "sf"), ("ES", "es")):
+        values = np.linspace(*fit["ranges"][name], combine.PROFILE_POINTS)
+        assert np.count_nonzero((values > fit[key]["low"]) & (values < fit[key]["high"])) >= combine.MIN_INTERVAL_POINTS
+    assert any(" -n .envelope_r_EMB_DM0" in c for c in runner.commands)
 
 
 def test_an_interval_that_stays_at_the_range_edge_is_a_problem_naming_its_side(tmp_path, fake):
@@ -164,6 +212,18 @@ def test_a_singles_fit_off_the_profile_is_flagged_not_blocking(tmp_path, fake):
     failing = fake(fail=(".singles_",))
     fit = fit_category(None, "DM1011", tmp_path / "synced2", tmp_path / "second", "2018", GRID)
     assert fit["problems"] == [] and fit["warnings"][0].startswith("singles cross-check failed") and failing.commands
+
+
+def test_a_singles_fit_without_a_result_is_a_warning(tmp_path, fake, monkeypatch):
+    fake()
+
+    def empty(path, category):  # the limit tree of a singles fit that wrote no entry
+        raise IndexError("index 0 is out of bounds for axis 0 with size 0")
+
+    monkeypatch.setattr(combine, "read_singles", empty)
+    fit = fit_category(None, "DM0", tmp_path / "synced", tmp_path, "2018", GRID)
+    assert fit["problems"] == [] and fit["sf"] is not None
+    assert fit["warnings"] == ["singles cross-check failed: no result in its output (IndexError: index 0 is out of bounds for axis 0 with size 0)"]
 
 
 def _context(tmp_path, analysis, **flags):

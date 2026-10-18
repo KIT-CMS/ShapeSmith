@@ -78,21 +78,29 @@ def check(analysis: Analysis, measurement: TauIdEsMeasurement) -> None:
 
 
 def scan_profile(combine_config: CombineConfig | None, category: str, poi: str, start: tuple[float, float], ranges: tuple[tuple[float, float], tuple[float, float]], grid: tuple[int, ...], cards: Path) -> tuple[Profile, tuple, int]:
-    """The profile scan of `poi` (combine.profile_command), rescanned on a widened range while a side of its 1 sigma
-    interval has no crossing (combine.widened), at most MAX_WIDENINGS times; the last profile, the (r, ES) ranges of
-    its scan and the number of rescans."""
+    """The profile scan of `poi` (combine.profile_command), rescanned on a narrower range while its 1 sigma interval
+    has too few grid points (combine.refined, at most MAX_REFINEMENTS times) and on a widened range while a side of it
+    has no crossing (combine.widened, at most MAX_WIDENINGS times); the last profile, the (r, ES) ranges of its scan
+    and the number of rescans, which also names the scan of the last profile."""
     index = 0 if poi == combine.pois(category)[0] else 1
     limits = combine.bounds(grid)[index]
     ranges = list(ranges)
-    for attempt in range(combine.MAX_WIDENINGS + 1):
+    refinements = widenings = 0
+    for attempt in range(combine.MAX_REFINEMENTS + combine.MAX_WIDENINGS + 1):
         name = combine.profile_name(poi, attempt)
         cmssw.run([f"{combine.profile_command(category, poi, start, ranges[0], ranges[1], attempt)} > {name}.log 2>&1"], combine_config, cards, STEP_TIMEOUT)
         profile = combine.read_poi_profile(cards, category, poi, attempt)
-        new_range = combine.widened(profile, limits)
-        if new_range is None or attempt == combine.MAX_WIDENINGS:
+        narrower = combine.refined(profile, limits) if refinements < combine.MAX_REFINEMENTS else None
+        wider = combine.widened(profile, limits) if narrower is None and widenings < combine.MAX_WIDENINGS else None
+        if narrower is not None:
+            refinements += 1
+            logger.info(f"{category}: {poi} resolves its 1 sigma interval with too few points on {profile.range}, rescanning on {narrower}")
+        elif wider is not None:
+            widenings += 1
+            logger.info(f"{category}: {poi} has no 1 sigma crossing on a side of {profile.range}, rescanning on {wider}")
+        else:
             return profile, tuple(ranges), attempt
-        logger.info(f"{category}: {poi} has no 1 sigma crossing on a side of {profile.range}, rescanning on {new_range}")
-        ranges[index] = new_range
+        ranges[index] = narrower or wider
     raise AssertionError("unreachable")
 
 
@@ -127,7 +135,7 @@ def fit_category(combine_config: CombineConfig | None, category: str, synced: Pa
     if all(intervals.values()):
         best = (r_interval.best, es_interval.best)
         try:
-            cmssw.run([f"{combine.bestfit_command(category, best, r_bounds, es_bounds)} > bestfit.log 2>&1", f"{combine.postfit_command(category)} > postfit.log 2>&1"], combine_config, cards, STEP_TIMEOUT)
+            cmssw.run([f"{combine.bestfit_command(category, best, r_bounds, es_bounds)} > bestfit.log 2>&1", f"{combine.postfit_command(category, best)} > postfit.log 2>&1"], combine_config, cards, STEP_TIMEOUT)
         except CMSSW_FAILURES as error:
             result["warnings"].append(f"postfit at the profile minima failed: {cmssw.failure(error)}")
     result["singles"] = singles_cross_check(combine_config, category, (r_profile, es_profile), grid, cards, intervals)
@@ -144,6 +152,8 @@ def singles_cross_check(combine_config: CombineConfig | None, category: str, pro
         sf, es = combine.read_singles(combine.output_path(cards, f"singles_{category}"), category)
     except CMSSW_FAILURES as error:
         return {**record, "error": f"singles cross-check failed: {cmssw.failure(error)}"}
+    except (IndexError, KeyError, OSError) as error:  # a singles fit that wrote no result (2016postVFP Medium/Tight)
+        return {**record, "error": f"singles cross-check failed: no result in its output ({type(error).__name__}: {error})"}
     record.update(sf=asdict(sf), es=asdict(es), problems=combine.interval_problems("r", sf, r_range) + combine.interval_problems("ES", es, es_range))
     record["deviations"] = [d for key, name, singles in (("sf", "r", sf), ("es", "ES", es)) if intervals[key] is not None for d in combine.deviations(name, intervals[key], singles)]
     return record

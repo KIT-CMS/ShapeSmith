@@ -103,7 +103,7 @@ def test_commands_have_the_predecessor_options(tmp_path):
     bestfit = combine.bestfit_command("DM0", (0.93, -1.2), (0.11, 2.89), (-19.9, 19.9))
     assert "--setParameters r_EMB_DM0=0.93,ES_DM0=-1.2" in bestfit and "--freezeParameters r_EMB_DM0,ES_DM0" in bestfit
     assert "--algo none" in bestfit and "--saveFitResult" in bestfit and " -n .bestfit_DM0 " in bestfit
-    assert combine.postfit_command("DM0").endswith("-f multidimfit.bestfit_DM0.root:fit_mdf --postfit")
+    assert combine.postfit_command("DM0", (1.09, -1.3)).endswith("-f multidimfit.bestfit_DM0.root:fit_mdf --postfit --freeze r_EMB_DM0=1.09,ES_DM0=-1.3")
     singles = combine.singles_command("DM0", (0.9, -1.5), (0.7, 1.1), (-8.0, 4.0))
     assert "--setParameters ES_DM0=-1.5,r_EMB_DM0=0.9 --setParameterRanges r_EMB_DM0=0.7,1.1:ES_DM0=-8.0,4.0" in singles
     assert "--algo singles" in singles and "--cminFallbackAlgo Minuit2,Migrad,0:0.001,Minuit2,Migrad,0:0.01" in singles
