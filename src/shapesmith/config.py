@@ -65,6 +65,17 @@ class WebConfig(BaseModel):
     description: str | None = None  # of the variant
     title: str | None = None  # of the gallery
     about: str | None = None  # text of the gallery's "About this gallery" section (collapsed)
+    # the site that holds the gallery as one of its eras: `dir` is a direct subdirectory of it, whose name is the key in
+    # the era switch of the site page (<site>/index.html), e.g. site: .../smrun2_binned_v7b and dir: .../smrun2_binned_v7b/{era}
+    site: Path | None = None
+
+    @model_serializer(mode="wrap")
+    def _without_empty_site(self, handler: SerializerFunctionWrapHandler) -> dict:
+        # a gallery without a site dumps as before, so the resolved configuration and its hash (versions/) stay
+        data = handler(self)
+        if self.site is None:
+            data.pop("site", None)
+        return data
 
 
 class RunConfig(BaseModel):
@@ -95,7 +106,7 @@ class RunConfig(BaseModel):
         return str(value) if isinstance(value, int) and not isinstance(value, bool) else value
 
 
-RELATIVE_PATH_FIELDS = ("skim_dir", "output_dir", "ml_dir", "sample_database", "web.dir")
+RELATIVE_PATH_FIELDS = ("skim_dir", "output_dir", "ml_dir", "sample_database", "web.dir", "web.site")
 ERA_PLACEHOLDER = "{era}"
 
 

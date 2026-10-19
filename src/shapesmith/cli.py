@@ -256,12 +256,12 @@ def plot(config: Path = ConfigOption, channels: Optional[str] = ChannelsOption, 
 
 @app.command()
 @_logged
-def publish(config: Path = ConfigOption, channels: Optional[str] = ChannelsOption, overrides: Optional[list[str]] = SetOption, to: Optional[Path] = typer.Option(None, "--to", help="gallery directory (default: web.dir of the configuration)"), variant: Optional[str] = typer.Option(None, "--variant", help="the gallery column, [a-z0-9_]+ (default: web.variant)"), label: Optional[str] = typer.Option(None, "--label", help="label of the variant"), description: Optional[str] = typer.Option(None, "--description", help="description of the variant"), title: Optional[str] = typer.Option(None, "--title", help="title of the gallery"), about: Optional[str] = typer.Option(None, "--about", help="text of the gallery's About section")):
+def publish(config: Path = ConfigOption, channels: Optional[str] = ChannelsOption, overrides: Optional[list[str]] = SetOption, to: Optional[Path] = typer.Option(None, "--to", help="gallery directory (default: web.dir of the configuration)"), variant: Optional[str] = typer.Option(None, "--variant", help="the gallery column, [a-z0-9_]+ (default: web.variant)"), label: Optional[str] = typer.Option(None, "--label", help="label of the variant"), description: Optional[str] = typer.Option(None, "--description", help="description of the variant"), title: Optional[str] = typer.Option(None, "--title", help="title of the gallery"), about: Optional[str] = typer.Option(None, "--about", help="text of the gallery's About section"), site: Optional[Path] = typer.Option(None, "--site", help="site directory with an era switch that holds the gallery (--to) as one of its subdirectories (default: web.site)")):
     """Copy the plots and their yields (of a measurement analysis: the measurement's plots) into a static web gallery (one column per variant); publishing a variant again replaces its channels."""
     from shapesmith.web import publish as publish_gallery
 
     cfg, analysis, selected = _setup(config, channels, overrides=overrides)
-    options = {"dir": to.absolute() if to else None, "variant": variant, "label": label, "description": description, "title": title, "about": about}
+    options = {"dir": to.absolute() if to else None, "variant": variant, "label": label, "description": description, "title": title, "about": about, "site": site.absolute() if site else None}
     web = (cfg.web or WebConfig()).model_copy(update={key: value for key, value in options.items() if value is not None})
     publish_gallery(cfg, analysis, web, selected if channels else None, config, overrides or [])
 

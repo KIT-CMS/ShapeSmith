@@ -25,7 +25,7 @@ from tests.mini_analysis import build
 from tests.test_cli import _run, _write_config
 
 runner = CliRunner()
-INDEX = '<link rel="stylesheet" href="viewer.css?v=__SHAPESMITH_STAMP__">\n<script src="manifest.js?v=__SHAPESMITH_STAMP__"></script>\n<script src="viewer.js?v=__SHAPESMITH_STAMP__"></script>\n'
+INDEX = '<html lang="en">\n<link rel="stylesheet" href="viewer.css?v=__SHAPESMITH_STAMP__">\n<script src="manifest.js?v=__SHAPESMITH_STAMP__"></script>\n<script src="viewer.js?v=__SHAPESMITH_STAMP__"></script>\n'
 
 
 @pytest.fixture(scope="module")
@@ -279,7 +279,8 @@ def test_published_yields_are_the_sums_of_the_plotted_stacks(mini, tmp_path, plo
     assert yields["nominal"]["inclusive"]["prediction"] > 0 and yields["nominal"]["inclusive"]["data"] > 0
 
 
-def test_yields_come_from_the_yield_variable(tmp_path, plotted):
+@pytest.mark.parametrize("variables", [["m_vis", "yield"], ["m_vis"]], ids=["plotted", "not_plotted"])
+def test_yields_come_from_the_yield_variable(tmp_path, plotted, variables):
     analysis = build()
     mt = analysis.channel("mt")
     analysis = dataclasses.replace(analysis, channels={"mt": dataclasses.replace(mt, variables={**mt.variables, "yield": Variable("yield", "1.0", (0.5, 1.5))})})
@@ -290,14 +291,16 @@ def test_yields_come_from_the_yield_variable(tmp_path, plotted):
         hset[HistKey("mt", INCLUSIVE, process, "nominal", "CMS_puUp", "yield")] = Histogram([0.5, 1.5], [1e6], [1e6])
     output = tmp_path / "out"
     hset.save(output / "control_shapes.root")
-    run_plot(hset, analysis, ["mt"], True, None, ["m_vis", "yield"], output / "plots")
+    run_plot(hset, analysis, ["mt"], True, None, variables, output / "plots")
     config = RunConfig(analysis="tests.mini_analysis:build", era="2018", channels=["mt"], ntuples=NtupleConfig(base=str(tmp_path / "none")), skim_dir=tmp_path / "skims", output_dir=output)
 
     publish(config, analysis, WebConfig(dir=tmp_path / "gallery", variant="v"))
 
     entry = _manifest(tmp_path / "gallery")["yields"]["v"]["mt"]["nominal"]["inclusive"]
-    assert entry["variable"] == "yield" and entry["data"] == 76.0 and entry["prediction"] == 74.0
-    _assert_yields_are_the_stack(entry, plotted[-1])
+    assert entry["variable"] == "yield" and entry["data"] == 76.0 and entry["prediction"] == 74.0  # not the m_vis sums 75, 71
+    assert [g["yield"] for g in entry["groups"]] == [15.0, 59.0]  # jet fakes, Z (ZTT + ZL)
+    if "yield" in variables:
+        _assert_yields_are_the_stack(entry, plotted[-1])
 
 
 def test_cli_publish_with_the_web_section_and_options(mini, tmp_path):
@@ -332,6 +335,121 @@ def test_web_section_of_the_run_configuration(tmp_path):
     assert load_config(path, ["web.dir=/srv/web"]).web.dir.as_posix() == "/srv/web"
     with pytest.raises(ValueError, match="variant"):
         load_config(path, ["web.variant=emb-ff"])
+    assert web.site is None and "site" not in load_config(path).model_dump()["web"]  # the resolved configuration as before
+    web = load_config(path, ["web.site=../sites/run2", "web.dir=../sites/run2/{era}"]).web
+    assert web.site == tmp_path.parent / "sites" / "run2" and web.dir == tmp_path.parent / "sites" / "run2" / "2018"
+
+
+def _site(directory):
+    return json.loads((directory / "site.json").read_text())
+
+
+def test_publish_into_a_site_lists_the_eras_and_writes_the_site_page(mini, tmp_path):
+    _, config, analysis = mini
+    site = tmp_path / "web" / "run2"
+    umask = os.umask(0o077)
+    try:
+        publish(config, analysis, WebConfig(dir=site / "2018", site=site, variant="emb", title="run2 · control plots", about="HH→bbττ 2018"))
+    finally:
+        os.umask(umask)
+    manifest, listing = _manifest(site / "2018"), _site(site)
+    assert manifest["site"] == {"key": "2018"} and manifest["title"] == "run2 · control plots" and manifest["description"] == "HH→bbττ 2018"
+    assert listing["schema"] == 1 and listing["generator"].startswith("shapesmith ") and listing["level"] == "site" and listing["kind"] == "control"
+    assert listing["title"] == "run2 · control plots" and listing["eras"] == [{"key": "2018", "label": "2018", "title": "run2 · control plots", "updated": manifest["updated"]}]
+    assert (site / "site.js").read_text() == f"window.SHAPESMITH_SITE = {(site / 'site.json').read_text()};\n"
+    index = (site / "index.html").read_text()
+    stamp = re.sub(r"[-:]", "", listing["updated"])
+    assert index.startswith('<html lang="en" data-level="site">') and 'src="site.js?v=' + stamp + '"' in index and "manifest.js" not in index
+    assert "__SHAPESMITH_STAMP__" not in index and index.count(f"?v={stamp}") == 3
+    assert (site / "viewer.js").read_text() == "// viewer\n" and (site / "viewer.css").read_text() == "/* style */\n"
+    assert 'src="manifest.js?' in (site / "2018" / "index.html").read_text()  # each era stays a complete gallery
+    assert sorted(p.name for p in site.iterdir()) == ["2018", "index.html", "site.js", "site.json", "viewer.css", "viewer.js"]
+    for directory, subdirectories, files in os.walk(site):
+        assert stat.S_IMODE(os.stat(directory).st_mode) == 0o755, directory
+        for name in files:
+            assert stat.S_IMODE(os.stat(os.path.join(directory, name)).st_mode) == 0o644, name
+
+    for era in ("2017", "2016postVFP", "2016preVFP", "2016"):  # in any order: the list is in era order
+        publish(config.model_copy(update={"era": era}), analysis, WebConfig(dir=site / era, site=site, variant="emb"))
+    eras = [era["key"] for era in _site(site)["eras"]]
+    assert eras == ["2016", "2016preVFP", "2016postVFP", "2017", "2018"]
+    assert _site(site)["title"] == "run2 · control plots" and _manifest(site / "2017")["title"] == "mini"  # the site keeps its title
+
+    before = _manifest(site / "2018")
+    publish(config, analysis, WebConfig(dir=site / "2018", site=site, variant="emb"))  # re-publishing changes nothing but the times
+    after = _manifest(site / "2018")
+    assert [era["key"] for era in _site(site)["eras"]] == eras and len(after["variants"]) == 1 and after["plots"] == before["plots"]
+    assert after["title"] == before["title"] and after["site"] == {"key": "2018"}
+    publish(config, analysis, WebConfig(dir=site / "2018", variant="classic"))  # a publication without the site keeps the link
+    assert _manifest(site / "2018")["site"] == {"key": "2018"} and [era["key"] for era in _site(site)["eras"]] == eras
+    assert not [p for p in site.rglob(".*")]
+
+    shutil.rmtree(site / "2016")
+    (site / "notes").mkdir()
+    publish(config, analysis, WebConfig(dir=site / "2018", site=site, variant="emb"))  # the list follows the directories
+    assert [era["key"] for era in _site(site)["eras"]] == ["2016preVFP", "2016postVFP", "2017", "2018"]
+
+
+def test_a_gallery_without_a_site_gets_no_era_switch(mini, tmp_path):
+    _, config, analysis = mini
+    target = tmp_path / "web" / "sm2018_binned_v6"
+    publish(config, analysis, WebConfig(dir=target, variant="emb"))
+    assert "site" not in _manifest(target) and not (target.parent / "site.json").exists()
+    assert sorted(p.name for p in target.parent.iterdir()) == ["sm2018_binned_v6"]
+    assert 'data-level' not in (target / "index.html").read_text()
+
+
+def test_publish_refuses_a_site_that_is_not_one(mini, ff_measured, tmp_path):
+    _, config, analysis = mini
+    home = tmp_path / "public_html"
+    home.mkdir()
+    (home / "index.html").write_text("my home page")
+    with pytest.raises(FileExistsError, match="not a ShapeSmith site"):
+        publish(config, analysis, WebConfig(dir=home / "2018", site=home, variant="emb"))
+    assert [p.name for p in home.iterdir()] == ["index.html"]
+    with pytest.raises(ValueError, match="subdirectory of it"):
+        publish(config, analysis, WebConfig(dir=tmp_path / "elsewhere" / "2018", site=tmp_path / "site", variant="emb"))
+    with pytest.raises(ValueError, match="subdirectory of it"):
+        publish(config, analysis, WebConfig(dir=tmp_path / "site" / "2018" / "x", site=tmp_path / "site", variant="emb"))
+    with pytest.raises(ValueError, match="subdirectory of it"):
+        publish(config, analysis, WebConfig(dir=tmp_path / "site" / "data.v1", site=tmp_path / "site", variant="emb"))
+    assert not (tmp_path / "site").exists() and not (tmp_path / "elsewhere").exists()
+
+    site = tmp_path / "site"
+    publish(config, analysis, WebConfig(dir=site / "2018", site=site, variant="emb"))
+    with pytest.raises(FileExistsError, match="not a ShapeSmith gallery"):  # the site directory is no gallery
+        publish(config, analysis, WebConfig(dir=site, variant="emb"))
+    ff_config, ff_analysis, _, _ = ff_measured
+    before = (site / "site.json").read_text()
+    with pytest.raises(ValueError, match="site of control galleries, not of fake_factors"):
+        publish(ff_config, ff_analysis, WebConfig(dir=site / "2017", site=site, variant="v1"))
+    assert (site / "site.json").read_text() == before and not (site / "2017").exists()
+
+    old = tmp_path / "old"  # galleries published before their site: adopted as its eras
+    publish(config, analysis, WebConfig(dir=old / "2017", variant="emb"))
+    publish(config, analysis, WebConfig(dir=old / "2018", variant="emb"))
+    publish(config, analysis, WebConfig(dir=old / "2018", site=old, variant="emb"))
+    assert [era["key"] for era in _site(old)["eras"]] == ["2017", "2018"]
+
+
+def test_publish_into_a_site_needs_the_site_page_markers(mini, tmp_path, viewer):
+    _, config, analysis = mini
+    (viewer / "index.html").write_text(INDEX.replace('<html lang="en">\n', ""))
+    with pytest.raises(FileNotFoundError, match="site page"):
+        publish(config, analysis, WebConfig(dir=tmp_path / "site" / "2018", site=tmp_path / "site", variant="emb"))
+    assert not (tmp_path / "site").exists()
+
+
+def test_cli_publish_into_a_site(mini, tmp_path):
+    path, _, _ = mini
+    run = tmp_path / "run.yaml"
+    run.write_text(path.read_text() + "web: {dir: 'sites/run2/{era}', site: sites/run2, variant: emb, title: run2}\n")
+    _run("publish", "-c", str(run))
+    assert [era["key"] for era in _site(tmp_path / "sites" / "run2")["eras"]] == ["2018"]
+    _run("publish", "-c", str(run), "-s", "era=2017")
+    assert [era["key"] for era in _site(tmp_path / "sites" / "run2")["eras"]] == ["2017", "2018"]
+    _run("publish", "-c", str(path), "--to", str(tmp_path / "cli" / "a"), "--site", str(tmp_path / "cli"), "--variant", "v")
+    assert _site(tmp_path / "cli")["eras"][0]["key"] == "a"
 
 
 def test_merge_order():

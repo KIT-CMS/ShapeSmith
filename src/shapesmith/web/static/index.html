@@ -15,7 +15,13 @@
 
 <header class="masthead">
   <div class="title-row">
-    <h1 id="title">ShapeSmith gallery</h1>
+    <div class="title-main">
+      <h1 id="title">ShapeSmith gallery</h1>
+      <div id="era-field" class="era-field" hidden>
+        <span class="field-label" id="era-label">Era</span>
+        <div id="eras" class="segmented" role="group" aria-labelledby="era-label"></div>
+      </div>
+    </div>
     <label class="theme">Theme
       <select id="theme">
         <option value="light">Light</option>
@@ -24,7 +30,7 @@
       </select>
     </label>
   </div>
-  <p class="meta"><time id="updated"></time><span id="generator"></span></p>
+  <p class="meta"><time id="updated"></time><span id="generator"></span><a id="site-link" class="site-link" href="../index.html" hidden>All eras</a></p>
   <details id="about" class="about" hidden>
     <summary>About this gallery</summary>
     <p id="description"></p>

@@ -72,11 +72,17 @@ and everything is world-readable. Variants and channels keep the order of their 
 new variant comes last, a new channel next to the channels of its run already in the gallery, else
 last. `--title`/`--about` set the gallery's title and the text of its collapsed "About this gallery"
 section. A directory that is neither empty nor a gallery is refused.
-`web: {dir, variant, label, description, title, about}` in the run YAML sets the defaults of the
+`web: {dir, variant, label, description, title, about, site}` in the run YAML sets the defaults of the
 options. For an analysis with a measurement, `publish` takes the measurement's plots from
 `<output_dir>/<measurement>/<era>/` instead (the fake factors: by process, split category and
 quantity, with the p-value of each correction and the ttbar data/MC factors); a gallery holds
 either control plots or one measurement.
+`--site SITE` (`web.site`) makes the gallery one era of a site: `DIR` must be a subdirectory of
+`SITE` (`web: {site: /web/USER/public_html/TAG, dir: "/web/USER/public_html/TAG/{era}"}`), and
+`SITE/index.html` shows the galleries of every subdirectory with an era switch (the era in the
+link, the most recent by default; channel, region, category, variable and columns stay where the
+other era has them). Each publish rewrites the site's era list (`site.json`, `site.js`) from its
+subdirectories; each era stays a complete gallery of its own. A gallery without a site stays as it is.
 
 ## The analysis model
 
