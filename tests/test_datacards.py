@@ -1,9 +1,11 @@
 import dataclasses
+import json
 
+import numpy as np
 import pytest
 import uproot
 
-from shapesmith.datacards import bin_name, rebin_edges, run_datacards, write_datacard
+from shapesmith.datacards import bin_name, collect_bin, rebin_edges, run_datacards, symmetric_shift, symmetrisation_reason, symmetrise, write_datacard
 from shapesmith.histogram import HistKey, Histogram, HistogramSet, part_of
 from shapesmith.model import AnalysisError, LnN
 from shapesmith.validate import validate
@@ -128,3 +130,99 @@ def test_lnn_variations_must_exist():
     with pytest.raises(AnalysisError, match="lnN variation CMS_prefiring: no variations CMS_prefiringUp and CMS_prefiringDown"):
         validate(dataclasses.replace(build(), lnn_variations=("CMS_prefiring",)))
     validate(dataclasses.replace(build(), lnn_variations=("CMS_pu",)))
+
+
+def _one_bin_hset(down: float, up: float, name: str = "CMS_ff_shift", nominal: float = 10.0):
+    """Both categories with one bin, jetFakes Up/Down at down/up times the nominal."""
+    hset = HistogramSet()
+    edges = (0.0, 1.0)
+    for category in ("sig", "bkg"):
+        hset[HistKey("mt", category, "data", "nominal", "Nominal", "score")] = Histogram(edges, [20.0], [20.0])
+        hset[HistKey("mt", category, "ZTT", "nominal", "Nominal", "score")] = Histogram(edges, [10.0], [1.0])
+        hset[HistKey("mt", category, "jetFakes", "nominal", "Nominal", "score")] = Histogram(edges, [nominal], [1.0])
+        hset[HistKey("mt", category, "jetFakes", "nominal", f"{name}Up", "score")] = Histogram(edges, [nominal * up], [2.0])
+        hset[HistKey("mt", category, "jetFakes", "nominal", f"{name}Down", "score")] = Histogram(edges, [nominal * down], [3.0])
+    return hset
+
+
+def _shape(path, name):
+    with uproot.open(path.parent / "common" / "htt_input_2018.root") as f:
+        return f[f"htt_mt_1_2018/{name}"].values().tolist()
+
+
+@pytest.mark.parametrize(("down", "up", "reason", "after"), [
+    (1.2787, 0.9216, "asymmetry 3.6", (1.17855, 0.82145)),  # mt QCD non-closure MCShift 2018: half the distance of Down to Up
+    (0.9337, 1.1832, "asymmetry 2.8", (0.87525, 1.12475)),  # StatShift 2018
+    (1.0515, 1.0063, "one-sided", (1.0515, 0.9485)),  # QCD DR->SR MCShift et 2018: the larger shift, Up takes the sign of Up - Down
+    (0.9719, 0.9898, "one-sided", (0.9719, 1.0281)),
+    (1.0, 1.05, "one-sided", (0.95, 1.05)),  # Down exactly nominal
+])
+def test_one_sided_and_strongly_asymmetric_pairs_are_symmetrised(tmp_path, caplog, down, up, reason, after):
+    analysis = dataclasses.replace(build(), symmetrised_variations=("CMS_ff_shift",))
+    with caplog.at_level("INFO", logger="shapesmith.datacards"):
+        card = write_datacard(_one_bin_hset(down, up), analysis, ["mt"], tmp_path / "mt")
+    assert _shape(card, "jetFakes_CMS_ff_shiftDown") == pytest.approx([10.0 * after[0]])
+    assert _shape(card, "jetFakes_CMS_ff_shiftUp") == pytest.approx([10.0 * after[1]])
+    changes = json.loads((card.parent / "template_changes.json").read_text())
+    assert changes["asymmetry_ratio"] == 2.0 and len(changes["symmetrised"]) == 2  # both categories
+    record = changes["symmetrised"][0]
+    assert record["nuisance"] == "CMS_ff_shift" and record["bin"] == "htt_mt_1_2018" and record["process"] == "jetFakes" and record["reason"] == reason
+    assert record["before"] == pytest.approx([down, up]) and record["after"] == pytest.approx(list(after))
+    assert "2 templates symmetrised" in caplog.text and f"CMS_ff_shift htt_mt_1_2018/jetFakes ({reason})" in caplog.text
+
+
+@pytest.mark.parametrize(("down", "up"), [(0.95, 1.06), (1.04, 0.92), (0.98, 1.0399)])
+def test_mildly_asymmetric_pairs_and_other_nuisances_stay(tmp_path, down, up):
+    """Below the ratio 2 the pair stays, and a one-sided pair outside symmetrised_variations stays too."""
+    analysis = dataclasses.replace(build(), symmetrised_variations=("CMS_ff_shift",))
+    card = write_datacard(_one_bin_hset(down, up), analysis, ["mt"], tmp_path / "mt")
+    assert _shape(card, "jetFakes_CMS_ff_shiftDown") == pytest.approx([10.0 * down]) and _shape(card, "jetFakes_CMS_ff_shiftUp") == pytest.approx([10.0 * up])
+    other = write_datacard(_one_bin_hset(1.05, 1.01, name="CMS_other"), analysis, ["mt"], tmp_path / "other")
+    assert _shape(other, "jetFakes_CMS_otherDown") == pytest.approx([10.5]) and _shape(other, "jetFakes_CMS_otherUp") == pytest.approx([10.1])
+    assert json.loads((other.parent / "template_changes.json").read_text())["symmetrised"] == []
+
+
+def test_symmetrisation_is_bin_wise_for_shapes():
+    """Opposite bins: half the distance of Down to Up; one-sided bins: the larger shift with the sign of Up - Down;
+    clipped at 0."""
+    nominal = np.array([10.0, 10.0, 10.0, 10.0, 1.0])
+    up = np.array([12.0, 11.0, 10.5, 10.0, 0.0])
+    down = np.array([9.0, 10.5, 11.0, 10.0, 3.5])
+    shift = symmetric_shift(nominal, up, down)
+    assert shift.tolist() == pytest.approx([1.5, 1.0, -1.0, 0.0, -1.75])
+    assert symmetrisation_reason(-0.1, 0.25, 2.0) == "asymmetry 2.5" and symmetrisation_reason(-0.1, 0.2, 2.0) is None
+    assert symmetrisation_reason(0.0, 0.0, 2.0) is None and symmetrisation_reason(0.01, 0.0, 2.0) == "one-sided"
+    hset = HistogramSet()
+    edges = (0.0, 1.0, 2.0, 3.0, 4.0, 5.0)
+    for category in ("sig", "bkg"):
+        hset[HistKey("mt", category, "data", "nominal", "Nominal", "score")] = Histogram(edges, nominal, nominal)
+        hset[HistKey("mt", category, "jetFakes", "nominal", "Nominal", "score")] = Histogram(edges, nominal, nominal)
+        hset[HistKey("mt", category, "jetFakes", "nominal", "CMS_ffUp", "score")] = Histogram(edges, up, up)
+        hset[HistKey("mt", category, "jetFakes", "nominal", "CMS_ffDown", "score")] = Histogram(edges, down, down)
+    analysis = dataclasses.replace(build(), symmetrised_variations=("CMS_ff",))
+    bins = [collect_bin(hset, analysis, "mt", 0, analysis.channel("mt").categories[0], None)]
+    (record,) = symmetrise(analysis, bins)  # yields: Down +7.3 %, Up +6.1 %: one-sided
+    assert record.reason == "one-sided" and record.clipped == 1
+    assert bins[0].variations["jetFakes"]["CMS_ffUp"].values.tolist() == pytest.approx([11.5, 11.0, 9.0, 10.0, 0.0])  # 1 - 1.75 clipped at 0
+    assert bins[0].variations["jetFakes"]["CMS_ffDown"].values.tolist() == pytest.approx([8.5, 9.0, 11.0, 10.0, 2.75])
+    assert bins[0].variations["jetFakes"]["CMS_ffUp"].variances.tolist() == up.tolist()  # the variances stay
+
+
+def test_no_op_nuisances_are_left_out(tmp_path, caplog):
+    """A pair equal to the nominal in every bin of every process leaves the card and the shapes file; one that moves
+    a single process stays."""
+    hset = _hset()
+    for category in ("sig", "bkg"):
+        for process in ("ZTT", "HH"):
+            nominal = hset[HistKey("mt", category, process, "nominal", "Nominal", "score")]
+            for d in ("Up", "Down"):
+                hset[HistKey("mt", category, process, "nominal", f"CMS_noop{d}", "score")] = nominal.copy()
+                hset[HistKey("mt", category, process, "nominal", f"CMS_half{d}", "score")] = nominal.copy() if process == "ZTT" else nominal.copy().scale(1.1)
+    with caplog.at_level("INFO", logger="shapesmith.datacards"):
+        card = write_datacard(hset, build(), ["mt"], tmp_path / "mt")
+    text = card.read_text()
+    assert "CMS_noop" not in text and "CMS_half shape 1 1 - - 1 1 - -" in text and "CMS_pu shape" in text
+    with uproot.open(card.parent / "common" / "htt_input_2018.root") as f:
+        assert not [name for name in f.keys(recursive=True, cycle=False) if "CMS_noop" in name]
+    assert "1 no-op nuisances left out (Up = Down = nominal in every bin of every process): CMS_noop" in caplog.text
+    assert json.loads((card.parent / "template_changes.json").read_text())["no_ops"] == ["CMS_noop"]

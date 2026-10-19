@@ -109,7 +109,7 @@ def test_combine_background_only_maps_the_bins_of_every_era(runs, monkeypatch):
     assert result.exit_code == 0, result.output
     summary = json.loads((output / "background_fit.json").read_text())["combination"]
     assert set(summary["yields"]) == {"mt 2017", "mt 2018"} and summary["yields"]["mt 2017"]["sig"]["data"] == 6.0
-    assert "| mt 2018 | bkg | 6 | 4.0 | 5.0 | 1.500 | 1.200 |" in result.output
+    assert "| mt 2018 | bkg | 6 | 4.0 ± 1.0 | 5.0 ± 1.0 | 1.500 | 1.200 |" in result.output
 
 
 def test_one_run_yaml_for_every_era(runs, monkeypatch):

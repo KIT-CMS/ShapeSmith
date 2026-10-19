@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 from pathlib import Path
 
 from shapesmith import cmssw
@@ -45,7 +46,9 @@ def summarise(values: dict, analysis: Analysis) -> dict:
 
 
 def summarise_bins(values: dict, categories: dict[str, tuple[str, str]]) -> dict:
-    """summarise with the map card bin -> (channel label, category) given (e.g. of a combination of eras)."""
+    """summarise with the map card bin -> (channel label, category) given (e.g. of a combination of eras). A postfit
+    error the values script found undefined stays None (null in the JSON, "undefined" in the markdown), and so does
+    the constraint of its parameter; the summary lists them under "undefined" and logs them."""
     nuisances = {}
     for name in sorted(values["postfit"]):
         prefit, postfit = values["prefit"].get(name), values["postfit"][name]
@@ -53,7 +56,7 @@ def summarise_bins(values: dict, categories: dict[str, tuple[str, str]]) -> dict
             "prefit": prefit,
             "postfit": postfit,
             "pull": (postfit[0] - prefit[0]) / prefit[1] if prefit else None,
-            "constraint": postfit[1] / prefit[1] if prefit else None,
+            "constraint": postfit[1] / prefit[1] if prefit and postfit[1] is not None else None,
         }
     yields: dict = {}
     for stage, norms in (("prefit", values["norm_prefit"]), ("postfit", values["norm_fit_b"])):
@@ -62,7 +65,24 @@ def summarise_bins(values: dict, categories: dict[str, tuple[str, str]]) -> dict
             channel, category = categories[card_bin]
             entry = yields.setdefault(channel, {}).setdefault(category, {"data": values["data"][card_bin]})
             entry.setdefault(stage, {})[process] = value
-    return {"fit_status": values["status"], "covariance_quality": values["covariance_quality"], "nuisances": nuisances, "yields": yields}
+    undefined = undefined_errors(values)
+    if undefined["postfit"] or undefined["norm_fit_b"]:
+        logger.warning(f"undefined postfit errors (reported as undefined, not 0): {len(undefined['postfit'])} parameters ({', '.join(undefined['postfit'])}), "
+                       f"{len(undefined['norm_fit_b'])} normalisations ({', '.join(undefined['norm_fit_b'])})")
+    return {"fit_status": values["status"], "covariance_quality": values["covariance_quality"], "nuisances": nuisances, "yields": yields, "undefined": undefined}
+
+
+def undefined_errors(values: dict) -> dict[str, list[str]]:
+    """The parameters and normalisations whose postfit error is undefined (None, or NaN in values of an older values
+    script, which wrote NaN as NaN)."""
+    def missing(error) -> bool:
+        return error is None or (isinstance(error, float) and math.isnan(error))
+
+    return {stage: sorted(name for name, (_, error) in values[stage].items() if missing(error)) for stage in ("postfit", "norm_fit_b")}
+
+
+def _error(error) -> str:
+    return "undefined" if error is None or (isinstance(error, float) and math.isnan(error)) else f"{error:.1f}"
 
 
 def summary_lines(name: str, result: dict) -> list[str]:
@@ -71,11 +91,16 @@ def summary_lines(name: str, result: dict) -> list[str]:
     lines += ["| channel | category | data | prefit | postfit | data/prefit | data/postfit |", "|---|---|---|---|---|---|---|"]
     for channel, categories in result["yields"].items():
         for category, entry in categories.items():
-            prefit, postfit = entry["prefit"]["total_background"][0], entry["postfit"]["total_background"][0]
-            lines.append(f"| {channel} | {category} | {entry['data']:.0f} | {prefit:.1f} | {postfit:.1f} | {entry['data'] / prefit:.3f} | {entry['data'] / postfit:.3f} |")
+            prefit, postfit = entry["prefit"]["total_background"], entry["postfit"]["total_background"]
+            lines.append(f"| {channel} | {category} | {entry['data']:.0f} | {prefit[0]:.1f} ± {_error(prefit[1])} | {postfit[0]:.1f} ± {_error(postfit[1])} | "
+                         f"{entry['data'] / prefit[0]:.3f} | {entry['data'] / postfit[0]:.3f} |")
     pulled = sorted((item for item in result["nuisances"].items() if item[1]["pull"] is not None), key=lambda item: -abs(item[1]["pull"]))
     lines += ["", "| nuisance | pull | constraint |", "|---|---|---|"]
-    lines += [f"| {nuisance} | {entry['pull']:+.2f} | {entry['constraint']:.2f} |" for nuisance, entry in pulled[:LARGEST_PULLS]]
+    lines += [f"| {nuisance} | {entry['pull']:+.2f} | {'undefined' if entry['constraint'] is None else format(entry['constraint'], '.2f')} |" for nuisance, entry in pulled[:LARGEST_PULLS]]
+    undefined = result.get("undefined", {})
+    if undefined.get("postfit") or undefined.get("norm_fit_b"):
+        lines += ["", "Undefined postfit errors (NaN in the fit, e.g. a parameter robustHesse dropped from the covariance):", ""]
+        lines += [f"- parameter {name}" for name in undefined.get("postfit", [])] + [f"- normalisation {name}" for name in undefined.get("norm_fit_b", [])]
     return lines + [""]
 
 

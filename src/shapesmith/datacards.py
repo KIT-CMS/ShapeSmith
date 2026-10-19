@@ -6,12 +6,31 @@ apply to a column), `shape` for every Up/Down pair of variations present (names 
 never become shape lines; parts of summed variations are left out of the shapes file), except the variations of
 Analysis.lnn_variations, which become an lnN of the varied to the nominal yield and stay out of the shapes file,
 `* autoMCStats 0`.
+
+No-op nuisances: an Up/Down pair equal to the nominal in every bin of every process of a card (e.g. a shift of a
+fake factor taken from MC without subtraction) is left out of the card and the shapes file, and logged.
+
+Symmetrisation (Analysis.symmetrised_variations, ratio r = Analysis.asymmetry_ratio): per bin and process, with the
+relative yield effects u = U/N - 1 and d = D/N - 1 of Up and Down, the pair is replaced when it is one-sided
+(u * d >= 0, not both 0) or strongly asymmetric (max(|u|, |d|) > r * min(|u|, |d|)). combine interpolates the yield
+of such a pair (AsymPow, vertical template morphing) with a term quadratic in the nuisance of the size of the
+asymmetry, (ln kappa_up + ln kappa_down) / 2; for a one-sided pair it dominates and the likelihood is not parabolic,
+and robustHesse can find negative eigenvalues there. The replacement is symmetric around the nominal, bin by bin
+(i), with u_i = U_i - N_i and d_i = D_i - N_i:
+    delta_i = (u_i - d_i) / 2                                 if u_i * d_i < 0 (the half distance of Down to Up),
+    delta_i = s_i * max(|u_i|, |d_i|), s_i = sign(u_i - d_i)  otherwise (the larger shift; s_i = sign(u_i + d_i) when
+                                                              u_i = d_i),
+    Up'_i = N_i + delta_i, Down'_i = N_i - delta_i, each clipped at 0;
+the variances of Up and Down stay. Every replacement and no-op is listed in <card dir>/template_changes.json.
 """
 from __future__ import annotations
 
+import json
 import logging
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from pathlib import Path
+
+import numpy as np
 
 from shapesmith.histogram import NOMINAL_VARIATION, HistKey, Histogram, HistogramSet, is_part
 from shapesmith.model import NOMINAL, Analysis, Category, LnN
@@ -169,6 +188,88 @@ def card_text(analysis: Analysis, bins: list[Bin], systematics: bool) -> str:
     return "\n".join(lines) + "\n"
 
 
+def _pairs(bins: list[Bin]) -> list[str]:
+    """The names of the Up/Down pairs of the bins, sorted."""
+    return sorted({v[: -len("Up")] for b in bins for variations in b.variations.values() for v in variations if v.endswith("Up") and f"{v[: -len('Up')]}Down" in variations})
+
+
+def no_op_variations(bins: list[Bin]) -> list[str]:
+    """The Up/Down pairs equal to the nominal in every bin of every process that carries them."""
+    result = []
+    for name in _pairs(bins):
+        pairs = [(b.processes[p], v[f"{name}Up"], v[f"{name}Down"]) for b in bins for p, v in b.variations.items() if f"{name}Up" in v and f"{name}Down" in v]
+        if all(np.array_equal(up.values, nominal.values) and np.array_equal(down.values, nominal.values) for nominal, up, down in pairs):
+            result.append(name)
+    return result
+
+
+def drop_variations(bins: list[Bin], names: list[str]) -> None:
+    dropped = {f"{name}{d}" for name in names for d in ("Up", "Down")}
+    for b in bins:
+        for process, variations in b.variations.items():
+            b.variations[process] = {name: h for name, h in variations.items() if name not in dropped}
+
+
+@dataclass(frozen=True)
+class Symmetrised:
+    """A symmetrised pair of one bin and process: why, and its Down/Up yield ratios to the nominal before and after."""
+
+    nuisance: str
+    bin: str
+    process: str
+    reason: str
+    before: tuple[float, float]
+    after: tuple[float, float]
+    clipped: int  # bins of Up' or Down' set to 0
+
+
+def symmetrisation_reason(down: float, up: float, ratio: float) -> str | None:
+    """Why a pair with the relative yield effects `down` and `up` (varied / nominal - 1) is symmetrised, or None."""
+    if down == 0.0 and up == 0.0:
+        return None
+    if down * up >= 0.0:
+        return "one-sided"
+    large, small = max(abs(down), abs(up)), min(abs(down), abs(up))
+    return f"asymmetry {large / small:.1f}" if large > ratio * small else None
+
+
+def symmetric_shift(nominal: np.ndarray, up: np.ndarray, down: np.ndarray) -> np.ndarray:
+    """delta per bin (module docstring): the half distance of Down to Up where they lie on both sides of the nominal,
+    else the larger shift with the sign of Up - Down."""
+    u, d = up - nominal, down - nominal
+    sign = np.sign(u - d)
+    sign = np.where(sign == 0.0, np.sign(u + d), sign)
+    return np.where(u * d < 0.0, (u - d) / 2.0, sign * np.maximum(np.abs(u), np.abs(d)))
+
+
+def symmetrise(analysis: Analysis, bins: list[Bin]) -> list[Symmetrised]:
+    """Replace the one-sided or strongly asymmetric pairs of Analysis.symmetrised_variations in the bins."""
+    records = []
+    for b in bins:
+        for process, nominal in b.processes.items():
+            variations = b.variations[process]
+            for name in analysis.symmetrised_variations:
+                up, down = variations.get(f"{name}Up"), variations.get(f"{name}Down")
+                if up is None or down is None:
+                    continue
+                before = (_ratio(down, nominal), _ratio(up, nominal))
+                reason = symmetrisation_reason(before[0] - 1.0, before[1] - 1.0, analysis.asymmetry_ratio)
+                if reason is None:
+                    continue
+                shift = symmetric_shift(nominal.values, up.values, down.values)
+                new_up, new_down = nominal.values + shift, nominal.values - shift
+                clipped = int(np.sum(new_up < 0.0) + np.sum(new_down < 0.0))
+                variations[f"{name}Up"] = Histogram(nominal.edges.copy(), np.clip(new_up, 0.0, None), up.variances.copy())
+                variations[f"{name}Down"] = Histogram(nominal.edges.copy(), np.clip(new_down, 0.0, None), down.variances.copy())
+                after = (_ratio(variations[f"{name}Down"], nominal), _ratio(variations[f"{name}Up"], nominal))
+                records.append(Symmetrised(name, b.name, process, reason, before, after, clipped))
+    return records
+
+
+def _record_line(record: Symmetrised) -> str:
+    return f"{record.nuisance} {record.bin}/{record.process} ({record.reason}): {record.before[0]:.4f}/{record.before[1]:.4f} -> {record.after[0]:.4f}/{record.after[1]:.4f}" + (f", {record.clipped} bins clipped at 0" if record.clipped else "")
+
+
 def write_datacard(hset: HistogramSet, analysis: Analysis, channels: list[str], output_dir: Path, systematics: bool = True, min_background: float | None = 1.0) -> Path:
     output_dir = Path(output_dir)
     bins = [
@@ -177,6 +278,15 @@ def write_datacard(hset: HistogramSet, analysis: Analysis, channels: list[str], 
         for index, category in enumerate(analysis.channel(channel).categories)
         if (b := collect_bin(hset, analysis, channel, index, category, min_background)) is not None
     ]
+    no_ops = no_op_variations(bins)
+    drop_variations(bins, no_ops)
+    if no_ops:
+        logger.info(f"{output_dir.name}: {len(no_ops)} no-op nuisances left out (Up = Down = nominal in every bin of every process): {', '.join(no_ops)}")
+    records = symmetrise(analysis, bins)
+    if records:
+        logger.info(f"{output_dir.name}: {len(records)} templates symmetrised (one-sided or asymmetry > {analysis.asymmetry_ratio:g}), Down/Up yield ratios before -> after:\n" + "\n".join(_record_line(r) for r in records))
+    output_dir.mkdir(parents=True, exist_ok=True)
+    (output_dir / "template_changes.json").write_text(json.dumps({"asymmetry_ratio": analysis.asymmetry_ratio, "no_ops": no_ops, "symmetrised": [asdict(r) for r in records]}, indent=1))
     entries = []
     for b in bins:
         entries.append((b.name, "data_obs", b.data))

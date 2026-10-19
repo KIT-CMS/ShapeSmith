@@ -310,6 +310,12 @@ class Analysis:
     # Up/Down variations (name without the direction) that datacards write as an lnN instead of a shape: per bin and
     # process the ratio of the varied to the nominal yield, e.g. a weight variation whose shape effect is negligible
     lnn_variations: tuple[str, ...] = ()
+    # Up/Down variations (name without the direction) that datacards symmetrise around the nominal where their pair is
+    # one-sided or strongly asymmetric (datacards.symmetrise), e.g. the fake-factor shifts of a measurement payload
+    symmetrised_variations: tuple[str, ...] = ()
+    # the asymmetry above which a pair of symmetrised_variations is symmetrised: the larger relative yield effect of Up
+    # and Down over the smaller one
+    asymmetry_ratio: float = 2.0
 
     def channel(self, name: str) -> Channel:
         return self.channels[name]
