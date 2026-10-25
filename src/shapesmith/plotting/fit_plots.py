@@ -3,6 +3,8 @@ nuisance pulls, the GoF test statistic of the toys against the data, and the sig
 injected signal strength).
 
 A masked (blinded) bin never shows data: its data_obs is the Asimov prediction, and the plot says "blinded".
+FitDiagnostics saves the shapes of every card bin in the binning of the largest one (empty bins appended): the stack
+of a card bin shows its own bins (the edges of its data histogram in the card).
 """
 from __future__ import annotations
 
@@ -46,17 +48,38 @@ def shown_data(bin_shapes: dict, masked: bool) -> list[np.ndarray] | None:
     return None if masked or data is None else [np.asarray(values) for values in data]
 
 
+def card_binning(bin_shapes: dict, edges, title: str = "") -> tuple[dict, np.ndarray | None]:
+    """The shapes of a card bin in its own bins and their edges: FitDiagnostics pads the shapes of a bin with fewer bins
+    than the largest one of the card with empty bins, which `edges` (from the card's data histogram) cut off; without
+    edges, or if a cut bin is not empty, the shapes stay as they are (and the plot shows the bin index)."""
+    if edges is None or "total_background" not in bin_shapes:
+        return bin_shapes, None
+    edges = np.asarray(edges, dtype=float)
+    n, saved = len(edges) - 1, len(bin_shapes["total_background"][0])
+    if n == saved:
+        return bin_shapes, edges
+    padding = [np.asarray(entry[0], dtype=float)[n:] for entry in bin_shapes.values()]  # the yields of every process and the data
+    if n < 1 or n > saved or any(np.any(part != 0.0) for part in padding):
+        logger.warning(f"{title}: {saved} saved bins against {n} bins of the card, plotted by bin index")
+        return bin_shapes, None
+    return {process: [list(np.asarray(part)[:n]) for part in entry] for process, entry in bin_shapes.items()}, edges
+
+
 def fit_stack(bin_shapes: dict, analysis: Analysis, title: str, path: Path, masked: bool, edges: np.ndarray | None = None, stage: str = "postfit") -> list[Path]:
     """Stacked backgrounds (grouped as the control plots), the total background uncertainty, the signal and the data
-    (none in a masked bin) of one card bin; `edges` from the card's data histogram, else the bin index."""
+    (none in a masked bin) of one card bin; `edges` from the card's data histogram (card_binning), else the bin
+    index."""
     mapping = process_groups(analysis)
     background = bin_shapes.get("total_background")
     if background is None:
         logger.warning(f"{title}: no total_background, no {stage} plot")
         return []
+    bin_shapes, edges = card_binning(bin_shapes, edges, title)
+    background = bin_shapes["total_background"]
     total, total_error = np.asarray(background[0]), np.asarray(background[1])
     n = len(total)
-    edges = np.asarray(edges, dtype=float) if edges is not None and len(edges) == n + 1 else np.arange(n + 1, dtype=float)
+    scored = edges is not None and edges[0] >= 0.0 and edges[-1] <= 1.0  # the card's own edges of a score on [0, 1]
+    edges = np.asarray(edges, dtype=float) if edges is not None else np.arange(n + 1, dtype=float)
     groups: dict[str, np.ndarray] = {}
     for process, entry in bin_shapes.items():
         if process in TOTALS or process == analysis.signal:
@@ -87,7 +110,7 @@ def fit_stack(bin_shapes: dict, analysis: Analysis, title: str, path: Path, mask
     rax.axhline(1.0, color="gray", linewidth=1)
     rax.set_ylim(0.5, 1.5)
     rax.set_ylabel("Data / Bkg.")
-    rax.set_xlabel("NN output" if edges[-1] <= 1.0 and edges[0] >= 0.0 and n > 1 else "bin")
+    rax.set_xlabel("NN output" if scored else "bin")
     rax.set_xlim(edges[0], edges[-1])
     ax.set_ylabel("Events")
     top = max(float(total.max()) if n else 1.0, float(np.max(data[0])) if data is not None and n else 0.0)

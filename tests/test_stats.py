@@ -20,7 +20,8 @@ from shapesmith.cli import app
 from shapesmith.config import CombineConfig
 from shapesmith.limits import collect, limit_commands, limit_overview, write_summary
 from shapesmith.model import CrossSection
-from shapesmith.plotting.fit_plots import fit_stack, pull_plot, shown_data
+from shapesmith.plotting import fit_plots
+from shapesmith.plotting.fit_plots import card_binning, fit_stack, pull_plot, shown_data
 from tests.mini_analysis import build
 from tests.test_cli import _write_config
 
@@ -422,6 +423,25 @@ def test_a_masked_bin_shows_no_data(tmp_path):
     nuisances = {"lumi": {"pull": 0.5, "constraint": 0.8}, "free": {"pull": None, "constraint": None}, "dropped": {"pull": -1.2, "constraint": None}}
     assert pull_plot(nuisances, tmp_path / "pulls.pdf", "mt").exists()
     assert pull_plot({"free": {"pull": None, "constraint": None}}, tmp_path / "none.pdf", "mt") is None
+
+
+def test_the_fit_plot_of_a_card_bin_shows_its_own_bins(tmp_path, monkeypatch):
+    """FitDiagnostics saves every bin in the binning of the largest one: a 2-bin hi channel of a card whose lo channel
+    has 4 bins comes with 2 empty bins appended (the data with the Poisson error of 0), which the edges cut off."""
+    padded = {"ZTT": [[5.0, 3.0, 0.0, 0.0], [1.0, 1.0, 0.0, 0.0]], "total_background": [[5.0, 3.0, 0.0, 0.0], [1.0, 1.0, 0.0, 0.0]],
+              "data": [[5.0, 3.0, 0.0, 0.0], [2.2, 1.6, 0.0, 0.0], [2.8, 2.3, 1.84, 1.84]]}
+    edges = np.array([0.6, 0.8, 1.0])
+    trimmed, kept = card_binning(padded, edges)
+    assert trimmed["data"] == [[5.0, 3.0], [2.2, 1.6], [2.8, 2.3]] and trimmed["ZTT"] == [[5.0, 3.0], [1.0, 1.0]] and kept.tolist() == edges.tolist()
+    assert card_binning(padded, None)[1] is None and card_binning(padded, np.linspace(0, 1, 5))[0] is padded
+    full = {**padded, "ZTT": [[5.0, 3.0, 0.5, 0.0], [1.0, 1.0, 0.1, 0.0]]}  # a non-empty bin beyond the edges: not padding
+    assert card_binning(full, edges) == (full, None)
+    figures = []
+    monkeypatch.setattr(fit_plots.plt, "close", figures.append)
+    fit_stack(padded, build(), "htt_mt_1hi_2018", tmp_path / "bin", False, edges)
+    single = {process: [part[:1] + [0.0] * 3 for part in entry] for process, entry in padded.items()}  # one bin of four
+    fit_stack(single, build(), "htt_mt_1hi_2018", tmp_path / "one", True, np.array([0.318, 1.0]))
+    assert [(f.axes[1].get_xlim(), f.axes[1].get_xlabel()) for f in figures] == [((0.6, 1.0), "NN output"), ((0.318, 1.0), "NN output")]
 
 
 def test_check_summaries_keep_the_cards_of_earlier_runs(tmp_path):

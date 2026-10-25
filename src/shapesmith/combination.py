@@ -27,7 +27,7 @@ from shapesmith.background_fit import OUTPUT as FIT_OUTPUT
 from shapesmith.background_fit import fit_commands, plot_fit, summarise_bins, summary_lines
 from shapesmith.cards import card_nuisances
 from shapesmith.config import RunConfig
-from shapesmith.datacards import bin_name
+from shapesmith.datacards import bin_categories
 from shapesmith.limits import collect, limit_commands, write_summary, xs_frozen
 from shapesmith.model import Analysis
 
@@ -119,11 +119,9 @@ def write_nuisance_report(runs: list[Run], output: Path) -> Path:
 
 
 def bin_map(runs: list[Run]) -> dict[str, tuple[str, str]]:
-    """Combined bin -> (channel label `<channel> <era>`, category) of every run."""
-    return {
-        bin_name(run.analysis, channel, index): (f"{channel} {run.era}", category.name)
-        for run in runs for channel in run.analysis.channels for index, category in enumerate(run.analysis.channel(channel).categories)
-    }
+    """Combined bin -> (channel label `<channel> <era>`, category) of every run, the parts of a blinded category as
+    `<category> lo` and `<category> hi` (datacards.bin_categories)."""
+    return {card_bin: (f"{channel} {run.era}", category) for run in runs for card_bin, (channel, category) in bin_categories(run.analysis).items()}
 
 
 def combined_blinding(runs: list[Run], output: Path) -> masking.Blinding:
@@ -155,7 +153,7 @@ def run_combination(runs: list[Run], output: Path, background_only: bool = False
         cmssw.run(commands, combine, output)
     if background_only:
         values = json.loads((output / f"{FIT_OUTPUT}.json").read_text())
-        result = {"combination": summarise_bins(values, bin_map(runs))}
+        result = {"combination": summarise_bins(values, bin_map(runs), [] if unblind else blinding.masked)}
         result["combination"].update({"masked": [] if unblind else list(blinding.masked), **({"unblinded": True} if unblind else {})})
         (output / "background_fit.json").write_text(json.dumps(result, indent=2))
         (output / "background_fit.md").write_text("\n".join(summary_lines("combination", result["combination"])))

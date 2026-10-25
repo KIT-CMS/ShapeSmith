@@ -101,7 +101,7 @@ def build(config=None) -> Analysis:
     method = (config.switches.get("method", "data_blind") if config is not None else "data_blind")
     return Analysis(
         name="nn_mini",
-        era="2018",
+        era=config.era if config is not None else "2018",
         lumi_pb=100.0,
         signal="HH",
         channels={"mt": channel_mt(method)},
