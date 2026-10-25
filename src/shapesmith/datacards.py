@@ -254,6 +254,13 @@ def shape_lines(bins: list[Bin]) -> list[str]:
     return lines
 
 
+def observation(data: Histogram) -> str:
+    """The sum of data_obs as the shortest decimal that reads back as the same number: an event count as before
+    (118.0), the Asimov data of a hi channel exactly. combine rejects a card whose observation differs from the sum
+    of data_obs by more than 0.5 % (one decimal wrote 4.2 for 4.243)."""
+    return repr(float(data.sum()))
+
+
 def card_text(analysis: Analysis, bins: list[Bin], systematics: bool) -> str:
     backgrounds = list(dict.fromkeys(p for b in bins for p in analysis.channel(b.channel).backgrounds()))
     index = {name: i for i, name in enumerate((analysis.signal, *backgrounds))}
@@ -262,7 +269,7 @@ def card_text(analysis: Analysis, bins: list[Bin], systematics: bool) -> str:
     lines += [f"shapes * {b.name} common/htt_input_{analysis.era}.root {b.name}/$PROCESS {b.name}/$PROCESS_$SYSTEMATIC" for b in bins]
     lines.append("-" * 60)
     lines.append("bin " + " ".join(b.name for b in bins))
-    lines.append("observation " + " ".join(f"{b.data.sum():.1f}" for b in bins))
+    lines.append("observation " + " ".join(observation(b.data) for b in bins))
     lines.append("-" * 60)
     lines.append("bin " + " ".join(name for name, _ in columns))
     lines.append("process " + " ".join(process for _, process in columns))

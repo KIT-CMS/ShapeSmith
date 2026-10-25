@@ -118,7 +118,7 @@ def test_the_hi_channel_has_asimov_data_and_the_lo_channel_the_data(chain):
     assert not np.allclose(shapes["htt_mt_1hi_2018/data_obs"].values, data.values[split:])  # the data stay hidden
     np.testing.assert_allclose(np.concatenate([shapes[f"htt_mt_1{p}_2018/data_obs"].edges[:-1] for p in ("lo", "hi")] + [[1.0]]), edges)
     observation = next(line for line in card.read_text().splitlines() if line.startswith("observation")).split()[1:]
-    assert observation[1] == f"{hi.sum():.1f}" and observation[0] == f"{data.values[:split].sum():.1f}"
+    assert float(observation[1]) == shapes["htt_mt_1hi_2018/data_obs"].values.sum() and observation[0] == f"{data.values[:split].sum():.1f}"
     for p in ("HH", "ZTT", "TT", "jetFakes"):  # the parts of every template and variation are its rebinned whole
         whole = hset[HistKey("mt", "HH", p, "nominal", NOMINAL_VARIATION, "NN_score")].rebin(edges).values
         np.testing.assert_allclose(np.concatenate([shapes[f"htt_mt_1lo_2018/{p}"].values, shapes[f"htt_mt_1hi_2018/{p}"].values]), whole)

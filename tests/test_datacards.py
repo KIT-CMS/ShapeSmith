@@ -5,7 +5,7 @@ import numpy as np
 import pytest
 import uproot
 
-from shapesmith.datacards import bin_name, collect_bin, rebin_edges, run_datacards, symmetric_shift, symmetrisation_reason, symmetrise, write_datacard
+from shapesmith.datacards import bin_name, collect_bin, observation, rebin_edges, run_datacards, symmetric_shift, symmetrisation_reason, symmetrise, write_datacard
 from shapesmith.histogram import HistKey, Histogram, HistogramSet, part_of
 from shapesmith.model import AnalysisError, LnN
 from shapesmith.validate import validate
@@ -64,6 +64,18 @@ def test_write_datacard(tmp_path):
         assert f["htt_mt_1_2018/data_obs"].axis().edges().tolist() == [0.0, 0.25, 0.5, 1.0]
         assert f["htt_mt_1_2018/ZTT_CMS_puUp"].values().tolist() == [11.0, 5.5, 2.64]
         assert "htt_mt_2_2018/HH" in f
+
+
+@pytest.mark.parametrize("total", [4.243, 0.0123456789, 1.0 / 3.0])
+def test_the_observation_reads_back_as_the_sum_of_data_obs(total):
+    """combine rejects a card whose observation differs from data_obs by more than 0.5 % (htt_mt_1hi_2016preVFP: 4.2 for
+    the Asimov sum 4.243 with one decimal)."""
+    data = Histogram([0.0, 0.5, 1.0], [total / 4, 3 * total / 4], [total / 4, 3 * total / 4])
+    assert float(observation(data)) == data.sum()
+
+
+def test_an_event_count_keeps_its_one_decimal():
+    assert observation(Histogram([0.0, 1.0], [118.0], [118.0])) == "118.0"  # the cards of real data as before (golden card)
 
 
 def test_write_datacard_without_systematics(tmp_path):
@@ -160,6 +172,24 @@ def test_a_pair_with_an_empty_side_after_the_symmetrisation_is_left_out(tmp_path
     assert changes["empty_pairs"] == ["htt_mt_1_2018/jetFakes: CMS_ff_shift", "htt_mt_2_2018/jetFakes: CMS_ff_shift"] and len(changes["symmetrised"]) == 2
     kept = write_datacard(_one_bin_hset(1.0, 1.5), analysis, ["mt"], tmp_path / "kept")  # Down at 0.5 times the nominal
     assert "CMS_ff_shift" in kept.read_text() and "empty_pairs" not in json.loads((kept.parent / "template_changes.json").read_text())
+
+
+def test_a_shifted_template_with_a_negative_sum_is_left_out_of_its_bin_and_process(tmp_path, caplog):
+    """Simulated events with negative weights (smoke_run2 htt_et_4_2018: ZL CMS_btag_fixedWP_bc_uncorrelated_2018Up
+    sums to -0.0128 at a nominal of 0.097, text2workspace stops with "Bogus norm"), not symmetrised: the pair is left out
+    of that bin and process only, logged and listed."""
+    hset = _one_bin_hset(0.9, 1.1, name="CMS_btag")
+    hset[HistKey("mt", "sig", "jetFakes", "nominal", "CMS_btagUp", "score")] = Histogram((0.0, 1.0), [-0.0128], [1.0])
+    with caplog.at_level("WARNING", logger="shapesmith.datacards"):
+        card = write_datacard(hset, build(), ["mt"], tmp_path / "mt")
+    assert "CMS_btag shape - - - 1" in card.read_text()  # columns ZTT, jetFakes of htt_mt_1_2018, then of htt_mt_2_2018
+    changes = json.loads((card.parent / "template_changes.json").read_text())
+    assert changes["empty_pairs"] == ["htt_mt_1_2018/jetFakes: CMS_btag"] and changes["symmetrised"] == []
+    assert "1 shape pairs with a side whose sum is not positive left out" in caplog.text and "htt_mt_1_2018/jetFakes: CMS_btag" in caplog.text
+    with uproot.open(card.parent / "common" / "htt_input_2018.root") as f:
+        names = f.keys(recursive=True, cycle=False)
+        assert "htt_mt_1_2018/jetFakes_CMS_btagUp" not in names and "htt_mt_1_2018/jetFakes_CMS_btagDown" not in names
+        assert f["htt_mt_2_2018/jetFakes_CMS_btagUp"].values().tolist() == pytest.approx([11.0])
 
 
 @pytest.mark.parametrize(("down", "up", "reason", "after"), [
