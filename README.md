@@ -50,7 +50,8 @@ shapesmith inspect   output/shapes.root [--unchanged]   # what a histogram file 
 record what produced their outputs in `<directory>/versions/<analysis name>.json` (versions,
 git hashes of core, analysis and sample database, the full run configuration and its hash).
 
-`datacards` writes one card per final state, `<output_dir>/datacards/<final state>/combined.txt`;
+`datacards` writes one card per final state, `<output_dir>/datacards/<final state>/combined.txt` (with `--variant V`
+`<output_dir>/datacards/V/<final state>/`, see "Limits and statistical checks");
 `fit` runs combine on them in CMSSW (`combine.cmssw_dir`) and summarises the results in
 `<output_dir>/datacards/limits.{json,md,pdf}`. `fit --background-only` instead fits the data with
 r frozen to 0 (`combine -M FitDiagnostics --setParameters r=0 --freezeParameters r --skipSBFit
@@ -61,9 +62,12 @@ the selected channels (`all`, or the only final state), and writes
 (`--skip-combine`: from the stored values): per final state the fit status, per nuisance the prefit [mean, width] of its Gaussian constraint, postfit
 [value, error], pull and constraint, and per channel, category and process the data and the
 prefit and postfit [value, error] yields (with the totals `total_background`, `total_signal`,
-`total`). It fits the observed data of every bin of the card that blinding.json does not mask (see below), and
+`total`; the parts of a blinded category as `<category> lo` and `<category> hi`, `datacards.bin_categories`). It
+fits the observed data of every bin of the card that blinding.json does not mask (see below); a masked bin, whose
+data_obs is the Asimov prediction, is marked (`"masked": true`; "masked" in place of its data in the markdown). It
 plots the pulls (`<card dir>/plots/pulls.pdf`) and the prefit and postfit stack of every card bin
-(`plots/{prefit,postfit}/<bin>.pdf/.png`, no data in a masked bin).
+(`plots/{prefit,postfit}/<bin>.pdf/.png`, in the bins of its data histogram in the card, no data in a masked bin;
+FitDiagnostics pads the shapes of a bin to the binning of the largest one, and the plot cuts the padding off).
 
 `combine` (the combination of eras, one run YAML each, or one run YAML loaded once per `--era`) runs `combineCards.py` over the card of one final state of
 every run (the bin names stay, they carry the era; two runs of one era are refused) into `DIR/combined.txt`, optionally
@@ -104,15 +108,15 @@ cards (`<datacards>/<check>.json/.md`, of a combination in `DIR`); a summary kee
   writes `<output_dir>/datacards/stat_only/<final state>/`, so that "stat only", S0 and other card variants sit side by
   side; `fit`, `combine` (the cards of the variant of every era), the checks and `limit-overview` take the same option.
   Without it the layout is `<output_dir>/datacards/<final state>/` as before.
-- **Blinding** (`<card dir>/blinding.json`, written by `datacards` next to `combined.txt`; a missing file masks
-  nothing): `{"edge_rule": ..., "masked": ["htt_<ch>_<k>hi_<era>", ...], "categories": {<hi bin>: {"lo", "edge",
-  "s_over_b_first_hi_bin"}}, "asimov_data": true}`. `masked` lists the card bins whose data_obs is the Asimov background
-  prediction. Every fit to the real data (`fit --background-only`, `combine --background-only`, `gof`, `impacts`, the fit
-  of `limit-aposteriori`, the toys of `injection --a-posteriori`) builds the workspace with `--channel-masks` and adds
-  `--setParameters mask_<bin>=1` for each of them; a masked bin of the card that is no bin of it is an error. Fits to the
-  prefit Asimov dataset (the limits of `fit` and `combine`, `impacts --asimov`, `injection`, `limit-hybridnew`) need no
-  masks. `combine` merges the `masked` lists of the cards of every era into `DIR/blinding.json` (the bin names carry the
-  era). `--unblind` drops the masks (off by default, logged loudly and marked in the summaries).
+- **Blinding** (`<card dir>/blinding.json`, written by `datacards` next to `combined.txt`, also under `--variant`; its
+  contract is in "Score categories"; a missing file masks nothing): `masked` lists the card bins whose data_obs is the
+  Asimov background prediction. Every fit to the real data (`fit --background-only`, `combine --background-only`, `gof`,
+  `impacts`, the fit of `limit-aposteriori`, the toys of `injection --a-posteriori`) builds the workspace with
+  `--channel-masks` and adds `--setParameters mask_<bin>=1` for each of them; a masked bin that is no bin of the card is
+  an error. Fits to the prefit Asimov dataset (the limits of `fit` and `combine`, `impacts --asimov`, `injection`,
+  `limit-hybridnew`) need no masks. `combine` merges the `masked` lists of the cards of every era into
+  `DIR/blinding.json` (the bin names carry the era). `--unblind` drops the masks (off by default, logged loudly and
+  marked in the summaries).
 - **Units** (spec N23): the limits are on the signal strength mu; with `Analysis.signal_cross_section`
   (`CrossSection(name, value_fb, theory_nuisances)`, e.g. `ggF HH`, 30.40 fb, `QCDscale_HH` and `PDF_alphas_HH`) also on
   sigma(<name>) in fb = r x value_fb, from a second AsymptoticLimits (`-n .LimitXS`) with the theory nuisances of the
@@ -271,9 +275,14 @@ and `blinding.json`, the contract with every fit and limit:
 
 `masked` lists exactly the card bins with Asimov `data_obs`: a fit or limit on real data sets `mask_<bin>=1` for each,
 a prefit Asimov fit (`-t -1`) needs none. A card without a category with `blinding` has no `blinding.json` (a stale
-one is removed): nothing is masked; one whose categories have no bin above the threshold has `"masked": []`. `datacards.bin_categories(analysis)` maps every possible card bin, the lo/hi parts
-included, to its channel and category. `plot` and the yields of `publish` show a score category in the bins of its
-card, with the prediction in place of the data in the blinded bins (shaded in the plot).
+one is removed): nothing is masked; one whose categories have no bin above the threshold has `"masked": []`. The fits
+read it as described in "Limits and statistical checks" (`masking.py`). `datacards.bin_categories(analysis)` maps
+every possible card bin, the lo/hi parts included, to its channel and category (the summaries of the background-only
+fits of a run and of a combination). `plot` and the yields of `publish` show a score category in the bins of its card,
+with the prediction in place of the data in the blinded bins (shaded in the plot). Not blinded: `sync` writes the fine
+bins with the full data, and `shapes.root` holds the data of every bin, its index `shapes.json` the sum of every
+histogram (none of them is read by combine). `plot --control`
+of a score variable over every event (e.g. the NN score in the inclusive category) shows the data of every score.
 
 ## Skims
 
@@ -468,3 +477,5 @@ number (`era: 2018`, `-s era=2017`) is read as text.
   `if __name__ == "__main__":` guard; `--workers 1` runs everything inline for debugging.
 - `tests/golden/` holds the mini-dataset outputs of core `aa5daa5`; the rebuilt core reproduces
   them bitwise (`tests/test_golden.py`).
+- `shapesmith.readme_check.problems(text, app)` lists the `shapesmith` commands and options a text names that the CLI
+  lacks (`tests/test_readme.py` for this README; an analysis checks its own README and run YAML comments with it).
