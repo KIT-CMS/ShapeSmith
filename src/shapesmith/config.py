@@ -46,10 +46,55 @@ class NtupleConfig(BaseModel):
         return data
 
 
+# the options `combine.minimizer` may set: minimizer and robust-fit settings only, never parameters, data or toys
+MINIMIZER_OPTION_PREFIXES = ("--cmin", "--X-rt", "--robust", "--setRobustFit", "--stepSize", "--setCrossingTolerance")
+STATS_DEFAULTS = {"r_range": (-40.0, 40.0), "minimizer": "", "precise": True, "timeout": 21600.0, "parallel": 8, "xs_theory_nuisances": None}
+
+
 class CombineConfig(BaseModel):
+    """CMSSW with combine and CombineHarvester, and the options of the fits and limits (limits.py, background_fit.py,
+    checks.py); STATS_DEFAULTS are the defaults of the latter."""
+
     model_config = ConfigDict(extra="forbid")
     cmssw_dir: str
     scram_arch: str = "el9_amd64_gcc12"
+    r_range: tuple[float, float] = STATS_DEFAULTS["r_range"]  # --setParameterRanges r=low,high of every fit and limit
+    # options of every combine call (fits, limits, toys, impacts), replacing the built-in ones of the same name, e.g.
+    # "--cminDefaultMinimizerStrategy 1 --X-rtd MINIMIZER_analytic"; only MINIMIZER_OPTION_PREFIXES
+    minimizer: str = STATS_DEFAULTS["minimizer"]
+    # AsymptoticLimits converged (combine_options.PRECISE_LIMIT): combine's default accuracy puts the median on a 1/32
+    # grid and hides effects below ~0.3 % (R1); false: combine's defaults
+    precise: bool = STATS_DEFAULTS["precise"]
+    timeout: float | None = STATS_DEFAULTS["timeout"]  # seconds per CMSSW step (a hung fit or xrootd read is killed); null: none
+    parallel: int = Field(STATS_DEFAULTS["parallel"], ge=1)  # combine processes at a time (toy jobs, impact fits)
+    # the theory nuisances of the signal cross section, frozen at 0 in the cross-section limit; null: those of the
+    # analysis (Analysis.signal_cross_section)
+    xs_theory_nuisances: tuple[str, ...] | None = STATS_DEFAULTS["xs_theory_nuisances"]
+
+    @field_validator("r_range")
+    @classmethod
+    def _ordered(cls, value: tuple[float, float]) -> tuple[float, float]:
+        if value[0] >= value[1]:
+            raise ValueError(f"r_range must be (low, high) with low < high, got {value}")
+        return value
+
+    @field_validator("minimizer")
+    @classmethod
+    def _minimizer_options_only(cls, value: str) -> str:
+        flags = [token.partition("=")[0] for token in value.split() if token.startswith("--")]
+        forbidden = [flag for flag in flags if not flag.startswith(MINIMIZER_OPTION_PREFIXES)]
+        if forbidden or any(token.startswith("-") and not token.startswith("--") and token[1:2].isalpha() for token in value.split()):
+            raise ValueError(f"combine.minimizer takes only minimizer options ({', '.join(p + '...' for p in MINIMIZER_OPTION_PREFIXES)}), got {', '.join(forbidden) or value}")
+        return value
+
+    @model_serializer(mode="wrap")
+    def _without_default_stats(self, handler: SerializerFunctionWrapHandler) -> dict:
+        # with the default fit options the configuration dumps as before, so its resolved form and hash (versions/) stay
+        data = handler(self)
+        for name, default in STATS_DEFAULTS.items():
+            if getattr(self, name) == default:
+                data.pop(name, None)
+        return data
 
 
 VARIANT_PATTERN = r"[a-z0-9_]+"

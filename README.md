@@ -29,11 +29,17 @@ shapesmith measure   -c run.yaml [--suggest-binning] [--merge] [--refit]   # Ana
 shapesmith plot      -c run.yaml [--control] [--region nominal] [--blind] [--log]
 shapesmith publish   -c run.yaml --to DIR --variant KEY [--label TEXT] [--description TEXT] [--channels et,mt]   # plots + yields -> static web gallery DIR/index.html
 shapesmith sync      -c run.yaml              # combine-style shape files per channel
-shapesmith datacards -c run.yaml [--min-background 1.0] [--no-systematics]
-shapesmith fit       -c run.yaml [--final-states mt,all] [--skip-combine]   # limits, significance, best fit
-shapesmith fit       -c run.yaml --background-only [--final-states all]   # background-only fit to the data, pulls, yields
-shapesmith combine   -c run_2017.yaml -c run_2018.yaml ... -o DIR [--final-state all] [--background-only] [--validate]   # cards of several eras combined
+shapesmith datacards -c run.yaml [--min-background 1.0] [--no-systematics] [--variant stat_only]
+shapesmith fit       -c run.yaml [--final-states mt,all] [--skip-combine] [--variant V]   # limits (mu, sigma), significance, best fit
+shapesmith fit       -c run.yaml --background-only [--final-states all] [--variant V]   # background-only fit to the data, pulls, yields, plots
+shapesmith combine   -c run_2017.yaml -c run_2018.yaml ... -o DIR [--final-state all] [--background-only] [--validate] [--variant V]   # cards of several eras combined
 shapesmith combine   -c run.yaml --era 2017 --era 2018 ... -o DIR   # the same with one run YAML loaded per era ({era} filled)
+shapesmith gof       -c run.yaml [--final-states mt,all | --combination DIR] [--toys 500] [--variant V]   # saturated GoF against toys
+shapesmith impacts   -c run.yaml [--final-states all | --combination DIR] [--asimov] [--variant V]   # combineTool.py -M Impacts, plotImpacts.py
+shapesmith limit-aposteriori -c run.yaml [--final-states ... | --combination DIR] [--variant V]   # masked background-only fit, then the Asimov limit
+shapesmith injection -c run.yaml [... | --combination DIR] [--mu 0,1,limit] [--toys 200] [--a-posteriori]   # signal injection and bias
+shapesmith limit-hybridnew -c run.yaml [... | --combination DIR] [--toys 500] [--rel-acc 0.02] [--abs-acc 0.05] [--a-posteriori]   # toy-based expected limit
+shapesmith limit-overview -c run.yaml --era 2017 --era 2018 ... [--combination DIR] [--aposteriori] [--variant V] -o OUT   # Brazil plot per channel, era, combined
 shapesmith ml-export -c run.yaml              # training data: <ml_dir>/<channel>/events.feather + classes.json
 shapesmith ml-merge  -c run.yaml --era 2017 --era 2018 ... -o DIR   # the exports of several eras in one per channel
 shapesmith inspect   output/shapes.root [--unchanged]   # what a histogram file contains; variations equal to their nominal
@@ -55,7 +61,9 @@ the selected channels (`all`, or the only final state), and writes
 (`--skip-combine`: from the stored values): per final state the fit status, per nuisance the prefit [mean, width] of its Gaussian constraint, postfit
 [value, error], pull and constraint, and per channel, category and process the data and the
 prefit and postfit [value, error] yields (with the totals `total_background`, `total_signal`,
-`total`). It fits the observed data of every bin of the card.
+`total`). It fits the observed data of every bin of the card that blinding.json does not mask (see below), and
+plots the pulls (`<card dir>/plots/pulls.pdf`) and the prefit and postfit stack of every card bin
+(`plots/{prefit,postfit}/<bin>.pdf/.png`, no data in a masked bin).
 
 `combine` (the combination of eras, one run YAML each, or one run YAML loaded once per `--era`) runs `combineCards.py` over the card of one final state of
 every run (the bin names stay, they carry the era; two runs of one era are refused) into `DIR/combined.txt`, optionally
@@ -84,6 +92,77 @@ either control plots or one measurement.
 link, the most recent by default; channel, region, category, variable and columns stay where the
 other era has them). Each publish rewrites the site's era list (`site.json`, `site.js`) from its
 subdirectories; each era stays a complete gallery of its own. A gallery without a site stays as it is.
+
+## Limits and statistical checks
+
+The commands of the limits and fits (spec of the NN phase, 7.2 and 8) work on the datacards of a final state,
+`<output_dir>/datacards[/<variant>]/<final state>/combined.txt`, or with `--combination DIR` on a combination of
+`shapesmith combine`. Each check runs in its own subdirectory of the card directory and writes its summary next to the
+cards (`<datacards>/<check>.json/.md`, of a combination in `DIR`); a summary keeps the cards of earlier runs.
+
+- **Variants** (`--variant KEY`, `[a-z0-9_]+`, not a channel or `all`): `datacards --variant stat_only --no-systematics`
+  writes `<output_dir>/datacards/stat_only/<final state>/`, so that "stat only", S0 and other card variants sit side by
+  side; `fit`, `combine` (the cards of the variant of every era), the checks and `limit-overview` take the same option.
+  Without it the layout is `<output_dir>/datacards/<final state>/` as before.
+- **Blinding** (`<card dir>/blinding.json`, written by `datacards` next to `combined.txt`; a missing file masks
+  nothing): `{"edge_rule": ..., "masked": ["htt_<ch>_<k>hi_<era>", ...], "categories": {<hi bin>: {"lo", "edge",
+  "s_over_b_first_hi_bin"}}, "asimov_data": true}`. `masked` lists the card bins whose data_obs is the Asimov background
+  prediction. Every fit to the real data (`fit --background-only`, `combine --background-only`, `gof`, `impacts`, the fit
+  of `limit-aposteriori`, the toys of `injection --a-posteriori`) builds the workspace with `--channel-masks` and adds
+  `--setParameters mask_<bin>=1` for each of them; a masked bin of the card that is no bin of it is an error. Fits to the
+  prefit Asimov dataset (the limits of `fit` and `combine`, `impacts --asimov`, `injection`, `limit-hybridnew`) need no
+  masks. `combine` merges the `masked` lists of the cards of every era into `DIR/blinding.json` (the bin names carry the
+  era). `--unblind` drops the masks (off by default, logged loudly and marked in the summaries).
+- **Units** (spec N23): the limits are on the signal strength mu; with `Analysis.signal_cross_section`
+  (`CrossSection(name, value_fb, theory_nuisances)`, e.g. `ggF HH`, 30.40 fb, `QCDscale_HH` and `PDF_alphas_HH`) also on
+  sigma(<name>) in fb = r x value_fb, from a second AsymptoticLimits (`-n .LimitXS`) with the theory nuisances of the
+  cross section frozen at 0 (the acceptance, shape and BR uncertainties of the signal stay; a card without them, e.g.
+  only statistics, needs no second call). `combine.xs_theory_nuisances` replaces the analysis's list. The summaries name
+  the quantity: `xs_limit: {quantity: "sigma(ggF HH)", unit: fb, fb_per_r, frozen, limit}`; `limits.md` gets a column
+  and `limits_xs.pdf`.
+- `gof`: the saturated GoF of the background-only model (r frozen at 0) to the data against frequentist toys (jobs of
+  25 toys with the seeds 1000, 1001, ..., `combine.parallel` at a time), per final state (channel x era) or of the
+  combination: statistic, p-value (fraction of toys at least as large), `gof/gof.pdf`.
+- `impacts`: `combineTool.py -M Impacts` (initial fit, one fit per nuisance with `--parallel combine.parallel`,
+  `impacts.json`) and `plotImpacts.py` (`impacts/impacts.pdf` with the pulls; the POI value hidden with `--blind`) on
+  the data, or with `--asimov` on the Asimov dataset with r = 1 (`impacts_asimov/`); `impacts.md` ranks the nuisances.
+- `limit-aposteriori`: the background-only fit (MultiDimFit, r = 0) to the data with the blinded channels masked saves
+  its snapshot; `combine -M AsymptoticLimits -t -1 --toysFrequentist --bypassFrequentistFit --snapshotName MultiDimFit`
+  on it, with the masks set to 0, gives the expected limit of the postfit nuisances in every bin, on mu and the cross
+  section, compared with the prefit one of `limits.json` (`aposteriori.json/.md/.pdf`).
+- `injection`: toys with r = mu for every `--mu` (`limit`: the median expected limit of the card, a-posteriori if
+  there, else prefit), each fitted with FitDiagnostics; per mu the mean and median fitted r, the pulls (r - mu) /
+  sigma_r with the error towards mu (mean, its error, width; biased when the mean is more than 2 errors off 0) and the
+  straight line of the mean r against mu (`injection/injection.pdf`). Toys of the prefit model, or with
+  `--a-posteriori` frequentist toys around the snapshot of the masked background-only fit (`injection_aposteriori/`).
+- `limit-hybridnew`: `combine -M HybridNew --LHCmode LHC-limits -t -1` on the Asimov dataset (prefit, or with
+  `--a-posteriori` of the snapshot): the toy-based median expected limit against the asymptotic median, for bins down
+  to one background event. `--toys` is `-T`, `--rel-acc`/`--abs-acc` its accuracy; r from 0 to the upper end of
+  `combine.r_range`.
+- `limit-overview`: the `limits.json` (or `aposteriori.json`) of every era (`-c`/`--era`) and of the combinations in
+  one table and Brazil plot, rows `<final state> <era>` and `combined`: `OUT/limit_overview.{json,md,pdf}` and
+  `limit_overview_xs.pdf`.
+
+The options of the combine calls come from `combine` of the run YAML (all optional besides `cmssw_dir`):
+
+```yaml
+combine:
+  cmssw_dir: /work/USER/CMSSW_14_1_9
+  r_range: [-40, 40]         # --setParameterRanges r=low,high of every fit and limit (HybridNew: 0 to high)
+  precise: true              # AsymptoticLimits with --rAbsAcc 0.00001 --rRelAcc 0.00001 --cminDefaultMinimizerTolerance 0.0001
+  minimizer: ""              # e.g. "--cminDefaultMinimizerStrategy 1 --X-rtd MINIMIZER_analytic": replaces built-in options of the same name
+  timeout: 21600             # seconds per CMSSW step: a hung fit or xrootd read is killed (null: none)
+  parallel: 8                # combine processes at a time (toy jobs, impact fits)
+  xs_theory_nuisances: null  # the frozen nuisances of the cross-section limit (null: Analysis.signal_cross_section)
+```
+
+`precise` is the default since the NN phase: combine's default accuracy puts the median of AsymptoticLimits on a 1/32
+grid and hides effects below about 0.3 % (thesis card 10.90625 at the defaults, 10.9048 converged), too coarse for
+paired comparisons of models; `-s combine.precise=false` gives the earlier limits. It applies to AsymptoticLimits only
+(HybridNew reads `--rAbsAcc`/`--rRelAcc` as the accuracy of its toy search). `minimizer` takes minimizer and
+robust-fit options only (`--cmin...`, `--X-rt...`, `--robust...`, `--setRobustFit...`, `--stepSize`,
+`--setCrossingTolerance`), never parameters, data or toys. Fields left at their defaults stay out of the resolved
+configuration, so the hash of an existing run YAML in `versions/` does not change.
 
 ## The analysis model
 
@@ -346,7 +425,7 @@ output_dir: output/TAG
 ml_dir: /ceph/USER/shapesmith_ml/TAG
 workers: 16
 log_level: INFO                           # DEBUG | INFO | WARNING | ERROR
-combine: {cmssw_dir: /work/USER/CMSSW_14_1_9, scram_arch: el9_amd64_gcc12}
+combine: {cmssw_dir: /work/USER/CMSSW_14_1_9, scram_arch: el9_amd64_gcc12}   # + fit options, see "Limits and statistical checks"
 web: {dir: /web/USER/public_html/TAG, variant: emb_ff, label: "embedding + FF"}   # shapesmith publish
 ```
 

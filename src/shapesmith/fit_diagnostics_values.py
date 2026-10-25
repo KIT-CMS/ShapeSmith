@@ -8,7 +8,9 @@ It writes the status and covariance quality of the background-only fit (fit_b); 
 parameter after the fit (fit_b) and, for the Gaussian-constrained ones, [mean, width] of their constraint term
 `<name>_Pdf` in the workspace (combine 10 stores no prefit widths in nuisances_prefit); [value, error] of every
 normalisation `<bin>/<process>` and of the totals of each bin before (norm_prefit) and after the fit (norm_fit_b); and
-the data events per bin (shapes_prefit/<bin>/data, a density, times the bin widths).
+the data events per bin (shapes_prefit/<bin>/data, a density, times the bin widths); and under "shapes" the templates
+per bin of the card before (prefit) and after the fit (fit_b): per process and total [yields, errors] per bin (the
+densities times the bin widths) and the data [yields, lower errors, upper errors], for the prefit and postfit plots.
 
 An undefined postfit error is written as null, never as a number: a parameter whose error is NaN or 0 (robustHesse
 drops a parameter of a negative eigenvalue from the covariance and leaves it the error 0), and a normalisation whose
@@ -68,6 +70,36 @@ def data(directory):
     return result
 
 
+def histogram_yields(histogram):
+    """[yields, errors] per bin of a density histogram (the contents times the bin widths)."""
+    widths = [histogram.GetBinWidth(i) for i in range(1, histogram.GetNbinsX() + 1)]
+    return [[histogram.GetBinContent(i + 1) * w for i, w in enumerate(widths)], [histogram.GetBinError(i + 1) * w for i, w in enumerate(widths)]]
+
+
+def graph_yields(graph):
+    """[yields, lower errors, upper errors] per point of a density graph (times the widths of the points)."""
+    widths = [graph.GetErrorXlow(i) + graph.GetErrorXhigh(i) for i in range(graph.GetN())]
+    return [[graph.GetPointY(i) * w for i, w in enumerate(widths)], [graph.GetErrorYlow(i) * w for i, w in enumerate(widths)], [graph.GetErrorYhigh(i) * w for i, w in enumerate(widths)]]
+
+
+def templates(directory):
+    """Per bin of the card: [yields, errors] of every process and total, and the data (graph_yields)."""
+    result = {}
+    for key in directory.GetListOfKeys():
+        folder = key.ReadObj()
+        if not folder.InheritsFrom("TDirectory"):
+            continue
+        entries = {}
+        for item in folder.GetListOfKeys():
+            obj = item.ReadObj()
+            if obj.InheritsFrom("TH1") and not obj.InheritsFrom("TH2"):
+                entries[item.GetName()] = histogram_yields(obj)
+            elif obj.InheritsFrom("TGraphAsymmErrors"):
+                entries[item.GetName()] = graph_yields(obj)
+        result[key.GetName()] = entries
+    return result
+
+
 def main(workspace_path, path, output):
     import ROOT
 
@@ -83,6 +115,7 @@ def main(workspace_path, path, output):
         "norm_prefit": pairs(handle.Get("norm_prefit")),
         "norm_fit_b": normalisations(handle.Get("norm_fit_b"), handle.Get("shapes_fit_b")),
         "data": data(handle.Get("shapes_prefit")),
+        "shapes": {"prefit": templates(handle.Get("shapes_prefit")), "fit_b": templates(handle.Get("shapes_fit_b"))},
     }
     values["undefined"] = {
         "postfit": sorted(name for name, (_, error) in values["postfit"].items() if error is None),

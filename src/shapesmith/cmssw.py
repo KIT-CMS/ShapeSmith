@@ -1,9 +1,11 @@
 """Run commands inside a CMSSW environment (combine, CombineHarvester) in a bash subshell.
 
 The subshell starts from a clean environment: the Python environment ShapeSmith runs in (e.g. an LCG view) would
-otherwise shadow CMSSW's libraries and Python packages. With a timeout, the whole process group of the subshell is
-killed when it expires (a fit can iterate without end). Its output is logged line by line at DEBUG, and its last
-lines at ERROR when it fails.
+otherwise shadow CMSSW's libraries and Python packages. With a timeout (by default `combine.timeout` of the run
+configuration), the whole process group of the subshell is killed when it expires (a fit can iterate without end, an
+xrootd read can hang; the walltime of the ETP batch is not enforced). Its output is logged line by line at DEBUG, and
+its last lines at ERROR when it fails. run_parallel runs independent command lists (toy jobs) `combine.parallel` at a
+time.
 """
 from __future__ import annotations
 
@@ -13,6 +15,7 @@ import signal
 import subprocess
 import threading
 from collections import deque
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Sequence
 
@@ -62,9 +65,10 @@ def failure(error: subprocess.CalledProcessError | subprocess.TimeoutExpired) ->
 
 
 def run(commands: Sequence[str], combine: CombineConfig | None, cwd: Path, timeout: float | None = None) -> None:
-    """Raise CalledProcessError on a failing command, TimeoutExpired after `timeout` seconds."""
+    """Raise CalledProcessError on a failing command, TimeoutExpired after `timeout` seconds (None: `combine.timeout`)."""
     if combine is None:
         raise ValueError("the run configuration needs `combine` (cmssw_dir) to run CMSSW commands")
+    timeout = combine.timeout if timeout is None else timeout
     logger.info(f"running {len(commands)} CMSSW commands in {cwd}")
     text = script(combine, cwd, commands)
     logger.debug(f"CMSSW script:\n{text}")
@@ -86,3 +90,16 @@ def run(commands: Sequence[str], combine: CombineConfig | None, cwd: Path, timeo
         logger.error(f"CMSSW commands in {cwd} failed with exit code {code}{_last_lines(tail)}")
         raise subprocess.CalledProcessError(code, arguments)
     logger.debug(f"CMSSW commands in {cwd} done")
+
+
+def run_parallel(jobs: Sequence[Sequence[str]], combine: CombineConfig | None, cwd: Path) -> None:
+    """Every command list of `jobs` in its own subshell, `combine.parallel` at a time; the first failure is raised
+    after all jobs ended."""
+    if combine is None:
+        raise ValueError("the run configuration needs `combine` (cmssw_dir) to run CMSSW commands")
+    with ThreadPoolExecutor(max_workers=combine.parallel) as pool:
+        futures = [pool.submit(run, commands, combine, cwd) for commands in jobs]
+    errors = [future.exception() for future in futures if future.exception() is not None]
+    if errors:
+        logger.error(f"{len(errors)} of {len(jobs)} parallel CMSSW jobs in {cwd} failed")
+        raise errors[0]

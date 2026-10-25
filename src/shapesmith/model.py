@@ -346,6 +346,21 @@ class MLExportConfig:
 
 
 @dataclass(frozen=True)
+class CrossSection:
+    """The cross section that the signal strength r scales: limits in its unit are r x value_fb. `name` is the process
+    as every output names it (e.g. "ggF HH": sigma(ggF HH)); the limit on the cross section freezes its
+    `theory_nuisances` (scale, PDF, m_t of the prediction) at 0 and keeps the acceptance and shape uncertainties."""
+
+    name: str
+    value_fb: float
+    theory_nuisances: tuple[str, ...] = ()
+
+    @property
+    def quantity(self) -> str:
+        return f"sigma({self.name})"
+
+
+@dataclass(frozen=True)
 class Analysis:
     name: str
     era: str
@@ -366,6 +381,7 @@ class Analysis:
     # the asymmetry above which a pair of symmetrised_variations is symmetrised: the larger relative yield effect of Up
     # and Down over the smaller one
     asymmetry_ratio: float = 2.0
+    signal_cross_section: CrossSection | None = None  # limits also on the cross section (limits.py); None: on r only
 
     def channel(self, name: str) -> Channel:
         return self.channels[name]

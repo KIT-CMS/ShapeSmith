@@ -4,6 +4,7 @@ from __future__ import annotations
 import functools
 import json
 import logging
+import re
 import time
 from pathlib import Path
 from typing import Optional
@@ -13,7 +14,7 @@ from rich.console import Console
 from rich.table import Table
 
 from shapesmith import __version__, logs
-from shapesmith.config import RunConfig, WebConfig, load_analysis, load_config
+from shapesmith.config import VARIANT_PATTERN, RunConfig, WebConfig, load_analysis, load_config
 from shapesmith.ntuples import describe
 from shapesmith.provenance import record, write_versions
 
@@ -25,6 +26,11 @@ ConfigOption = typer.Option(..., "--config", "-c", help="run configuration YAML"
 ChannelsOption = typer.Option(None, "--channels", help="comma separated subset of the configured channels")
 WorkersOption = typer.Option(None, "--workers", help="override `workers` of the configuration (1 = inline, best for debugging)")
 SetOption = typer.Option(None, "--set", "-s", help="override a configuration entry, e.g. -s switches.jet_fakes=ff -s workers=4 -s log_level=DEBUG (repeatable, values parsed as YAML)")
+VariantOption = typer.Option(None, "--variant", help="the datacards of a variant, [a-z0-9_]+ (e.g. stat_only, s0, ff_w): <output_dir>/datacards/<variant>/<final state>/ (default: <output_dir>/datacards/<final state>/)")
+UnblindOption = typer.Option(False, "--unblind", help="fit the data WITHOUT the masks of blinding.json: unblinding, logged loudly (default: the blinded channels are masked)")
+FinalStatesOption = typer.Option(None, "--final-states", help="comma separated; default: each channel and 'all'")
+CombinationOption = typer.Option(None, "--combination", help="the directory of a combination (`shapesmith combine -o DIR`) instead of the final states of the run")
+SkipCombineOption = typer.Option(False, "--skip-combine", help="only summarise existing combine outputs")
 
 
 def _logged(command):
@@ -102,6 +108,21 @@ def _final_states(channels: list[str], control_channels: tuple[str, ...] = ()) -
 
 def _split(value: Optional[str]) -> Optional[list[str]]:
     return value.split(",") if value else None
+
+
+def _variant(variant: Optional[str], channels) -> Optional[str]:
+    """A valid variant name: [a-z0-9_]+ and no final state (a channel or 'all'), whose directory it would shadow."""
+    if variant is None:
+        return None
+    if not re.fullmatch(VARIANT_PATTERN, variant) or variant in {*channels, "all"}:
+        raise typer.BadParameter(f"variant {variant!r} must match {VARIANT_PATTERN} and differ from the final states {', '.join([*channels, 'all'])}")
+    return variant
+
+
+def _datacard_dir(config: RunConfig, variant: Optional[str], channels) -> Path:
+    from shapesmith.combination import datacard_dir
+
+    return datacard_dir(config, _variant(variant, channels))
 
 
 @app.command()
@@ -194,40 +215,42 @@ def sync(config: Path = ConfigOption, channels: Optional[str] = ChannelsOption, 
 
 @app.command()
 @_logged
-def datacards(config: Path = ConfigOption, channels: Optional[str] = ChannelsOption, overrides: Optional[list[str]] = SetOption, systematics: bool = typer.Option(True, "--systematics/--no-systematics"), min_background: Optional[float] = typer.Option(1.0, help="merge bins below this background yield; negative disables")):
+def datacards(config: Path = ConfigOption, channels: Optional[str] = ChannelsOption, overrides: Optional[list[str]] = SetOption, systematics: bool = typer.Option(True, "--systematics/--no-systematics"), min_background: Optional[float] = typer.Option(1.0, help="merge bins below this background yield; negative disables"), variant: Optional[str] = VariantOption):
     """Write text datacards and their shapes file per final state (each channel and the combination)."""
     from shapesmith.datacards import run_datacards
     from shapesmith.histogram import HistogramSet
 
     cfg, analysis, selected = _setup(config, channels, overrides=overrides)
     threshold = None if min_background is None or min_background < 0 else min_background
-    for name, path in run_datacards(HistogramSet.load(_shapes_path(cfg, False)), analysis, _final_states(selected, analysis.control_channels), cfg.output_dir / "datacards", systematics, threshold).items():
+    for name, path in run_datacards(HistogramSet.load(_shapes_path(cfg, False)), analysis, _final_states(selected, analysis.control_channels), _datacard_dir(cfg, variant, analysis.channels), systematics, threshold).items():
         logger.info(f"datacard {name}: {path}")
 
 
 @app.command()
 @_logged
-def fit(config: Path = ConfigOption, channels: Optional[str] = ChannelsOption, overrides: Optional[list[str]] = SetOption, final_states: Optional[str] = typer.Option(None, help="comma separated; default: each channel and 'all' (with --background-only: the combination of the selected channels)"), skip_combine: bool = typer.Option(False, "--skip-combine", help="only collect existing combine outputs"), background_only: bool = typer.Option(False, "--background-only", help="a background-only fit to the data (FitDiagnostics, r frozen to 0) instead of the limits")):
-    """Run combine (expected limits, significance, best fit), or a background-only fit to the data, and summarise the results."""
+def fit(config: Path = ConfigOption, channels: Optional[str] = ChannelsOption, overrides: Optional[list[str]] = SetOption, final_states: Optional[str] = typer.Option(None, help="comma separated; default: each channel and 'all' (with --background-only: the combination of the selected channels)"), skip_combine: bool = typer.Option(False, "--skip-combine", help="only collect existing combine outputs"), background_only: bool = typer.Option(False, "--background-only", help="a background-only fit to the data (FitDiagnostics, r frozen to 0) instead of the limits"), variant: Optional[str] = VariantOption, unblind: bool = UnblindOption):
+    """Run combine (prefit Asimov expected limits on mu and the signal cross section, significance, best fit), or a background-only fit to the data with the blinded channels masked, and summarise the results."""
     from shapesmith.background_fit import run_background_fit
     from shapesmith.limits import run_limits
 
     cfg, analysis, selected = _setup(config, channels, overrides=overrides)
     states = list(_final_states(selected, analysis.control_channels))
-    datacard_dir = cfg.output_dir / "datacards"
+    datacard_dir = _datacard_dir(cfg, variant, analysis.channels)
+    if unblind and not background_only:
+        raise typer.BadParameter("--unblind applies to the fit to data (--background-only); the limits use the Asimov dataset")
     if background_only:
-        results = run_background_fit(cfg, analysis, datacard_dir, _split(final_states) or states[-1:], skip_combine)  # default: 'all' or the only final state
+        results = run_background_fit(cfg, analysis, datacard_dir, _split(final_states) or states[-1:], skip_combine, unblind)  # default: 'all' or the only final state
         typer.echo((datacard_dir / "background_fit.md").read_text())
     else:
-        results = run_limits(cfg, datacard_dir, _split(final_states) or states, skip_combine)
+        results = run_limits(cfg, datacard_dir, _split(final_states) or states, skip_combine, analysis.signal_cross_section)
         typer.echo((datacard_dir / "limits.md").read_text())
     logger.info(f"{len(results)} final states summarised")
 
 
 @app.command("combine")
 @_logged
-def combine_runs(configs: list[Path] = typer.Option(..., "--config", "-c", help="the run YAML of every era (repeat -c)"), output: Path = typer.Option(..., "--output", "-o", help="directory of the combination (combined card, fits, summaries)"), final_state: str = typer.Option("all", "--final-state", help="the final state of each run's datacards: <output_dir>/datacards/<final state>/"), overrides: Optional[list[str]] = SetOption, eras: Optional[list[str]] = typer.Option(None, "--era", help="load every run YAML once per era (-s era=<era>, its {era} filled; repeat --era)"), background_only: bool = typer.Option(False, "--background-only", help="a background-only fit to the data instead of the limits"), skip_combine: bool = typer.Option(False, "--skip-combine", help="only summarise existing combine outputs"), validate: bool = typer.Option(False, "--validate", help="also run CombineHarvester's ValidateDatacards.py on the combined card")):
-    """Combine the datacards of several runs (one per era, spec 6.9) with combineCards.py, then the limits or the background-only fit; overrides apply to every run."""
+def combine_runs(configs: list[Path] = typer.Option(..., "--config", "-c", help="the run YAML of every era (repeat -c)"), output: Path = typer.Option(..., "--output", "-o", help="directory of the combination (combined card, fits, summaries)"), final_state: str = typer.Option("all", "--final-state", help="the final state of each run's datacards: <output_dir>/datacards/<final state>/"), overrides: Optional[list[str]] = SetOption, eras: Optional[list[str]] = typer.Option(None, "--era", help="load every run YAML once per era (-s era=<era>, its {era} filled; repeat --era)"), background_only: bool = typer.Option(False, "--background-only", help="a background-only fit to the data instead of the limits"), skip_combine: bool = typer.Option(False, "--skip-combine", help="only summarise existing combine outputs"), validate: bool = typer.Option(False, "--validate", help="also run CombineHarvester's ValidateDatacards.py on the combined card"), variant: Optional[str] = VariantOption, unblind: bool = UnblindOption):
+    """Combine the datacards of several runs (one per era, spec 6.9) with combineCards.py, then the limits or the background-only fit (the blinded channels of every card masked); overrides apply to every run."""
     from shapesmith.combination import Run, run_card, run_combination
 
     runs = []
@@ -236,10 +259,185 @@ def combine_runs(configs: list[Path] = typer.Option(..., "--config", "-c", help=
         if index == 0:
             logs.configure(cfg.log_level, logs.log_path(output, _command["name"]), [cfg.analysis.partition(":")[0].split(".")[0]])
         _log_start(cfg, path, run_overrides, list(cfg.channels), None)
-        runs.append(Run(cfg, load_analysis(cfg), run_card(cfg, final_state)))
-    result = run_combination(runs, output, background_only, skip_combine, validate)
+        analysis = load_analysis(cfg)
+        runs.append(Run(cfg, analysis, run_card(cfg, final_state, _variant(variant, analysis.channels))))
+    if unblind and not background_only:
+        raise typer.BadParameter("--unblind applies to the fit to data (--background-only); the limits use the Asimov dataset")
+    result = run_combination(runs, output, background_only, skip_combine, validate, unblind)
     typer.echo((output / ("background_fit.md" if background_only else "limits.md")).read_text())
     logger.info(f"combination of {len(runs)} runs: {json.dumps(result)[:200]}")
+
+
+def _targets(cfg: RunConfig, analysis, selected: list[str], variant: Optional[str], final_states: Optional[str], combination: Optional[Path]):
+    """The cards of a statistical check and the directory of its summary: the combination in `combination`, else the
+    final states (default: each channel and 'all') of the run's datacards (of the variant)."""
+    from shapesmith.checks import Target
+
+    if combination is not None:
+        if final_states:
+            raise typer.BadParameter("--final-states and --combination exclude each other")
+        targets, summary_dir = [Target("combination", combination.absolute())], combination.absolute()
+    else:
+        summary_dir = _datacard_dir(cfg, variant, analysis.channels)
+        targets = [Target(name, summary_dir / name) for name in _split(final_states) or list(_final_states(selected, analysis.control_channels))]
+    missing = [str(target.card) for target in targets if not target.card.exists()]
+    if missing:
+        raise typer.BadParameter("datacards missing (run `shapesmith datacards`, or `shapesmith combine` for a combination):\n" + "\n".join(missing))
+    return targets, summary_dir
+
+
+def _stored(summary_dir: Path, check: str, name: str) -> Optional[dict]:
+    """The result of a card in an earlier summary <summary_dir>/<check>.json (e.g. limits, aposteriori), or None."""
+    path = summary_dir / f"{check}.json"
+    return json.loads(path.read_text()).get(name) if path.exists() else None
+
+
+@app.command()
+@_logged
+def gof(
+    config: Path = ConfigOption, channels: Optional[str] = ChannelsOption, overrides: Optional[list[str]] = SetOption,
+    variant: Optional[str] = VariantOption, final_states: Optional[str] = FinalStatesOption, combination: Optional[Path] = CombinationOption,
+    toys: int = typer.Option(500, "--toys", help="frequentist toys (jobs of 25, combine.parallel at a time)"),
+    skip_combine: bool = SkipCombineOption, unblind: bool = UnblindOption,
+):
+    """Saturated goodness of fit of the background-only model to the data against toys (spec 7.2), per final state
+    (channel x era) or of a combination; the blinded channels are masked. Summary <datacards>/gof.md."""
+    from shapesmith.checks import run_gof, write_summary
+
+    cfg, analysis, selected = _setup(config, channels, overrides=overrides)
+    targets, summary_dir = _targets(cfg, analysis, selected, variant, final_states, combination)
+    write_summary("gof", {t.name: run_gof(t, cfg.combine, toys, unblind, skip_combine) for t in targets}, summary_dir, "Saturated GoF, background only")
+    typer.echo((summary_dir / "gof.md").read_text())
+
+
+@app.command()
+@_logged
+def impacts(
+    config: Path = ConfigOption, channels: Optional[str] = ChannelsOption, overrides: Optional[list[str]] = SetOption,
+    variant: Optional[str] = VariantOption, final_states: Optional[str] = FinalStatesOption, combination: Optional[Path] = CombinationOption,
+    asimov: bool = typer.Option(False, "--asimov", help="on the Asimov dataset with r = 1 (expected impacts, no masks) instead of the data"),
+    skip_combine: bool = SkipCombineOption, unblind: bool = UnblindOption,
+):
+    """Impacts and pulls of the nuisances (combineTool.py -M Impacts, plotImpacts.py), on the data with the blinded
+    channels masked or on the Asimov dataset. Plot <card>/impacts[_asimov]/impacts.pdf, summary <datacards>/impacts[_asimov].md."""
+    from shapesmith.checks import run_impacts, write_summary
+
+    cfg, analysis, selected = _setup(config, channels, overrides=overrides)
+    targets, summary_dir = _targets(cfg, analysis, selected, variant, final_states, combination)
+    check = "impacts_asimov" if asimov else "impacts"
+    write_summary(check, {t.name: run_impacts(t, cfg.combine, asimov, unblind, skip_combine) for t in targets}, summary_dir)
+    typer.echo((summary_dir / f"{check}.md").read_text())
+
+
+@app.command("limit-aposteriori")
+@_logged
+def limit_aposteriori(
+    config: Path = ConfigOption, channels: Optional[str] = ChannelsOption, overrides: Optional[list[str]] = SetOption,
+    variant: Optional[str] = VariantOption, final_states: Optional[str] = FinalStatesOption, combination: Optional[Path] = CombinationOption,
+    skip_combine: bool = SkipCombineOption, unblind: bool = UnblindOption,
+):
+    """The a-posteriori expected limit (spec 7.2): background-only fit to the data with the blinded channels masked,
+    its snapshot, then AsymptoticLimits on the snapshot's Asimov dataset (-t -1 --toysFrequentist --bypassFrequentistFit)
+    with all channels; on mu and the signal cross section. Summary <datacards>/aposteriori.md/.pdf."""
+    from shapesmith.checks import run_aposteriori, write_summary
+
+    cfg, analysis, selected = _setup(config, channels, overrides=overrides)
+    targets, summary_dir = _targets(cfg, analysis, selected, variant, final_states, combination)
+    results = {t.name: run_aposteriori(t, cfg.combine, analysis.signal_cross_section, _stored(summary_dir, "limits", t.name), unblind, skip_combine) for t in targets}
+    write_summary("aposteriori", results, summary_dir, "A-posteriori expected limits")
+    typer.echo((summary_dir / "aposteriori.md").read_text())
+
+
+def _injected(values: str, expected: Optional[dict], name: str) -> list[float]:
+    """The signal strengths of --mu; `limit` is the median expected limit of the card (a-posteriori, else prefit)."""
+    mus = []
+    for value in values.split(","):
+        if value == "limit":
+            if not expected:
+                raise typer.BadParameter(f"{name}: --mu limit needs the expected limit; run `shapesmith limit-aposteriori` or `shapesmith fit` first")
+            mus.append(round(expected["limit"]["exp_median"], 4))
+        else:
+            mus.append(float(value))
+    return mus
+
+
+@app.command()
+@_logged
+def injection(
+    config: Path = ConfigOption, channels: Optional[str] = ChannelsOption, overrides: Optional[list[str]] = SetOption,
+    variant: Optional[str] = VariantOption, final_states: Optional[str] = FinalStatesOption, combination: Optional[Path] = CombinationOption,
+    mu: str = typer.Option("0,1,limit", "--mu", help="comma separated injected signal strengths; 'limit': the median expected limit of the card"),
+    toys: int = typer.Option(200, "--toys", help="toys per injected value (jobs of 25, combine.parallel at a time)"),
+    a_posteriori: bool = typer.Option(False, "--a-posteriori", help="frequentist toys around the masked background-only fit to the data instead of toys of the prefit model"),
+    skip_combine: bool = SkipCombineOption, unblind: bool = UnblindOption,
+):
+    """Signal injection and bias (spec 7.2): toys with r = mu, fitted; r should follow mu linearly and the pulls be
+    unbiased. Plot <card>/injection/injection.pdf, summary <datacards>/injection.md."""
+    from shapesmith.checks import run_injection, write_summary
+
+    cfg, analysis, selected = _setup(config, channels, overrides=overrides)
+    targets, summary_dir = _targets(cfg, analysis, selected, variant, final_states, combination)
+    check = "injection_aposteriori" if a_posteriori else "injection"
+    results = {}
+    for t in targets:
+        expected = _stored(summary_dir, "aposteriori", t.name) or _stored(summary_dir, "limits", t.name)
+        results[t.name] = run_injection(t, cfg.combine, _injected(mu, expected, t.name), toys, a_posteriori, unblind, skip_combine)
+    write_summary(check, results, summary_dir, "Signal injection")
+    typer.echo((summary_dir / f"{check}.md").read_text())
+
+
+@app.command("limit-hybridnew")
+@_logged
+def limit_hybridnew(
+    config: Path = ConfigOption, channels: Optional[str] = ChannelsOption, overrides: Optional[list[str]] = SetOption,
+    variant: Optional[str] = VariantOption, final_states: Optional[str] = FinalStatesOption, combination: Optional[Path] = CombinationOption,
+    toys: int = typer.Option(500, "--toys", help="toys per r point and hypothesis (HybridNew -T)"),
+    rel_acc: float = typer.Option(0.02, "--rel-acc", help="relative accuracy of the limit (HybridNew --rRelAcc)"),
+    abs_acc: float = typer.Option(0.05, "--abs-acc", help="absolute accuracy of the limit (HybridNew --rAbsAcc)"),
+    a_posteriori: bool = typer.Option(False, "--a-posteriori", help="on the Asimov dataset of the masked background-only fit (snapshot) instead of the prefit one"),
+    skip_combine: bool = SkipCombineOption, unblind: bool = UnblindOption,
+):
+    """The HybridNew cross-check of the median expected limit (spec 7.2): CLs with toys on the Asimov dataset, compared
+    with the asymptotic median (limits.json, or aposteriori.json). Summary <datacards>/hybridnew.md."""
+    from shapesmith.checks import run_hybridnew, write_summary
+
+    cfg, analysis, selected = _setup(config, channels, overrides=overrides)
+    targets, summary_dir = _targets(cfg, analysis, selected, variant, final_states, combination)
+    check = "hybridnew_aposteriori" if a_posteriori else "hybridnew"
+    results = {t.name: run_hybridnew(t, cfg.combine, toys, rel_acc, abs_acc, _stored(summary_dir, "aposteriori" if a_posteriori else "limits", t.name), a_posteriori, unblind, skip_combine) for t in targets}
+    write_summary(check, results, summary_dir, "HybridNew median expected limit")
+    typer.echo((summary_dir / f"{check}.md").read_text())
+
+
+@app.command("limit-overview")
+@_logged
+def limit_overview(
+    configs: list[Path] = typer.Option(..., "--config", "-c", help="the run YAML of every era (repeat -c)"),
+    output: Path = typer.Option(..., "--output", "-o", help="directory of the overview"),
+    overrides: Optional[list[str]] = SetOption,
+    eras: Optional[list[str]] = typer.Option(None, "--era", help="every run YAML once per era (-s era=<era>; repeat)"),
+    variant: Optional[str] = VariantOption,
+    combinations: Optional[list[Path]] = typer.Option(None, "--combination", help="the directory of a combination (repeatable)"),
+    aposteriori: bool = typer.Option(False, "--aposteriori", help="the a-posteriori expected limits (aposteriori.json) instead of the prefit ones (limits.json)"),
+):
+    """One table and Brazil plot of the expected limits per channel and era and of the combinations, on mu and on the
+    signal cross section: <output>/limit_overview.{json,md,pdf}, limit_overview_xs.pdf."""
+    from shapesmith.limits import limit_overview as overview
+
+    summary = "aposteriori.json" if aposteriori else "limits.json"
+    sources = []
+    for index, (path, run_overrides) in enumerate((path, [*(overrides or []), *([f"era={era}"] if era else [])]) for path in configs for era in (eras or [None])):
+        cfg = load_config(path, run_overrides)
+        if index == 0:
+            logs.configure(cfg.log_level, logs.log_path(output, _command["name"]), [cfg.analysis.partition(":")[0].split(".")[0]])
+        _log_start(cfg, path, run_overrides, list(cfg.channels), None)
+        sources.append((cfg.era, _datacard_dir(cfg, variant, cfg.channels) / summary))
+    sources += [("combined" if len(combinations) == 1 else f"combined {directory.name}", directory / summary) for directory in combinations or []]
+    missing = [str(path) for _, path in sources if not path.exists()]
+    if missing:
+        raise typer.BadParameter(f"{summary} missing (run `shapesmith {'limit-aposteriori' if aposteriori else 'fit'}` first):\n" + "\n".join(missing))
+    overview(sources, output, "limit_overview_aposteriori" if aposteriori else "limit_overview")
+    typer.echo((output / ("limit_overview_aposteriori.md" if aposteriori else "limit_overview.md")).read_text())
 
 
 @app.command()
