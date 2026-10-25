@@ -2,7 +2,8 @@
 
 A ScoreBinning category (e.g. an NN category) is shown in the bins of its card (score_bins.resolve_category, from the
 nominal templates), its processes clipped as in the card; in the nominal region its blinded bins (the hi part, N14)
-show the prediction instead of the data, in the plots and in the yields of the gallery.
+show the prediction instead of the data, in the plots and in the yields of the gallery. Its plot draws these bins with
+equal widths, events per bin, with the edges as tick labels (with normalize_by_bin_width: dN/dx on the score axis).
 """
 from __future__ import annotations
 
@@ -20,7 +21,7 @@ import numpy as np  # noqa: E402
 from shapesmith.histogram import Histogram  # noqa: E402
 from shapesmith.histogram import INCLUSIVE, NOMINAL_VARIATION, HistKey, HistogramSet  # noqa: E402
 from shapesmith.model import NOMINAL, Analysis  # noqa: E402
-from shapesmith.plotting.style import axis_label, color, grouped_backgrounds, label  # noqa: E402
+from shapesmith.plotting.style import axis_label, card_bin_axis, card_bin_positions, color, grouped_backgrounds, label  # noqa: E402
 from shapesmith.score_bins import clip, resolve_category, score_binning  # noqa: E402
 
 logger = logging.getLogger(__name__)
@@ -130,8 +131,10 @@ def plot_stack(hset: HistogramSet, analysis: Analysis, channel: str, category: s
         logger.warning(f"{channel}/{category}/{variable}: no background histograms, no plot")
         return []
     edges = groups[0][1].edges
-    widths = np.diff(edges)
-    norm = widths if normalize_by_bin_width else np.ones_like(widths)
+    card_bins = not normalize_by_bin_width and score_binning(analysis.channel(channel), category, variable) is not None
+    x = card_bin_positions(edges) if card_bins else edges  # the drawn edges
+    widths = np.diff(x)
+    norm = np.diff(edges) if normalize_by_bin_width else np.ones(len(edges) - 1)
     background = shown.background
     background_error = shown.background_error
     data_hist = shown.data
@@ -144,16 +147,16 @@ def plot_stack(hset: HistogramSet, analysis: Analysis, channel: str, category: s
     style = analysis.style
 
     fig, (ax, rax) = plt.subplots(2, 1, figsize=(10, 10), gridspec_kw={"height_ratios": [3, 1], "hspace": 0.06}, sharex=True)
-    hep.histplot([h.values / norm for _, h in groups], bins=edges, stack=True, histtype="fill", color=[color(analysis, g) for g, _ in groups], label=[label(analysis, g) for g, _ in groups], ax=ax)
-    ax.bar(edges[:-1], 2 * background_error / norm, bottom=(background - background_error) / norm, width=widths, align="edge", color="none", hatch="////", edgecolor="gray", linewidth=0, label="Bkg. stat. unc.")
+    hep.histplot([h.values / norm for _, h in groups], bins=x, stack=True, histtype="fill", color=[color(analysis, g) for g, _ in groups], label=[label(analysis, g) for g, _ in groups], ax=ax)
+    ax.bar(x[:-1], 2 * background_error / norm, bottom=(background - background_error) / norm, width=widths, align="edge", color="none", hatch="////", edgecolor="gray", linewidth=0, label="Bkg. stat. unc.")
     if signal_hist is not None:
         signal_label = style.signal_label if style else analysis.signal
-        hep.histplot(signal_hist.values * scale / norm, bins=edges, histtype="step", color=color(analysis, analysis.signal), linewidth=2, label=f"{scale:g} x {signal_label}" if scale != 1 else signal_label, ax=ax)
-    hep.histplot(data / norm, bins=edges, yerr=data_error / norm, histtype="errorbar", color="black", label="Asimov" if blind else "Data", ax=ax)
+        hep.histplot(signal_hist.values * scale / norm, bins=x, histtype="step", color=color(analysis, analysis.signal), linewidth=2, label=f"{scale:g} x {signal_label}" if scale != 1 else signal_label, ax=ax)
+    hep.histplot(data / norm, bins=x, yerr=data_error / norm, histtype="errorbar", color="black", label="Asimov" if blind else "Data", ax=ax)
     if shown.blinded_from is not None and not blind:
         for axis in (ax, rax):
-            axis.axvspan(edges[shown.blinded_from], edges[-1], color="gray", alpha=0.15, linewidth=0, label="Blinded: prediction as data" if axis is ax else None)
-    ax.set_ylabel("dN/dx" if normalize_by_bin_width else "Events")
+            axis.axvspan(x[shown.blinded_from], x[-1], color="gray", alpha=0.15, linewidth=0, label="Blinded: prediction as data" if axis is ax else None)
+    ax.set_ylabel("dN/dx" if normalize_by_bin_width else "Events / bin" if card_bins else "Events")
     if log:
         ax.set_yscale("log")
         positive = background[background > 0] / norm[background > 0]
@@ -171,16 +174,19 @@ def plot_stack(hset: HistogramSet, analysis: Analysis, channel: str, category: s
         ratio_error = np.where(background > 0, data_error / background, np.nan)
         band = np.where(background > 0, background_error / background, 0.0)
         signal_ratio = np.where(background > 0, (background + (signal_hist.values if signal_hist is not None else 0.0)) / background, np.nan)
-    centers = 0.5 * (edges[:-1] + edges[1:])
-    rax.bar(edges[:-1], 2 * band, bottom=1 - band, width=widths, align="edge", color="none", hatch="////", edgecolor="gray", linewidth=0)
+    centers = 0.5 * (x[:-1] + x[1:])
+    rax.bar(x[:-1], 2 * band, bottom=1 - band, width=widths, align="edge", color="none", hatch="////", edgecolor="gray", linewidth=0)
     rax.errorbar(centers, ratio, yerr=ratio_error, fmt="o", color="black", markersize=4)
     if signal_hist is not None:
-        rax.step(edges, np.append(signal_ratio, signal_ratio[-1]), where="post", color=color(analysis, analysis.signal), linewidth=1.5)
+        rax.step(x, np.append(signal_ratio, signal_ratio[-1]), where="post", color=color(analysis, analysis.signal), linewidth=1.5)
     rax.axhline(1.0, color="gray", linewidth=1)
     rax.set_ylim(0.5, 1.5)
     rax.set_ylabel("Data / Bkg.")
-    rax.set_xlabel(axis_label(analysis, channel, variable))
-    rax.set_xlim(edges[0], edges[-1])
+    if card_bins:
+        card_bin_axis(rax, edges, axis_label(analysis, channel, variable))
+    else:
+        rax.set_xlabel(axis_label(analysis, channel, variable))
+        rax.set_xlim(edges[0], edges[-1])
 
     output_dir = Path(output_dir) / channel
     if region != NOMINAL:

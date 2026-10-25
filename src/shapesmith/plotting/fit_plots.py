@@ -4,7 +4,8 @@ injected signal strength).
 
 A masked (blinded) bin never shows data: its data_obs is the Asimov prediction, and the plot says "blinded".
 FitDiagnostics saves the shapes of every card bin in the binning of the largest one (empty bins appended): the stack
-of a card bin shows its own bins (the edges of its data histogram in the card).
+of a card bin shows its own bins (the edges of its data histogram in the card); those of a score on [0, 1] (an NN
+category) with equal widths, events per bin, with the edges as tick labels, in the CMS style of the category plots.
 """
 from __future__ import annotations
 
@@ -20,7 +21,7 @@ import mplhep as hep  # noqa: E402
 import numpy as np  # noqa: E402
 
 from shapesmith.model import Analysis  # noqa: E402
-from shapesmith.plotting.style import color, grouped_backgrounds, label  # noqa: E402
+from shapesmith.plotting.style import card_bin_axis, card_bin_positions, color, grouped_backgrounds, label  # noqa: E402
 
 logger = logging.getLogger(__name__)
 TOTALS = ("total", "total_signal", "total_background", "total_covar", "data")
@@ -65,10 +66,11 @@ def card_binning(bin_shapes: dict, edges, title: str = "") -> tuple[dict, np.nda
     return {process: [list(np.asarray(part)[:n]) for part in entry] for process, entry in bin_shapes.items()}, edges
 
 
-def fit_stack(bin_shapes: dict, analysis: Analysis, title: str, path: Path, masked: bool, edges: np.ndarray | None = None, stage: str = "postfit") -> list[Path]:
+def fit_stack(bin_shapes: dict, analysis: Analysis, title: str, path: Path, masked: bool, edges: np.ndarray | None = None, stage: str = "postfit", xlabel: str | None = None) -> list[Path]:
     """Stacked backgrounds (grouped as the control plots), the total background uncertainty, the signal and the data
     (none in a masked bin) of one card bin; `edges` from the card's data histogram (card_binning), else the bin
-    index."""
+    index. The bins of a score on [0, 1] (an NN category) are drawn with equal widths and their edges as tick labels
+    (card_bin_axis); `xlabel` of the variable (default: NN output or bin)."""
     mapping = process_groups(analysis)
     background = bin_shapes.get("total_background")
     if background is None:
@@ -79,7 +81,8 @@ def fit_stack(bin_shapes: dict, analysis: Analysis, title: str, path: Path, mask
     total, total_error = np.asarray(background[0]), np.asarray(background[1])
     n = len(total)
     scored = edges is not None and edges[0] >= 0.0 and edges[-1] <= 1.0  # the card's own edges of a score on [0, 1]
-    edges = np.asarray(edges, dtype=float) if edges is not None else np.arange(n + 1, dtype=float)
+    card_edges = edges
+    edges = card_bin_positions(edges) if scored else np.asarray(edges, dtype=float) if edges is not None else np.arange(n + 1, dtype=float)
     groups: dict[str, np.ndarray] = {}
     for process, entry in bin_shapes.items():
         if process in TOTALS or process == analysis.signal:
@@ -88,42 +91,46 @@ def fit_stack(bin_shapes: dict, analysis: Analysis, title: str, path: Path, mask
         groups[group] = groups.get(group, np.zeros(n)) + np.asarray(entry[0])
     ordered = _ordered_groups(analysis, groups)
     widths = np.diff(edges)
-    fig, (ax, rax) = plt.subplots(2, 1, figsize=(10, 10), gridspec_kw={"height_ratios": [3, 1], "hspace": 0.06}, sharex=True)
-    if ordered:
-        hep.histplot([groups[g] for g in ordered], bins=edges, stack=True, histtype="fill", color=[color(analysis, g) for g in ordered], label=[label(analysis, g) for g in ordered], ax=ax)
-    ax.bar(edges[:-1], 2 * total_error, bottom=total - total_error, width=widths, align="edge", color="none", hatch="////", edgecolor="gray", linewidth=0, label="Bkg. unc.")
-    signal = bin_shapes.get(analysis.signal)
-    if signal is not None:
-        hep.histplot(np.asarray(signal[0]), bins=edges, histtype="step", color=color(analysis, analysis.signal), linewidth=2, label=(analysis.style.signal_label if analysis.style else analysis.signal) + r" ($\mu$ = 1)", ax=ax)
-    data = shown_data(bin_shapes, masked)
-    centers = 0.5 * (edges[:-1] + edges[1:])
-    if data is not None:
-        values, low, high = data
-        ax.errorbar(centers, values, yerr=[low, high], fmt="o", color="black", markersize=5, label="Data")
+    with plt.style.context(hep.style.CMS):  # the style of the category plots (stack.py), whatever was imported before
+        fig, (ax, rax) = plt.subplots(2, 1, figsize=(10, 10), gridspec_kw={"height_ratios": [3, 1], "hspace": 0.06}, sharex=True)
+        if ordered:
+            hep.histplot([groups[g] for g in ordered], bins=edges, stack=True, histtype="fill", color=[color(analysis, g) for g in ordered], label=[label(analysis, g) for g in ordered], ax=ax)
+        ax.bar(edges[:-1], 2 * total_error, bottom=total - total_error, width=widths, align="edge", color="none", hatch="////", edgecolor="gray", linewidth=0, label="Bkg. unc.")
+        signal = bin_shapes.get(analysis.signal)
+        if signal is not None:
+            hep.histplot(np.asarray(signal[0]), bins=edges, histtype="step", color=color(analysis, analysis.signal), linewidth=2, label=(analysis.style.signal_label if analysis.style else analysis.signal) + r" ($\mu$ = 1)", ax=ax)
+        data = shown_data(bin_shapes, masked)
+        centers = 0.5 * (edges[:-1] + edges[1:])
+        if data is not None:
+            values, low, high = data
+            ax.errorbar(centers, values, yerr=[low, high], fmt="o", color="black", markersize=5, label="Data")
+            with np.errstate(divide="ignore", invalid="ignore"):
+                rax.errorbar(centers, np.where(total > 0, values / total, np.nan), yerr=[np.where(total > 0, low / total, np.nan), np.where(total > 0, high / total, np.nan)], fmt="o", color="black", markersize=4)
+        elif masked:
+            rax.text(0.5, 0.5, "blinded", transform=rax.transAxes, ha="center", va="center", fontsize=20, color="gray")
         with np.errstate(divide="ignore", invalid="ignore"):
-            rax.errorbar(centers, np.where(total > 0, values / total, np.nan), yerr=[np.where(total > 0, low / total, np.nan), np.where(total > 0, high / total, np.nan)], fmt="o", color="black", markersize=4)
-    elif masked:
-        rax.text(0.5, 0.5, "blinded", transform=rax.transAxes, ha="center", va="center", fontsize=20, color="gray")
-    with np.errstate(divide="ignore", invalid="ignore"):
-        band = np.where(total > 0, total_error / total, 0.0)
-    rax.bar(edges[:-1], 2 * band, bottom=1 - band, width=widths, align="edge", color="none", hatch="////", edgecolor="gray", linewidth=0)
-    rax.axhline(1.0, color="gray", linewidth=1)
-    rax.set_ylim(0.5, 1.5)
-    rax.set_ylabel("Data / Bkg.")
-    rax.set_xlabel("NN output" if scored else "bin")
-    rax.set_xlim(edges[0], edges[-1])
-    ax.set_ylabel("Events")
-    top = max(float(total.max()) if n else 1.0, float(np.max(data[0])) if data is not None and n else 0.0)
-    ax.set_ylim(0, 2.0 * top if top > 0 else 1.0)
-    ax.legend(loc="upper right", ncol=2, fontsize=14, frameon=False)
-    hep.cms.label(llabel="Private Work", rlabel=analysis.style.lumi_label if analysis.style else "", ax=ax, fontsize=22)
-    ax.text(0.04, 0.95, f"{title}\n{stage}" + (", blinded" if masked else ""), transform=ax.transAxes, va="top", ha="left", fontsize=16)
-    path = Path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    paths = [path.with_suffix(f".{ext}") for ext in ("pdf", "png")]
-    for target in paths:
-        fig.savefig(target, bbox_inches="tight")
-    plt.close(fig)
+            band = np.where(total > 0, total_error / total, 0.0)
+        rax.bar(edges[:-1], 2 * band, bottom=1 - band, width=widths, align="edge", color="none", hatch="////", edgecolor="gray", linewidth=0)
+        rax.axhline(1.0, color="gray", linewidth=1)
+        rax.set_ylim(0.5, 1.5)
+        rax.set_ylabel("Data / Bkg.")
+        if scored:
+            card_bin_axis(rax, card_edges, xlabel or "NN output")
+        else:
+            rax.set_xlabel(xlabel or "bin")
+            rax.set_xlim(edges[0], edges[-1])
+        ax.set_ylabel("Events / bin" if scored else "Events")
+        top = max(float(total.max()) if n else 1.0, float(np.max(data[0])) if data is not None and n else 0.0)
+        ax.set_ylim(0, 2.0 * top if top > 0 else 1.0)
+        ax.legend(loc="upper right", ncol=2, fontsize=14, frameon=False)
+        hep.cms.label(llabel="Private Work", rlabel=analysis.style.lumi_label if analysis.style else "", ax=ax, fontsize=22)
+        ax.text(0.04, 0.95, f"{title}\n{stage}" + (", blinded" if masked else ""), transform=ax.transAxes, va="top", ha="left", fontsize=16)
+        path = Path(path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        paths = [path.with_suffix(f".{ext}") for ext in ("pdf", "png")]
+        for target in paths:
+            fig.savefig(target, bbox_inches="tight")
+        plt.close(fig)
     return paths
 
 

@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import re
 
+import numpy as np
+
 from shapesmith.model import Analysis
 
 
@@ -23,6 +25,29 @@ def axis_label(analysis: Analysis, channel: str, variable: str) -> str:
     if analysis.style is None:
         return variable
     return analysis.style.axis_labels.get(channel, {}).get(variable, variable)
+
+
+def edge_label(edge: float) -> str:
+    """A bin edge as a tick label: three decimals at most (the fine bins of an NN score are 0.001 wide), without
+    trailing zeros."""
+    text = f"{edge:.3f}".rstrip("0").rstrip(".")
+    return "0" if text == "-0" else text
+
+
+def card_bin_positions(edges) -> np.ndarray:
+    """The drawn edges of the bins of a card shown with equal widths: 0, 1, ..., n (card_bin_axis)."""
+    return np.arange(len(edges), dtype=np.float64)
+
+
+def card_bin_axis(axis, edges, label: str) -> None:
+    """The x axis of a plot drawn on card_bin_positions (the bins of a card with equal widths, e.g. of an NN score
+    with a wide last bin): one tick per edge labelled with its value, no minor ticks, the label says so."""
+    positions = card_bin_positions(edges)
+    axis.set_xticks(positions, [edge_label(e) for e in edges], rotation=90 if len(edges) > 7 else 0, fontsize=16)
+    axis.tick_params(axis="x", which="minor", bottom=False, top=False)
+    axis.tick_params(axis="x", which="major", pad=10)  # clear of the lowest label of the y axis
+    axis.set_xlim(positions[0], positions[-1])
+    axis.set_xlabel(f"{label} (card bins)")
 
 
 def color(analysis: Analysis, group: str) -> str:

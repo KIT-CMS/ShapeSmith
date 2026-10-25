@@ -109,12 +109,12 @@ def snapshot_source(masks: list[str], assignments: list[str] | tuple[str, ...] =
 # -- GoF -------------------------------------------------------------------------------------------------------------
 
 
-def gof_commands(combine: CombineConfig | None, masks: list[str], toys: int, toys_per_job: int = TOYS_PER_JOB) -> tuple[list[str], list[list[str]]]:
+def gof_commands(combine: CombineConfig | None, masks: list[str], toys: int, toys_per_job: int = TOYS_PER_JOB, seed: int = GOF_SEED) -> tuple[list[str], list[list[str]]]:
     """(workspace + observed statistic, [one command list per toy job]) of the saturated GoF of the background-only
-    model; the toys are frequentist (generated around the masked fit to the data)."""
+    model; the toys are frequentist (generated around the masked fit to the data), job i with the seed `seed` + i."""
     base = f"combine -M GoodnessOfFit -d workspace.root -m {MASS} --algo saturated {combine_options.parameters(['r=0', *masks])} --freezeParameters r"
     first = [_workspace(masks), _logged(combine_options.command(f"{base} -n .obs", combine), "obs.log")]
-    jobs = [[_logged(combine_options.command(f"{base} -n .toys -t {n} -s {GOF_SEED + i} --toysFrequentist", combine), f"toys_{GOF_SEED + i}.log")] for i, n in enumerate(_chunks(toys, toys_per_job))]
+    jobs = [[_logged(combine_options.command(f"{base} -n .toys -t {n} -s {seed + i} --toysFrequentist", combine), f"toys_{seed + i}.log")] for i, n in enumerate(_chunks(toys, toys_per_job))]
     return first, jobs
 
 

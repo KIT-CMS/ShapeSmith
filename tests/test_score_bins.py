@@ -16,7 +16,9 @@ from shapesmith.fill import run_hist
 from shapesmith.histogram import NOMINAL_VARIATION, HistKey, Histogram, HistogramSet, raw_variable
 from shapesmith.model import AnalysisError, Category, DataMinus, ScoreBinning, Variable
 from shapesmith.nn_binning import BinningRules, auto_rebin, resolve_edges
-from shapesmith.plotting.stack import run_plot, stack
+from shapesmith.plotting import stack as stack_module
+from shapesmith.plotting.stack import plot_stack, run_plot, stack
+from shapesmith.plotting.style import edge_label
 from shapesmith.score_bins import resolve_category
 from shapesmith.skim import run_skim
 from shapesmith.store import read_skims
@@ -171,6 +173,37 @@ def test_the_plot_shows_the_prediction_in_the_blinded_bins(chain, tmp_path):
     assert stack(hset, analysis, "mt", "ZTT", "NN_score").blinded_from is None
     files = run_plot(hset, analysis, ["mt"], False, None, None, tmp_path)
     assert sorted(p.name for p in files if p.suffix == ".png") == ["HH_NN_score.png", "TT_NN_score.png", "ZTT_NN_score.png"]
+
+
+def test_the_plot_draws_the_card_bins_with_equal_widths(chain, tmp_path, monkeypatch):
+    """The plot of a score category draws the bins of its card with equal widths (positions 0..n), the edges as tick
+    labels, events per bin and the blinded bins shaded from their index; the drawn yields are the stack's.
+    --normalize-by-bin-width keeps the score axis (dN/dx)."""
+    _, analysis, _, hset, card = chain
+    record = _record(card)["HH"]
+    edges, split = record["edges"], record["blinding"]["first_hi_bin"]
+    figures, drawn, original = [], [], stack_module.hep.histplot
+    monkeypatch.setattr(stack_module.plt, "close", figures.append)
+    monkeypatch.setattr(stack_module.hep, "histplot", lambda values, *args, **kwargs: drawn.append((values, kwargs["bins"])) or original(values, *args, **kwargs))
+    plot_stack(hset, analysis, "mt", "HH", "NN_score", tmp_path)
+    ax, rax = figures[-1].axes
+    n = len(edges) - 1
+    assert rax.get_xlim() == (0.0, n) and [t.get_text() for t in rax.get_xticklabels()] == [edge_label(e) for e in edges]
+    assert rax.get_xlabel().endswith("(card bins)") and ax.get_ylabel() == "Events / bin" and 2 < n < len(edges) * 2
+    stacked, bins = drawn[0]
+    assert list(bins) == list(range(n + 1))
+    shown = stack(hset, analysis, "mt", "HH", "NN_score")
+    np.testing.assert_allclose(np.sum(stacked, axis=0), shown.background)
+    np.testing.assert_allclose(drawn[-1][0], shown.data.values)  # the data with the prediction in the hi bins
+    shaded = [patch for patch in ax.patches if patch.get_label() == "Blinded: prediction as data"]
+    assert len(shaded) == 1 and shaded[0].get_x() == pytest.approx(split) and shaded[0].get_width() == pytest.approx(n - split)
+    plot_stack(hset, analysis, "mt", "HH", "NN_score", tmp_path, normalize_by_bin_width=True)
+    ax, rax = figures[-1].axes
+    assert rax.get_xlim() == pytest.approx((edges[0], edges[-1])) and ax.get_ylabel() == "dN/dx" and list(drawn[-1][1]) == pytest.approx(edges)
+    np.testing.assert_allclose(drawn[-1][0], shown.data.values / np.diff(edges))
+    plot_stack(hset, analysis, "mt", "ZTT", "NN_score", tmp_path)  # a category without blinding: the same axis
+    view_edges = _record(card)["ZTT"]["edges"]
+    assert figures[-1].axes[1].get_xlim() == (0.0, len(view_edges) - 1)
 
 
 def test_the_gallery_yields_hide_the_blinded_data(chain):

@@ -440,6 +440,55 @@ def limit_overview(
     typer.echo((output / ("limit_overview_aposteriori.md" if aposteriori else "limit_overview.md")).read_text())
 
 
+@app.command("input-gof")
+@_logged
+def input_gof(
+    configs: list[Path] = typer.Option(..., "--config", "-c", help="the run YAML of every era (repeat -c)"),
+    output: Path = typer.Option(..., "--output", "-o", help="directory of the cards and of the summary input_gof.json/.md (results of earlier runs into it are kept)"),
+    overrides: Optional[list[str]] = SetOption,
+    eras: Optional[list[str]] = typer.Option(None, "--era", help="every run YAML once per era (-s era=<era>; repeat)"),
+    channels: Optional[str] = ChannelsOption,
+    variables: Optional[str] = typer.Option(None, "--variables", help="comma separated control variables (default: every control variable of a channel)"),
+    region: str = typer.Option("nominal", "--region", help="the region of the control histograms (a control region: hist --control --regions <region>)"),
+    toys: int = typer.Option(500, "--toys", help="frequentist toys per card, in one job"),
+    tail_toys: int = typer.Option(0, "--tail-toys", help="toys per card in total for the cards below --tail-below (0: none); runs combine also with --skip-combine"),
+    tail_below: float = typer.Option(1e-3, "--tail-below", help="the p-value below which a card gets the tail toys"),
+    alt_minimizer: str = typer.Option("", "--alt-minimizer", help="minimizer options added for a second observed fit of every card, e.g. '--X-rtd MINIMIZER_no_analytic'; a card with a lower statistic there runs again with them (also with --skip-combine)"),
+    bins: int = typer.Option(20, "--bins", help="at most this many bins of about equal prediction"),
+    min_prediction: float = typer.Option(20.0, "--min-prediction", help="background events per bin at least"),
+    exclude: Optional[list[str]] = typer.Option(None, "--exclude", help="regular expression: nuisances left out of the cards (repeatable)"),
+    plots: bool = typer.Option(True, "--plots/--no-plots", help="the prefit plot of every card"),
+    skip_cards: bool = typer.Option(False, "--skip-cards", help="use the cards of an earlier run"),
+    skip_combine: bool = SkipCombineOption,
+):
+    """The saturated GoF of single control variables (NN spec 7.1, NV1): per era, channel and variable a card of the
+    control histograms of one region (control_shapes.root) with the nuisances of the run, bins merged to equal
+    prediction, toys; the failure rule over every test in <output>/input_gof.md."""
+    from shapesmith.histogram import HistogramSet
+    from shapesmith.input_gof import GofBinning, run_cards, run_gof, stored_records, targets_of, write_summary
+
+    binning = GofBinning(bins, min_prediction)
+    records, combine = [], None
+    for index, (path, run_overrides) in enumerate((path, [*(overrides or []), *([f"era={era}"] if era else [])]) for path in configs for era in (eras or [None])):
+        cfg = load_config(path, run_overrides)
+        if index == 0:
+            logs.configure(cfg.log_level, logs.log_path(output, _command["name"]), [cfg.analysis.partition(":")[0].split(".")[0]])
+            combine = cfg.combine
+        selected = channels.split(",") if channels else list(cfg.channels)
+        _log_start(cfg, path, run_overrides, selected, None)
+        analysis = load_analysis(cfg)
+        targets = targets_of(analysis, selected, region, _split(variables))
+        if skip_cards:
+            records += stored_records(output, targets)
+            continue
+        names = {(t.channel, t.variable) for t in targets}
+        hset = HistogramSet.load(_shapes_path(cfg, True), keep=lambda key: key.region == region and (key.channel, key.variable) in names)
+        records += run_cards(hset, analysis, targets, output, binning, tuple(exclude or ()), plots)
+    results = run_gof(records, combine, toys, output, skip_combine, tail_toys, tail_below, alt_minimizer)
+    write_summary(results, output, title=f"Saturated GoF of single variables, region {region}")
+    typer.echo((output / "input_gof.md").read_text())
+
+
 @app.command()
 @_logged
 def plot(config: Path = ConfigOption, channels: Optional[str] = ChannelsOption, overrides: Optional[list[str]] = SetOption, control: bool = typer.Option(False, "--control"), category: Optional[str] = typer.Option(None), variables: Optional[str] = typer.Option(None), region: str = typer.Option("nominal", "--region", help="histogram region to plot"), blind: bool = typer.Option(False, "--blind"), log: bool = typer.Option(False, "--log"), signal_scale: Optional[float] = typer.Option(None), normalize_by_bin_width: bool = typer.Option(False, "--normalize-by-bin-width")):

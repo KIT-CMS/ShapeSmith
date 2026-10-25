@@ -10,6 +10,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 import uproot
+from matplotlib.container import ErrorbarContainer
 from pydantic import ValidationError
 from typer.testing import CliRunner
 
@@ -441,7 +442,12 @@ def test_the_fit_plot_of_a_card_bin_shows_its_own_bins(tmp_path, monkeypatch):
     fit_stack(padded, build(), "htt_mt_1hi_2018", tmp_path / "bin", False, edges)
     single = {process: [part[:1] + [0.0] * 3 for part in entry] for process, entry in padded.items()}  # one bin of four
     fit_stack(single, build(), "htt_mt_1hi_2018", tmp_path / "one", True, np.array([0.318, 1.0]))
-    assert [(f.axes[1].get_xlim(), f.axes[1].get_xlabel()) for f in figures] == [((0.6, 1.0), "NN output"), ((0.318, 1.0), "NN output")]
+    axes = [(f.axes[1].get_xlim(), f.axes[1].get_xlabel(), [t.get_text() for t in f.axes[1].get_xticklabels()], f.axes[0].get_ylabel()) for f in figures]
+    assert axes == [((0.0, 2.0), "NN output (card bins)", ["0.6", "0.8", "1"], "Events / bin"), ((0.0, 1.0), "NN output (card bins)", ["0.318", "1"], "Events / bin")]
+    points = next(c for c in figures[0].axes[0].containers if isinstance(c, ErrorbarContainer)).lines[0]
+    assert points.get_xdata().tolist() == [0.5, 1.5] and points.get_ydata().tolist() == [5.0, 3.0]  # the card bins with equal widths
+    fit_stack({**padded, "data": [[5.0, 3.0, 0.0, 0.0], [2.2, 1.6, 0.0, 0.0], [2.8, 2.3, 0.0, 0.0]]}, build(), "htt_mt_1_2018", tmp_path / "mvis", False, np.array([0.0, 50.0, 100.0, 200.0, 300.0]))
+    assert (figures[-1].axes[1].get_xlim(), figures[-1].axes[1].get_xlabel()) == ((0.0, 300.0), "bin")  # no score: its own edges
 
 
 def test_check_summaries_keep_the_cards_of_earlier_runs(tmp_path):

@@ -21,7 +21,9 @@ and robustHesse can find negative eigenvalues there. The replacement is symmetri
     delta_i = s_i * max(|u_i|, |d_i|), s_i = sign(u_i - d_i)  otherwise (the larger shift; s_i = sign(u_i + d_i) when
                                                               u_i = d_i),
     Up'_i = N_i + delta_i, Down'_i = N_i - delta_i, each clipped at 0;
-the variances of Up and Down stay. Every replacement and no-op is listed in <card dir>/template_changes.json.
+the variances of Up and Down stay. Every replacement and no-op is listed in <card dir>/template_changes.json. A pair
+with a side whose sum is not positive after that (a process of a few simulated events, a Down clipped at 0 everywhere)
+is left out, since combine rejects its norm ("Bogus norm"); such pairs are listed under "empty_pairs".
 
 ScoreBinning categories (score_bins.py, e.g. the NN categories): their edges are resolved from the nominal templates
 (data-blind rules or the thesis AutoRebin) instead of the --min-background merging, recorded per channel and category
@@ -101,33 +103,37 @@ def rebin_edges(total_background: Histogram, min_background: float | None) -> li
     return edges
 
 
-def collect_bin(hset: HistogramSet, analysis: Analysis, channel_name: str, index: int, category: Category, min_background: float | None) -> Bin | None:
-    """The rebinned data, processes and variations of one bin; None without data or processes."""
+def collect_bin(hset: HistogramSet, analysis: Analysis, channel_name: str, index: int, category: Category, min_background: float | None, region: str = NOMINAL,
+                edges: list[float] | None = None) -> Bin | None:
+    """The rebinned data, processes and variations of one bin, from the histograms of `region` (the nominal one by
+    default, e.g. a control region for the GoF of a control variable); `edges` replaces the merging to
+    `min_background` (a subset of the filled edges). None without data or processes."""
     channel = analysis.channel(channel_name)
     variable = category.variable.name
 
     def key_of(process: str, variation: str = NOMINAL_VARIATION) -> HistKey:
-        return HistKey(channel_name, category.name, process, NOMINAL, variation, variable)
+        return HistKey(channel_name, category.name, process, region, variation, variable)
 
     nominal = {p: hset[key_of(p)] for p in (analysis.signal, *channel.backgrounds()) if key_of(p) in hset}
     if not nominal or key_of(channel.data()) not in hset:
-        logger.warning(f"{channel_name}/{category.name}/{variable}: no {'processes' if not nominal else 'data'}, bin {bin_name(analysis, channel_name, index)} left out")
+        logger.warning(f"{channel_name}/{category.name}/{variable}#{region}: no {'processes' if not nominal else 'data'}, bin {bin_name(analysis, channel_name, index)} left out")
         return None
     total = None
     for process, h in nominal.items():
         if process != analysis.signal:
             total = h.copy() if total is None else total.add(h)
-    edges = rebin_edges(total, min_background) if total is not None else list(hset[key_of(channel.data())].edges)
+    if edges is None:
+        edges = rebin_edges(total, min_background) if total is not None else list(hset[key_of(channel.data())].edges)
     result = Bin(channel_name, bin_name(analysis, channel_name, index), hset[key_of(channel.data())].rebin(edges), {}, {})
     if len(edges) < len(hset[key_of(channel.data())].edges):
-        logger.debug(f"{result.name}: {len(hset[key_of(channel.data())].edges) - 1} -> {len(edges) - 1} bins (background >= {min_background:g} per bin)")
+        logger.debug(f"{result.name}: {len(hset[key_of(channel.data())].edges) - 1} -> {len(edges) - 1} bins" + (f" (background >= {min_background:g} per bin)" if min_background is not None else ""))
     for process, h in nominal.items():
         rebinned = h.rebin(edges)
         if rebinned.sum() <= 0.0:
             logger.debug(f"{result.name}: {process} left out, rate {rebinned.sum():.3g}")
             continue
         result.processes[process] = rebinned
-        keys = hset.select(channel=channel_name, category=category.name, process=process, region=NOMINAL, variable=variable)
+        keys = hset.select(channel=channel_name, category=category.name, process=process, region=region, variable=variable)
         result.variations[process] = {key.variation: hset[key].rebin(edges) for key in keys if key.variation != NOMINAL_VARIATION and not is_part(key.variation)}
     return result
 
@@ -352,8 +358,22 @@ def _record_line(record: Symmetrised) -> str:
     return f"{record.nuisance} {record.bin}/{record.process} ({record.reason}): {record.before[0]:.4f}/{record.before[1]:.4f} -> {record.after[0]:.4f}/{record.after[1]:.4f}" + (f", {record.clipped} bins clipped at 0" if record.clipped else "")
 
 
+def drop_empty_pairs(bins: list[Bin]) -> list[str]:
+    """Remove the Up/Down pairs of a process with a side whose sum is not positive, whose norm combine rejects; returns
+    them as `<bin>/<process>: <nuisance>`."""
+    dropped = []
+    for b in bins:
+        for process, variations in b.variations.items():
+            names = {name[:-2] for name in variations if name.endswith("Up")} | {name[:-4] for name in variations if name.endswith("Down")}
+            for name in sorted(names):
+                if any(h is not None and h.sum() <= 0.0 for h in (variations.get(f"{name}Up"), variations.get(f"{name}Down"))):
+                    for direction in ("Up", "Down"):
+                        variations.pop(f"{name}{direction}", None)
+                    dropped.append(f"{b.name}/{process}: {name}")
+    return dropped
+
+
 def write_datacard(hset: HistogramSet, analysis: Analysis, channels: list[str], output_dir: Path, systematics: bool = True, min_background: float | None = 1.0) -> Path:
-    output_dir = Path(output_dir)
     bins, score_records, clipped = [], {}, []
     for channel in channels:
         for index, category in enumerate(analysis.channel(channel).categories):
@@ -365,6 +385,15 @@ def write_datacard(hset: HistogramSet, analysis: Analysis, channels: list[str], 
                     score_records.setdefault(channel, {})[category.name] = record
             elif (b := collect_bin(hset, analysis, channel, index, category, min_background)) is not None:
                 bins.append(b)
+    return write_bins(analysis, bins, output_dir, systematics, score_records, clipped)
+
+
+def write_bins(analysis: Analysis, bins: list[Bin], output_dir: Path, systematics: bool = True, score_records: dict[str, dict[str, dict]] | None = None, clipped: list[dict] | None = None) -> Path:
+    """The card of collected bins: no-op nuisances left out, pairs symmetrised, pairs with an empty side left out,
+    template_changes.json, the score records (nn_binning.json, blinding.json), the shapes file and combined.txt in
+    `output_dir`."""
+    output_dir = Path(output_dir)
+    score_records, clipped = score_records or {}, clipped or []
     no_ops = no_op_variations(bins)
     drop_variations(bins, no_ops)
     if no_ops:
@@ -372,8 +401,13 @@ def write_datacard(hset: HistogramSet, analysis: Analysis, channels: list[str], 
     records = symmetrise(analysis, bins)
     if records:
         logger.info(f"{output_dir.name}: {len(records)} templates symmetrised (one-sided or asymmetry > {analysis.asymmetry_ratio:g}), Down/Up yield ratios before -> after:\n" + "\n".join(_record_line(r) for r in records))
+    empty = drop_empty_pairs(bins)
+    if empty:
+        logger.warning(f"{output_dir.name}: {len(empty)} shape pairs with a side whose sum is not positive left out (combine rejects their norm): {', '.join(empty)}")
     output_dir.mkdir(parents=True, exist_ok=True)
     changes = {"asymmetry_ratio": analysis.asymmetry_ratio, "no_ops": no_ops, "symmetrised": [asdict(r) for r in records]}
+    if empty:
+        changes["empty_pairs"] = empty
     if score_records:  # only cards with ScoreBinning categories list them, the others stay as they were
         changes["clipped"] = clipped
         if clipped:

@@ -150,6 +150,18 @@ def _shape(path, name):
         return f[f"htt_mt_1_2018/{name}"].values().tolist()
 
 
+def test_a_pair_with_an_empty_side_after_the_symmetrisation_is_left_out(tmp_path):
+    """Up at 2.5 times the nominal and Down at the nominal: the symmetric Down (-0.5 times the nominal) is clipped at 0,
+    whose norm combine rejects; the pair is left out and listed."""
+    analysis = dataclasses.replace(build(), symmetrised_variations=("CMS_ff_shift",))
+    card = write_datacard(_one_bin_hset(1.0, 2.5), analysis, ["mt"], tmp_path / "mt")
+    assert "CMS_ff_shift" not in card.read_text()
+    changes = json.loads((card.parent / "template_changes.json").read_text())
+    assert changes["empty_pairs"] == ["htt_mt_1_2018/jetFakes: CMS_ff_shift", "htt_mt_2_2018/jetFakes: CMS_ff_shift"] and len(changes["symmetrised"]) == 2
+    kept = write_datacard(_one_bin_hset(1.0, 1.5), analysis, ["mt"], tmp_path / "kept")  # Down at 0.5 times the nominal
+    assert "CMS_ff_shift" in kept.read_text() and "empty_pairs" not in json.loads((kept.parent / "template_changes.json").read_text())
+
+
 @pytest.mark.parametrize(("down", "up", "reason", "after"), [
     (1.2787, 0.9216, "asymmetry 3.6", (1.17855, 0.82145)),  # mt QCD non-closure MCShift 2018: half the distance of Down to Up
     (0.9337, 1.1832, "asymmetry 2.8", (0.87525, 1.12475)),  # StatShift 2018
