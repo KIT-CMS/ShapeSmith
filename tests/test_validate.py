@@ -88,7 +88,7 @@ def test_validate_checks_estimators_and_auxiliary_processes():
     with pytest.raises(model.AnalysisError, match="template shift t: unknown process TTT"):
         validate(_with_channel(analysis, estimators=(model.TemplateShift("t", "EMB", "TTT", 0.1),)))
     with pytest.raises(model.AnalysisError, match="ML export: ZTT is no signal or background process or estimator output of any channel"):
-        validate(dataclasses.replace(analysis, ml=dataclasses.replace(analysis.ml, processes=("ZTT",))))
+        validate(dataclasses.replace(analysis, ml=dataclasses.replace(analysis.ml, class_of={"ZTT": "Z"})))
     mixed = channel.samples + (model.Sample("DATA_B", "EMB", "data"),)
     with pytest.raises(model.AnalysisError, match="process EMB: samples of different kinds"):
         validate(_with_channel(analysis, samples=mixed))
@@ -109,7 +109,8 @@ def test_the_ml_processes_are_checked_per_channel():
     """ZTT is the auxiliary template of the embedding in mt and a background in tt: exported from tt only."""
     analysis = build_embedding()
     channels = {"mt": analysis.channel("mt"), "tt": dataclasses.replace(build().channel("mt"), name="tt")}
-    analysis = dataclasses.replace(analysis, channels=channels, ml=dataclasses.replace(analysis.ml, processes=("ZTT", "EMB", "jetFakes")))
+    ml = dataclasses.replace(analysis.ml, classes=("Z", "jetFakes"), class_of={"ZTT": "Z", "EMB": "Z", "jetFakes": "jetFakes"})
+    analysis = dataclasses.replace(analysis, channels=channels, ml=ml)
     validate(analysis)
     assert analysis.ml.exported(channels["mt"]) == ("EMB", "jetFakes") and analysis.ml.exported(channels["tt"]) == ("ZTT", "jetFakes")
     with pytest.raises(model.AnalysisError, match="ML export: jetFakes is an estimator output of channel tt without a region in region_of"):

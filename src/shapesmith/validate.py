@@ -109,11 +109,30 @@ def _binning_problems(channel: Channel) -> list[str]:
 
 
 def _ml_problems(analysis: Analysis) -> list[str]:
-    """Every ML process is exported by some channel; an estimator output, exported as the data of its region_of
-    region, never from the nominal region."""
+    """Every ML process is exported by some channel into one of the classes, and every class gets a process; an
+    estimator output, exported as the data of its region_of region, never from the nominal region; the variables and
+    identifiers are distinct column names of the export."""
+    from shapesmith.ml_export import reserved_columns
+
     ml = analysis.ml
     exported = {name for channel in analysis.channels.values() for name in ml.exported(channel)}
     problems = [f"ML export: {name} is no signal or background process or estimator output of any channel" for name in ml.processes if name not in exported]
+    problems += [
+        f"ML export: {name} has the class {ml.class_of[name]}, which is not among the classes"
+        for name in ml.processes
+        if ml.class_of[name] not in ml.classes
+    ]
+    used = {ml.class_of[p] for p in exported}
+    problems += [f"ML export: no exported process has the class {name}" for name in ml.classes if name not in used]
+    for what, names in (("class", ml.classes), ("variable", ml.variables), ("identifier", ml.identifiers)):
+        problems += [f"ML export: {problem}" for problem in _duplicates(what, list(names))]
+    reserved = reserved_columns(ml)
+    problems += [f"ML export: the variable {v} is a reserved column of the export"
+                 for v in ml.variables if v in reserved]
+    problems += [f"ML export: the mc_only variable {v} is not among the variables"
+                 for v in ml.mc_only if v not in ml.variables]
+    if len(ml.classes) > 127:
+        problems.append("ML export: more than 127 classes (class_index is int8)")
     for channel in analysis.channels.values():
         processes = {p.name for p in channel.processes}
         problems += [

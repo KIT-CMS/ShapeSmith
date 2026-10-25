@@ -17,7 +17,7 @@ from shapesmith.config import RunConfig, WebConfig, load_analysis, load_config
 from shapesmith.ntuples import describe
 from shapesmith.provenance import record, write_versions
 
-app = typer.Typer(help=f"ShapeSmith {__version__}: CROWN ntuples -> skims -> histograms -> datacards, fits, plots, ML folds, measurements.", no_args_is_help=True)
+app = typer.Typer(help=f"ShapeSmith {__version__}: CROWN ntuples -> skims -> histograms -> datacards, fits, plots, ML training data, measurements.", no_args_is_help=True)
 logger = logging.getLogger("shapesmith.cli")  # also under `python -m shapesmith.cli`, where __name__ is __main__
 _command = {"name": "shapesmith"}  # the running sub-command, set by _logged (log file name and first log line)
 
@@ -108,7 +108,7 @@ def _split(value: Optional[str]) -> Optional[list[str]]:
 @_logged
 def validate(config: Path = ConfigOption, channels: Optional[str] = ChannelsOption, overrides: Optional[list[str]] = SetOption):
     """Load and validate the analysis; report processes, selections and the columns every channel needs."""
-    from shapesmith.skim import needed_columns
+    from shapesmith.skim import exported_by, needed_columns
 
     cfg, analysis, selected = _setup(config, channels, overrides=overrides, log_file=False)
     console = Console()
@@ -126,7 +126,7 @@ def validate(config: Path = ConfigOption, channels: Optional[str] = ChannelsOpti
         console.print(f"  cuts {list(channel.cuts)}, regions {[r.name for r in channel.regions]}")
         console.print(f"  categories {[c.name for c in channel.categories] or 'none'}, control variables {len(channel.variables)}, variations {len(channel.variations)}")
         console.print(f"  estimators {[type(e).__name__ for e in channel.estimators] or 'none'}, backgrounds {list(channel.backgrounds())}")
-        columns = set().union(*(needed_columns(channel, s) for s in channel.samples))
+        columns = set().union(*(needed_columns(channel, s, exported_by(analysis, channel)) for s in channel.samples))
         typer.echo(f"{name}: {len(columns)} columns required")
     typer.echo(f"analysis {analysis.name} is valid")
 
@@ -269,13 +269,40 @@ def publish(config: Path = ConfigOption, channels: Optional[str] = ChannelsOptio
 @app.command("ml-export")
 @_logged
 def ml_export(config: Path = ConfigOption, channels: Optional[str] = ChannelsOption, overrides: Optional[list[str]] = SetOption, workers: Optional[int] = WorkersOption):
-    """Training folds (Feather) from the skims."""
+    """Training data from the skims: <ml_dir>/<channel>/events.feather (one row per event) and <ml_dir>/classes.json."""
     from shapesmith.ml_export import run_ml_export
 
     cfg, analysis, selected = _setup(config, channels, workers=workers, overrides=overrides)
     if cfg.ml_dir is not None:
         write_versions(cfg, analysis.name, cfg.ml_dir)
     for path in run_ml_export(cfg, analysis, selected):
+        logger.info(f"wrote {path}")
+
+
+@app.command("ml-merge")
+@_logged
+def ml_merge(
+    configs: list[Path] = typer.Option(..., "--config", "-c", help="the run YAML of every era (repeat -c)"),
+    output: Path = typer.Option(..., "--output", "-o", help="directory of the merged export"),
+    channels: Optional[str] = ChannelsOption,
+    overrides: Optional[list[str]] = SetOption,
+    eras: Optional[list[str]] = typer.Option(None, "--era", help="every run YAML once per era (-s era=<era>; repeat)"),
+):
+    """Merge the ML exports of several eras (the ml_dir of every run) into one per channel, with the era column."""
+    from shapesmith.ml_export import merge_eras
+
+    directories = []
+    runs = [(path, [*(overrides or []), *([f"era={e}"] if e else [])]) for path in configs for e in (eras or [None])]
+    for index, (path, run_overrides) in enumerate(runs):
+        cfg = load_config(path, run_overrides)
+        if index == 0:
+            package = cfg.analysis.partition(":")[0].split(".")[0]
+            logs.configure(cfg.log_level, logs.log_path(output, _command["name"]), [package])
+        if cfg.ml_dir is None:
+            raise typer.BadParameter(f"{path} ({' '.join(run_overrides)}): ml_dir is not set")
+        logger.info(f"{path} ({' '.join(run_overrides) or 'no overrides'}): era {cfg.era}, {cfg.ml_dir}")
+        directories.append(cfg.ml_dir)
+    for path in merge_eras(directories, output, _split(channels)):
         logger.info(f"wrote {path}")
 
 

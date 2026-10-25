@@ -1,7 +1,7 @@
 # ShapeSmith
 
 From CROWN ntuples to histograms, background estimates, combine datacards, fits, plots,
-ML training folds and measurements (correctionlib payloads). Columnar (uproot, pandas,
+ML training data and measurements (correctionlib payloads). Columnar (uproot, pandas,
 numexpr, numpy), no ROOT needed except for `shapesmith fit`, which calls combine in a CMSSW
 subshell.
 
@@ -34,7 +34,8 @@ shapesmith fit       -c run.yaml [--final-states mt,all] [--skip-combine]   # li
 shapesmith fit       -c run.yaml --background-only [--final-states all]   # background-only fit to the data, pulls, yields
 shapesmith combine   -c run_2017.yaml -c run_2018.yaml ... -o DIR [--final-state all] [--background-only] [--validate]   # cards of several eras combined
 shapesmith combine   -c run.yaml --era 2017 --era 2018 ... -o DIR   # the same with one run YAML loaded per era ({era} filled)
-shapesmith ml-export -c run.yaml              # Feather training folds
+shapesmith ml-export -c run.yaml              # training data: <ml_dir>/<channel>/events.feather + classes.json
+shapesmith ml-merge  -c run.yaml --era 2017 --era 2018 ... -o DIR   # the exports of several eras in one per channel
 shapesmith inspect   output/shapes.root [--unchanged]   # what a histogram file contains; variations equal to their nominal
 ```
 
@@ -120,9 +121,10 @@ categories, control variables, variations and estimators.
   variation `<name>Up%p` / `<name>Down%p` (`histogram.part_of`), e.g. one nuisance from CROWN
   shifts produced per decay mode (exact where no event is changed by two parts). Parts never
   become datacard shapes; place the sum after the estimators whose outputs should carry it.
-- `MLExportConfig(variables, processes, label_of, region_of)`: `ml-export` writes, per channel, the
-  `processes` the channel has as signal, background or estimator output (`exported(channel)`);
-  an estimator output is the data of its `region_of` region, which must not be the nominal one.
+- `MLExportConfig(variables, classes, class_of, region_of, identifiers, mc_only, subtraction, profile)`: `ml-export`
+  writes, per channel, the processes of `class_of` the channel has as signal, background or estimator output
+  (`exported(channel)`), each in its class (`classes` in order: the class index); an estimator output is the data of
+  its `region_of` region, which must not be the nominal one (see "ML export").
 - `Analysis.control_channels`: channels that `datacards` and `fit` put into every final state
   (each selected channel and `all`) but never make a final state themselves, e.g. a ttbar
   control channel fitted together with the signal channels; `ml-export` skips them.
@@ -174,6 +176,41 @@ variations and friends serves every subset. Incompatible skims are listed togeth
 in place is not detected). The manifest is written before the first file of a sample and after
 every finished file, so an interrupted skim resumes with only the unfinished files. Parquet
 files and manifests are replaced atomically.
+
+## ML export
+
+`ml-export` writes the training data of a run (`ml_dir`): per exported channel one flat Feather file
+`<ml_dir>/<channel>/events.feather`, one row per event and exported process, and `<ml_dir>/classes.json`. The rows
+are the selected events of every process of `MLExportConfig.class_of` in the nominal region, in its order; an
+estimator output is the data of its `region_of` region with that region's weights (e.g. the fake factor) times the
+scale of its `DataMinus`. With `subtraction` (default) the processes a `DataMinus` output subtracts follow, in its
+region, with negated weights, in the class of the output (`is_subtraction`): the output's rows then add up to its
+estimate. `--workers` loads the processes in parallel; the row order does not depend on it. The skims of a channel
+hold the columns of the export (`skim.needed_columns`), except in a control channel, which is never exported.
+
+| Column | Type | Content |
+|---|---|---|
+| identifiers (`MLExportConfig.identifiers`, e.g. `run`, `lumi`, `event`) | as in the n-tuple (e.g. uint32, uint32, uint64) | the event; (`era`, `channel`, `sample_nick`, identifiers) is its key |
+| `era`, `channel`, `sample_nick`, `process` | category (dictionary-encoded string) | `process`: the exported process or estimator output; of a subtraction row the subtracted process |
+| `row` | int64 | the position in the file (0, 1, ...): (`era`, `channel`, `row`) is unique |
+| `class_index` | int8 | the position of the class in `classes` |
+| `weight` | float64 | the event weight with its sign (normalisation, luminosity, every process and region weight) |
+| `is_subtraction` | bool | a subtraction row |
+| `thesis_training` | bool | the training half of a parity fold in the previous smhtt_ul export: the pattern True, True, False, False over the rows of each process (its `fold<k>_training` of K folds was `event % K == (k + 1) % K` and `thesis_training`) |
+| the variables (`MLExportConfig.variables`) | float32 | the column, or the expression of a channel or category variable of that name; NaN for an `mc_only` variable in data and embedded rows |
+
+There are no folds and no class weights in the files: a trainer takes its folds from the event number (`event % n`
+on uint64) and its class weights from `weight`. `classes.json`: `profile`, `classes` (in class-index order),
+`variables`, `mc_only`, `identifiers`, `regions` (`region_of`), `eras`, and per channel `processes` (class -> its
+exported processes) and `subtraction` (estimator output -> the subtracted processes). A second export into the same
+`ml_dir` must have the same class scheme (it adds its channels and eras), else it fails. The log lists the rows and the
+signed weight of every class and warns about event keys that occur more than once.
+
+`ml-merge` (one run YAML per era, or one run YAML with `--era` per era, like `combine`) concatenates the files of
+every era's `ml_dir` per channel into `DIR/<channel>/events.feather` (the eras one after the other, `row` that of its
+era) and writes `DIR/classes.json` with the eras and, per channel and class, the processes of any era. The eras must
+have the same class scheme and the requested channels, and no era may occur twice. Weights keep the luminosity of
+their era. The provenance records of each era (`versions/`) are copied to `DIR/versions/<era>/`.
 
 ## Samples
 

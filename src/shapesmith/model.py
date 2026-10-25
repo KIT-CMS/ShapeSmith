@@ -281,18 +281,44 @@ class Style:
 
 @dataclass(frozen=True)
 class MLExportConfig:
+    """What `ml-export` writes (ml_export.py): one row per event of the exported processes with its class.
+
+    `class_of` maps every exported process or estimator output to one of `classes`, whose order is the class index.
+    `variables` are columns or the names of channel or category variables (their expressions); `mc_only` among them
+    exist for simulated samples only (generator truth) and are NaN in the rows of data and embedded processes.
+    `identifiers` are copied with their n-tuple types. With `subtraction`, an exported DataMinus output also brings the
+    processes it subtracts, in its region with negative weights (rows flagged is_subtraction)."""
+
     variables: tuple[str, ...]
-    processes: tuple[str, ...]
-    label_of: Mapping[str, str]
+    classes: tuple[str, ...]
+    class_of: Mapping[str, str]
     region_of: Mapping[str, str] = field(default_factory=dict)
-    fold_column: str = "event"
-    folds: int = 2
+    identifiers: tuple[str, ...] = ("event",)
+    mc_only: tuple[str, ...] = ()
+    subtraction: bool = True
+    profile: str = ""  # the name of the class scheme, recorded in classes.json
+
+    def __post_init__(self):
+        for name in ("class_of", "region_of"):
+            object.__setattr__(self, name, _frozen(getattr(self, name)))
+
+    @property
+    def processes(self) -> tuple[str, ...]:
+        """The exported processes and estimator outputs, in the order of `class_of`."""
+        return tuple(self.class_of)
+
+    def class_index(self, name: str) -> int:
+        return self.classes.index(self.class_of[name])
 
     def exported(self, channel: Channel) -> tuple[str, ...]:
         """The processes a channel exports: those of `processes` that are its signal or background processes or
         estimator outputs; a name the channel lacks (e.g. a process of another channel) is left out there."""
         own = {p.name for p in channel.processes if p.role == "signal"} | set(channel.backgrounds())
         return tuple(name for name in self.processes if name in own)
+
+    def columns(self, kind: str) -> tuple[str, ...]:
+        """The variables a process of a sample kind has: without `mc_only` for data and embedding."""
+        return tuple(v for v in self.variables if kind == "mc" or v not in self.mc_only)
 
 
 @dataclass(frozen=True)

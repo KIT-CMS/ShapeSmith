@@ -66,9 +66,10 @@ def build(config=None) -> Analysis:
         ),
         ml=MLExportConfig(
             variables=("m_vis", "score"),
-            processes=("ZTT", "ZL", "HH", "jetFakes"),
-            label_of={"ZTT": "is_Z", "ZL": "is_Z", "HH": "is_HH", "jetFakes": "is_jetFakes"},
+            classes=("HH", "Z", "jetFakes"),
+            class_of={"ZTT": "Z", "ZL": "Z", "HH": "HH", "jetFakes": "jetFakes"},
             region_of={"jetFakes": "anti_iso"},
+            profile="mini",
         ),
     )
 
@@ -92,7 +93,7 @@ def build_embedding(config=None) -> Analysis:
         variations=channel.variations + embedding_variations(),
         estimators=(DataMinus("jetFakes", "anti_iso", ("EMB", "ZL")), TemplateShift("CMS_htt_emb_ttbar_2018", "EMB", "ZTT", 0.1)),
     )
-    ml = dataclasses.replace(analysis.ml, processes=("EMB", "ZL", "HH", "jetFakes"), label_of={"EMB": "is_Z", "ZL": "is_Z", "HH": "is_HH", "jetFakes": "is_jetFakes"})
+    ml = dataclasses.replace(analysis.ml, class_of={"EMB": "Z", "ZL": "Z", "HH": "HH", "jetFakes": "jetFakes"})
     return dataclasses.replace(analysis, channels={"mt": channel}, ml=ml)
 
 

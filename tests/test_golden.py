@@ -72,12 +72,39 @@ def _produce(tmp: Path) -> tuple[dict, str]:
     abcd_hset = run_hist(config, abcd, ["mt"], True, None, False, None, tmp / "out" / "abcd.root")
     run_estimates(abcd_hset, abcd, ["mt"])
     result["abcd_control_estimate"] = _digest(abcd_hset)
-    result["ml_export"] = {}
-    for path in run_ml_export(config, analysis, ["mt"]):
-        frame = pd.read_feather(path)
-        result["ml_export"][path.name] = {"|".join(column): np.asarray(frame[column]).astype(np.float64).tolist() for column in frame.columns}
+    run_ml_export(config, analysis, ["mt"])
+    result["ml_export"] = _legacy_folds(pd.read_feather(config.ml_dir / "mt" / "events.feather"), analysis.ml.classes)
     result["reused_old_contracts"] = _reuse_old_contracts(config, analysis)
     return result, card
+
+
+def _legacy_folds(frame: pd.DataFrame, classes: tuple[str, ...]) -> dict:
+    """The six fold files of the export of aa5daa5 (five-level columns, labels "is_<class>" in alphabetical order,
+    Event.id counting the rows of each process, class weights per file), rebuilt from the flat export without its
+    subtraction rows: fold k = event % 2 == (k + 1) % 2, its training part = thesis_training."""
+    frame = frame[~frame["is_subtraction"]].reset_index(drop=True)
+    weight = frame["weight"].to_numpy().astype(np.float32)
+    columns = {"Event|event|||": frame["event"].to_numpy(), "Event|id|||": frame.groupby("process", observed=True).cumcount().to_numpy()}
+    columns |= {f"Labels|is_{name}|||": (frame["class_index"].to_numpy() == classes.index(name)).astype(np.int32) for name in sorted(classes)}
+    columns |= {f"Nominal|variables|{v}||": frame[v].to_numpy() for v in ("m_vis", "score")}
+    columns |= {"Nominal|weight|||": weight, "Nominal|cut|||": np.ones(len(frame), dtype=np.float32)}
+    folds = {}
+    for k in (0, 1):
+        in_fold = frame["event"].to_numpy() % 2 == (k + 1) % 2
+        for name, selected in ((f"fold{k}", in_fold), (f"fold{k}_training", in_fold & frame["thesis_training"].to_numpy()), (f"fold{k}_validation", in_fold & ~frame["thesis_training"].to_numpy())):
+            part = {column: values[selected] for column, values in columns.items()}
+            labels = np.stack([part[f"Labels|is_{c}|||"] for c in sorted(classes)], axis=1).argmax(axis=1)
+            part["Nominal|class_weight|||"] = class_weights(part["Nominal|weight|||"].astype(np.float64), labels).astype(np.float32)
+            folds[f"{name}.feather"] = {column: np.asarray(values).astype(np.float64).tolist() for column, values in part.items()}
+    return folds
+
+
+def class_weights(weights: np.ndarray, labels: np.ndarray) -> np.ndarray:
+    """The class weights of aa5daa5: weight * (sum of all weights) / (sum of weights of the event's class)."""
+    result = np.zeros_like(weights, dtype=np.float64)
+    for label in np.unique(labels):
+        result[labels == label] = weights.sum() / weights[labels == label].sum()
+    return result * weights
 
 
 def _reuse_old_contracts(config, analysis) -> bool:
@@ -119,6 +146,7 @@ def test_datacard_text_matches_the_golden_card(produced):
 
 
 def test_ml_export_matches_the_golden_frames(produced):
+    """The flat export holds the rows, variables and weights of the fold files of aa5daa5 bit by bit."""
     golden = json.loads((GOLDEN / "mini_golden.json").read_text())["ml_export"]
     result = produced[0]["ml_export"]
     assert sorted(result) == sorted(golden)

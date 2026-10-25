@@ -1,7 +1,8 @@
 """Stage 1: ntuples (+ friends) -> Parquet skims with the loose skim selection and every column the analysis needs.
 
 Columns: per sample, the columns of every expression its processes can use (all regions, categories, variables and
-the variations of its kind), the skim cuts, keep_columns, `event`, `genWeight` for MC and those of its own cut. For
+the variations of its kind), the skim cuts, keep_columns, `event`, `genWeight` for MC, those of its own cut and, in a
+channel that is no control channel, those of the ML export variables of its kind (MLExportConfig.columns). For
 every CROWN shift of its kind (a ColumnVariation with a suffix) the shifted branches `c + suffix` are read where
 they exist. The bookkeeping columns (store.SKIM_COLUMNS) are never read: the skim adds them, and the kind flags
 is_data, is_mc and is_embedding exist before the skim cuts, so that a cut can depend on the sample kind.
@@ -32,7 +33,10 @@ from shapesmith import __version__, logs
 from shapesmith.config import RunConfig
 from shapesmith.events import select
 from shapesmith.expressions import columns_in, columns_of, mask, shift
-from shapesmith.model import NOMINAL_REGION, Analysis, Channel, ColumnVariation, EqualData, Sample, WeightVariation, applies
+from shapesmith.ml_export import variable_columns
+from shapesmith.model import (
+    NOMINAL_REGION, Analysis, Channel, ColumnVariation, EqualData, MLExportConfig, Sample, WeightVariation, applies,
+)
 from shapesmith.ntuples import NtupleFile, describe, discover, friend_bases, read_ntuple
 from shapesmith.parallel import run_jobs
 from shapesmith.store import SKIM_COLUMNS, manifest_path, read_manifest, schema, skim_path, write_manifest, write_skim
@@ -58,8 +62,9 @@ def column_variations(channel: Channel, sample: Sample) -> list[ColumnVariation]
     return [v for v in channel.variations if isinstance(v, ColumnVariation) and applies(v, sample.kind, sample.group)]
 
 
-def needed_columns(channel: Channel, sample: Sample) -> set[str]:
-    """Every nominal column the sample's histograms, estimates and exports can read."""
+def needed_columns(channel: Channel, sample: Sample, ml: MLExportConfig | None = None) -> set[str]:
+    """Every nominal column the sample's histograms, estimates and exports can read (`ml`: the ML export of the
+    channel, None for a control channel)."""
     weight_variations = [v for v in channel.variations if isinstance(v, WeightVariation) and sample.kind in v.applies_to]
     exprs = [*channel.skim.values(), *(c.cut for c in channel.categories), *(c.variable.expr for c in channel.categories)]
     exprs += [c.variable.edges.cut for c in channel.categories if isinstance(c.variable.edges, EqualData) and c.variable.edges.cut]
@@ -78,7 +83,14 @@ def needed_columns(channel: Channel, sample: Sample) -> set[str]:
         columns.add("genWeight")
     if sample.cut is not None:
         columns |= columns_in(sample.cut)
+    if ml is not None:
+        columns |= variable_columns(channel, ml, sample.kind)
     return columns
+
+
+def exported_by(analysis: Analysis, channel: Channel) -> MLExportConfig | None:
+    """The ML export configuration whose columns a channel's skims hold: none in a control channel."""
+    return None if channel.name in analysis.control_channels else analysis.ml
 
 
 def check_shifts(channel: Channel, sample: Sample, columns: set[str], branches: set[str]) -> None:
@@ -181,13 +193,16 @@ def reuse_problems(stored: dict, expected: dict, stored_columns: set[str]) -> li
     return problems
 
 
-def _plan(config: RunConfig, channel: Channel, sample: Sample, files: list[NtupleFile], force: bool) -> tuple[dict, list[tuple], str | None]:
+def _plan(
+    config: RunConfig, channel: Channel, sample: Sample, files: list[NtupleFile], force: bool,
+    ml: MLExportConfig | None = None,
+) -> tuple[dict, list[tuple], str | None]:
     """The manifest and the pending jobs of one sample, or the reason why its stored skim is incompatible.
 
     A complete compatible skim is reused as it is. An incomplete one resumes if it has the same rows: only its
     unfinished files are skimmed, with the stored columns too, so that the files of a sample share one schema. An
     incomplete stored superset is skimmed again."""
-    columns = needed_columns(channel, sample)
+    columns = needed_columns(channel, sample, ml)
     outputs = [(ntuple, skim_path(config.skim_dir, channel.name, sample.nick, ntuple.basename)) for ntuple in files]
     manifest = {"nick": sample.nick, "channel": channel.name, "files": [f.path for f in files], "metadata": {}, "completed": {}, "normalisation": normalisation(sample)}
     manifest["contract"] = contract(config, channel, sample, columns)
@@ -249,7 +264,7 @@ def run_skim(config: RunConfig, analysis: Analysis, channels: list[str] | None =
         for sample, files in zip(chosen, discovered):
             if not files:
                 logger.warning(f"{channel_name}/{sample.nick}: no ntuple files")
-            manifest, pending, problem = _plan(config, channel, sample, files, force)
+            manifest, pending, problem = _plan(config, channel, sample, files, force, exported_by(analysis, channel))
             if problem is not None:
                 incompatible.append(f"{channel_name}/{sample.nick}: {problem}")
                 continue

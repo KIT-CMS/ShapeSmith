@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "shapesmith"
-description = "From CROWN ntuples to histograms, background estimates, datacards, fits, ML training folds and measurements - without ROOT."
+description = "From CROWN ntuples to histograms, background estimates, datacards, fits, ML training data and measurements - without ROOT."
 readme = "README.md"
 requires-python = ">=3.11"
 license = {text = "MIT"}
