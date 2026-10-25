@@ -10,6 +10,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Literal, Mapping, get_args
 
+from shapesmith.nn_binning import BinningRules
+
 if TYPE_CHECKING:
     from shapesmith.measurements import Measurement
 
@@ -105,10 +107,32 @@ class EqualData:
 
 
 @dataclass(frozen=True)
+class ScoreBinning:
+    """Edges that `datacards` resolve after `estimate` from the nominal templates, never from data (nn_binning.py),
+    e.g. of an NN score: `hist` fills the `fine` edges and, for the nominal histograms, the unweighted event counts
+    (histogram.raw_variable). With `rules` the data-blind algorithm merges the fine bins; with `thesis` they are
+    rebinned to those start edges and the AutoRebin of the master's thesis merges them. With `blinding`, the bins from
+    the first one with S/B(mu=1) above it become a card channel of their own with Asimov data (datacards, N14); None:
+    no split. `clip`: processes whose negative bins left after the rebinning are set to zero, keeping the integral of
+    each template (besides the estimator outputs that clip, whose clipping waits for the rebinning here)."""
+
+    fine: tuple[float, ...]
+    rules: BinningRules | None = None
+    thesis: tuple[float, ...] | None = None
+    blinding: float | None = None
+    clip: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
 class Variable:
     name: str
     expr: str
-    edges: tuple[float, ...] | EqualData
+    edges: tuple[float, ...] | EqualData | ScoreBinning
+
+    @property
+    def fill_edges(self) -> tuple[float, ...] | EqualData:
+        """The edges `hist` fills: the fine edges of a ScoreBinning, else `edges`."""
+        return self.edges.fine if isinstance(self.edges, ScoreBinning) else self.edges
 
 
 @dataclass(frozen=True)

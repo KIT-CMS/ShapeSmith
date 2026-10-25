@@ -8,6 +8,7 @@ that).
 """
 from __future__ import annotations
 
+import dataclasses
 import logging
 import time
 from dataclasses import dataclass
@@ -21,8 +22,8 @@ from shapesmith.binning import RECORD, resolve, write_record
 from shapesmith.config import RunConfig
 from shapesmith.events import event_weights, lumi, select
 from shapesmith.expressions import columns_of, evaluate, mask, shift
-from shapesmith.histogram import INCLUSIVE, NOMINAL_VARIATION, HistKey, Histogram, HistogramSet
-from shapesmith.model import ABCD, NOMINAL, Analysis, Channel, ColumnVariation, DataMinus, EqualData, Process, Variable, Variation, applies
+from shapesmith.histogram import INCLUSIVE, NOMINAL_VARIATION, HistKey, Histogram, HistogramSet, raw_variable
+from shapesmith.model import ABCD, NOMINAL, Analysis, Channel, ColumnVariation, DataMinus, EqualData, Process, ScoreBinning, Variable, Variation, applies
 from shapesmith.parallel import run_jobs
 from shapesmith.store import SKIM_COLUMNS, read_skims, schema
 
@@ -158,7 +159,10 @@ def fill_booking(config: RunConfig, analysis: Analysis, channel_name: str, booki
                 logger.warning(f"{process.name}/{f.region}/{target.variable.name}: {(in_category & ~finite).sum()} events with NaN/inf skipped")
             keep = in_category & finite
             key = HistKey(channel_name, target.category, process.name, f.region, f.variation.name if f.variation else NOMINAL_VARIATION, target.variable.name)
-            result[key] = Histogram.fill(target.variable.edges, values[keep], w[keep])
+            result[key] = Histogram.fill(target.variable.fill_edges, values[keep], w[keep])
+            if f.variation is None and isinstance(target.variable.edges, ScoreBinning):
+                raw = keep & (w != 0.0)
+                result[dataclasses.replace(key, variable=raw_variable(key.variable))] = Histogram.fill(target.variable.fill_edges, values[raw])
     logger.debug(
         f"{channel_name}/{process.name}: {len(result)} histograms from {len(frame)} events of {len(nicks)} samples "
         f"({len(fills)} fills in {len(booking.regions)} regions), {logs.duration(time.monotonic() - start)}"
@@ -185,6 +189,7 @@ def run_hist(config: RunConfig, analysis: Analysis, channels: list[str] | None, 
         for booking in chosen:
             jobs.append((config, analysis, channel_name, booking, targets_))
             scopes |= {(channel_name, booking.process.name, region, t.category, t.variable.name) for region in booking.regions for t in targets_}
+            scopes |= {(channel_name, booking.process.name, region, t.category, raw_variable(t.variable.name)) for region in booking.regions for t in targets_ if isinstance(t.variable.edges, ScoreBinning)}
         logger.info(
             f"{channel_name}: {len(chosen)} processes, {len(targets_)} {'control variables' if control else 'categories'}, "
             f"regions {', '.join(dict.fromkeys(r for b in chosen for r in b.regions))}, {'with' if systematics else 'without'} systematics"

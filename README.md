@@ -100,7 +100,8 @@ categories, control variables, variations and estimators.
   era's share of that luminosity (e.g. 2016preVFP in a 2016 measurement of both halves; 1 otherwise).
 - `Variable(name, expr, edges)`: fixed edges, or `EqualData(n_bins, low, high, cut)`, edges with equal data counts
   computed whenever histograms are filled, from the data of the category or, with `cut`, of that cut (common edges of
-  a pass and a fail category).
+  a pass and a fail category), or, for a category, `ScoreBinning(fine, rules | thesis, blinding, clip)`, edges that
+  `datacards` resolves from the nominal templates (see "Score categories").
 - `Process(name, group, role, plot_group, selection)`: role `data`, `signal`, `background` or
   `auxiliary` (booked in the nominal region only, for an estimator; never in datacards, plots or
   the ML export). A process owns its whole weight set.
@@ -148,6 +149,52 @@ histogram (elsewhere it equals the nominal). `DataMinus` builds its output for e
 variation of data or a subtracted process, taking the nominal of inputs that lack it; weight
 variations are not propagated, ABCD is nominal only. `--skip-systematics` skips weight and column
 variations. `hist` always refills the requested scopes and keeps the other histograms of its file.
+
+## Score categories (NN binning and blinding)
+
+A category whose variable has a `ScoreBinning` (e.g. an NN score) gets its edges in `datacards`, after `estimate`, from
+the nominal templates; data are never read for them (`shapesmith.nn_binning`, `shapesmith.score_bins`).
+
+- `hist` fills the `fine` edges (e.g. 1000 equal bins on [0, 1]) and, for the nominal histograms of every booked region,
+  the unweighted counts of the events with a non-zero weight under the variable `<name>%raw`
+  (`histogram.raw_variable`); `estimate` keeps them out of the estimators and gives a `DataMinus` or `ABCD` output
+  those of the data it is made of.
+- `rules` (`nn_binning.BinningRules`): the data-blind algorithm of the NN spec 6.3. Start bins of equal signal (`start:
+  signal`, `n_start` 50) or equal total background (`background`, 5) in [`low`, upper fine edge] (`low` = 1/K for an
+  argmax category of K classes), merged from the top until every bin has a total background >= `min_background` (1),
+  a relative statistical uncertainty of the total background <= `max_rel_uncertainty` (0.30; background categories
+  0.10), >= `min_raw` (1) unweighted events of every group of `required` (label -> background names, e.g. Top, tautau,
+  jetFakes) and no negative template (signal included); at most `max_bins` (15; background categories 5) bins, the
+  rest (and the scores below `low`) in the lowest accepted bin, one bin where none passes.
+  `nn_binning.resolve_edges(fine_edges, signal_sumw, {name: (sumw, sumw2, raw_count)}, rules) -> edges` is the pure
+  numpy function (`resolve` adds the record), `category_rules(n_classes, signal, required)` the rules of an HH or a
+  background category.
+- `thesis` (start edges, e.g. `nn_binning.THESIS_HH_EDGES`): the fine bins rebinned to them, then the AutoRebin of the
+  master's thesis on the total background (`nn_binning.auto_rebin`, CombineHarvester's `AutoRebin` with
+  SetBinThreshold(1.0), SetBinUncertFraction(0.9), SetRebinMode(1); tested against CombineHarvester).
+- `clip`: processes whose negative bins left after the rebinning are set to zero (each template keeps its integral,
+  nominal and variations); the outputs of estimators that clip (`ABCD`, `DataMinus(clip_negative=True)`) are clipped
+  there too instead of in their fine bins. Every clipped bin is listed under `clipped` in `template_changes.json`.
+- `blinding` (S/B(mu=1), 0.005 for N14): the bins from the first one with S/B above it (nominal templates, final
+  edges) become the card channel `htt_<channel>_<k>hi_<era>` with `data_obs` = the sum of its background templates
+  (Asimov), the bins below `htt_<channel>_<k>lo_<era>` with the data; no lo channel if the first bin is above, one
+  unsplit channel if no bin is.
+
+`datacards` writes per card `nn_binning.json` (per channel and category: method, rules, start and final edges, per bin
+the signal, background, uncertainty, raw counts and failed rules, the blinding edge and S/B per bin, the card bins)
+and `blinding.json`, the contract with every fit and limit:
+
+```json
+{"edge_rule": "S/B(mu=1) > 0.005", "masked": ["htt_mt_1hi_2018"],
+ "categories": {"htt_mt_1hi_2018": {"lo": "htt_mt_1lo_2018", "edge": 0.912, "s_over_b_first_hi_bin": 0.0071}},
+ "asimov_data": true}
+```
+
+`masked` lists exactly the card bins with Asimov `data_obs`: a fit or limit on real data sets `mask_<bin>=1` for each,
+a prefit Asimov fit (`-t -1`) needs none. A card without a category with `blinding` has no `blinding.json` (a stale
+one is removed): nothing is masked; one whose categories have no bin above the threshold has `"masked": []`. `datacards.bin_categories(analysis)` maps every possible card bin, the lo/hi parts
+included, to its channel and category. `plot` and the yields of `publish` show a score category in the bins of its
+card, with the prediction in place of the data in the blinded bins (shaded in the plot).
 
 ## Skims
 

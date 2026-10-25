@@ -1,4 +1,9 @@
-"""Prefit stack plots with mplhep: background stack, data (or Asimov), scaled signal, ratio panel (Spec §11)."""
+"""Prefit stack plots with mplhep: background stack, data (or Asimov), scaled signal, ratio panel (Spec §11).
+
+A ScoreBinning category (e.g. an NN category) is shown in the bins of its card (score_bins.resolve_category, from the
+nominal templates), its processes clipped as in the card; in the nominal region its blinded bins (the hi part, N14)
+show the prediction instead of the data, in the plots and in the yields of the gallery.
+"""
 from __future__ import annotations
 
 import logging
@@ -16,6 +21,7 @@ from shapesmith.histogram import Histogram  # noqa: E402
 from shapesmith.histogram import INCLUSIVE, NOMINAL_VARIATION, HistKey, HistogramSet  # noqa: E402
 from shapesmith.model import NOMINAL, Analysis  # noqa: E402
 from shapesmith.plotting.style import axis_label, color, grouped_backgrounds, label  # noqa: E402
+from shapesmith.score_bins import clip, resolve_category, score_binning  # noqa: E402
 
 logger = logging.getLogger(__name__)
 hep.style.use("CMS")
@@ -38,10 +44,13 @@ def _group_histogram(hset: HistogramSet, channel: str, category: str, members: l
 @dataclass
 class Stack:
     """What a stack plot shows: the background groups in style order, each the nominal histograms of its processes
-    summed (groups without one left out), and the data histogram (None if missing)."""
+    summed (groups without one left out), the data histogram (None if missing) and the signal (None if missing);
+    `blinded_from`: the first bin whose data is the prediction (a blinded ScoreBinning category), None if none."""
 
     groups: list[tuple[str, Histogram]]
     data: Histogram | None
+    signal: Histogram | None = None
+    blinded_from: int | None = None
 
     @property
     def background(self) -> np.ndarray:
@@ -54,18 +63,54 @@ class Stack:
 
 def stack(hset: HistogramSet, analysis: Analysis, channel: str, category: str, variable: str, region: str = NOMINAL) -> Stack:
     """The stack of a plot; also the yields of `shapesmith publish`."""
+    if score_binning(analysis.channel(channel), category, variable) is not None:
+        return _score_stack(hset, analysis, channel, category, variable, region)
     groups = []
     for group, members in grouped_backgrounds(analysis, channel):
         h = _group_histogram(hset, channel, category, members, variable, region)
         if h is not None:
             groups.append((group, h))
-    return Stack(groups, _nominal(hset, channel, category, analysis.channel(channel).data(), variable, region))
+    return Stack(groups, _nominal(hset, channel, category, analysis.channel(channel).data(), variable, region), _nominal(hset, channel, category, analysis.signal, variable, region))
+
+
+def _score_stack(hset: HistogramSet, analysis: Analysis, channel: str, category: str, variable: str, region: str) -> Stack:
+    """The stack of a ScoreBinning category in the bins of its card: in the nominal region the card processes as in the
+    card and the prediction in place of the data of the blinded bins; in another region its histograms rebinned (the
+    clipped processes clipped)."""
+    definition = next(c for c in analysis.channel(channel).categories if c.name == category)
+    view = resolve_category(hset, analysis, channel, definition)
+    if view is None:
+        return Stack([], None)
+
+    def shown(process: str) -> Histogram | None:
+        if region == NOMINAL:
+            return view.templates.get(process)
+        h = _nominal(hset, channel, category, process, variable, region)
+        return None if h is None else (clip(h.rebin(view.edges), process, NOMINAL_VARIATION)[0] if process in view.clip else h.rebin(view.edges))
+
+    groups = []
+    for group, members in grouped_backgrounds(analysis, channel):
+        parts = [h for process in members if (h := shown(process)) is not None]
+        if parts:
+            total = parts[0].copy()
+            for h in parts[1:]:
+                total.add(h)
+            groups.append((group, total))
+    data = _nominal(hset, channel, category, analysis.channel(channel).data(), variable, region)
+    data = None if data is None else data.rebin(view.edges)
+    result = Stack(groups, data, shown(analysis.signal))
+    if region == NOMINAL and view.split is not None and data is not None and groups:
+        data.values[view.split:] = result.background[view.split:]
+        data.variances[view.split:] = np.clip(result.background[view.split:], 0.0, None)
+        result.blinded_from = view.split
+    return result
 
 
 def default_signal_scale(hset: HistogramSet, analysis: Analysis, channel: str, category: str, variable: str, region: str = NOMINAL) -> float:
     """1, 2 or 5 x 10^n such that the scaled signal maximum is about 30 % of the background maximum."""
-    signal = _nominal(hset, channel, category, analysis.signal, variable, region)
-    background = max((float(h.values.max()) for _, h in stack(hset, analysis, channel, category, variable, region).groups), default=0.0)
+    shown = stack(hset, analysis, channel, category, variable, region)
+    signal = shown.signal
+    background = max((float(h.values.max()) for _, h in shown.groups), default=0.0)
     if signal is None or signal.values.max() <= 0 or background <= 0:
         return 1.0
     raw = 0.3 * background / float(signal.values.max())
@@ -94,7 +139,7 @@ def plot_stack(hset: HistogramSet, analysis: Analysis, channel: str, category: s
         raise ValueError(f"data histogram is missing for {channel}/{category}/{region}/{variable}; fill data with `shapesmith hist --regions {region}` or use --blind")
     data = background.copy() if blind else data_hist.values
     data_error = np.sqrt(np.abs(data))
-    signal_hist = _nominal(hset, channel, category, analysis.signal, variable, region)
+    signal_hist = shown.signal
     scale = signal_scale if signal_scale is not None else default_signal_scale(hset, analysis, channel, category, variable, region)
     style = analysis.style
 
@@ -105,6 +150,9 @@ def plot_stack(hset: HistogramSet, analysis: Analysis, channel: str, category: s
         signal_label = style.signal_label if style else analysis.signal
         hep.histplot(signal_hist.values * scale / norm, bins=edges, histtype="step", color=color(analysis, analysis.signal), linewidth=2, label=f"{scale:g} x {signal_label}" if scale != 1 else signal_label, ax=ax)
     hep.histplot(data / norm, bins=edges, yerr=data_error / norm, histtype="errorbar", color="black", label="Asimov" if blind else "Data", ax=ax)
+    if shown.blinded_from is not None and not blind:
+        for axis in (ax, rax):
+            axis.axvspan(edges[shown.blinded_from], edges[-1], color="gray", alpha=0.15, linewidth=0, label="Blinded: prediction as data" if axis is ax else None)
     ax.set_ylabel("dN/dx" if normalize_by_bin_width else "Events")
     if log:
         ax.set_yscale("log")

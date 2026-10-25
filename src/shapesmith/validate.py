@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from shapesmith.histogram import part_of
-from shapesmith.model import ABCD, NOMINAL, ROLES, SAMPLE_KINDS, Analysis, AnalysisError, Channel, ColumnVariation, DataMinus, EqualData, TemplateShift, VariationSum, WeightVariation
+from shapesmith.model import ABCD, NOMINAL, ROLES, SAMPLE_KINDS, Analysis, AnalysisError, Channel, ColumnVariation, DataMinus, EqualData, ScoreBinning, TemplateShift, VariationSum, WeightVariation
 
 
 def _duplicates(what: str, names: list[str]) -> list[str]:
@@ -93,8 +93,42 @@ def _estimator_problems(channel: Channel, region_names: set[str]) -> list[str]:
     return problems
 
 
+def _score_binning_problems(channel: Channel, name: str, binning: ScoreBinning) -> list[str]:
+    """A ScoreBinning: increasing fine edges, exactly one of rules and thesis (start edges among the fine edges),
+    sensible rules, and raw-count groups and clipped processes that the channel has."""
+    from shapesmith.nn_binning import snap
+
+    problems = []
+    if len(binning.fine) < 2 or any(b <= a for a, b in zip(binning.fine, binning.fine[1:])):
+        return [f"variable {name}: the fine edges must hold at least two increasing values"]
+    if (binning.rules is None) == (binning.thesis is None):
+        problems.append(f"variable {name}: needs exactly one of rules and thesis")
+    if binning.thesis is not None:
+        try:
+            snap(binning.thesis, binning.fine)
+        except ValueError:
+            problems.append(f"variable {name}: the thesis edges are not among the fine edges")
+    backgrounds = set(channel.backgrounds())
+    if binning.rules is not None:
+        rules = binning.rules
+        if rules.max_bins < 1 or rules.n_start < 1 or rules.max_rel_uncertainty <= 0.0:
+            problems.append(f"variable {name}: the rules need max_bins >= 1, n_start >= 1 and max_rel_uncertainty > 0")
+        if not binning.fine[0] <= rules.low < binning.fine[-1]:
+            problems.append(f"variable {name}: rules.low {rules.low} lies outside the fine edges")
+        problems += [f"variable {name}: raw-count group {label} has no background" for label, names in rules.required.items() if not names]
+        problems += [f"variable {name}: raw-count group {label}: {n} is no background or estimator output" for label, names in rules.required.items() for n in names if n not in backgrounds]
+    if binning.blinding is not None and not binning.blinding > 0.0:
+        problems.append(f"variable {name}: the blinding S/B must be > 0")
+    problems += [f"variable {name}: clips {n}, which is no background or estimator output" for n in binning.clip if n not in backgrounds]
+    return problems
+
+
 def _binning_problems(channel: Channel) -> list[str]:
     problems = []
+    for category in channel.categories:
+        if isinstance(category.variable.edges, ScoreBinning):
+            problems += _score_binning_problems(channel, category.variable.name, category.variable.edges)
+    problems += [f"variable {v.name}: a ScoreBinning is for categories only" for v in channel.variables.values() if isinstance(v.edges, ScoreBinning)]
     for variable in [c.variable for c in channel.categories] + list(channel.variables.values()):
         rule = variable.edges
         if not isinstance(rule, EqualData):
