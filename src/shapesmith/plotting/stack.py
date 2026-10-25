@@ -1,14 +1,16 @@
 """Prefit stack plots with mplhep: background stack, data (or Asimov), scaled signal, ratio panel (Spec §11).
 
 A ScoreBinning category (e.g. an NN category) is shown in the bins of its card (score_bins.resolve_category, from the
-nominal templates), its processes clipped as in the card; in the nominal region its blinded bins (the hi part, N14)
-show the prediction instead of the data, in the plots and in the yields of the gallery. Its plot draws these bins with
-equal widths, events per bin, with the edges as tick labels (with normalize_by_bin_width: dN/dx on the score axis).
+nominal templates), its processes clipped as in the card; in the nominal region each part of it (the whole category,
+or its lo and hi part) leaves out the processes its card bin leaves out (score_bins.card_templates: a rate <= 0 there,
+logged as by the card), and its blinded bins (the hi part, N14) show the prediction instead of the data, in the plots
+and in the yields of the gallery. Its plot draws these bins with equal widths, events per bin, with the edges as tick
+labels (with normalize_by_bin_width: dN/dx on the score axis).
 """
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import matplotlib
@@ -18,11 +20,12 @@ import matplotlib.pyplot as plt  # noqa: E402
 import mplhep as hep  # noqa: E402
 import numpy as np  # noqa: E402
 
+from shapesmith.datacards import bin_name  # noqa: E402
 from shapesmith.histogram import Histogram  # noqa: E402
 from shapesmith.histogram import INCLUSIVE, NOMINAL_VARIATION, HistKey, HistogramSet  # noqa: E402
 from shapesmith.model import NOMINAL, Analysis  # noqa: E402
 from shapesmith.plotting.style import axis_label, card_bin_axis, card_bin_positions, color, grouped_backgrounds, label  # noqa: E402
-from shapesmith.score_bins import clip, resolve_category, score_binning  # noqa: E402
+from shapesmith.score_bins import card_templates, clip, log_left_out, resolve_category, score_binning  # noqa: E402
 
 logger = logging.getLogger(__name__)
 hep.style.use("CMS")
@@ -46,12 +49,14 @@ def _group_histogram(hset: HistogramSet, channel: str, category: str, members: l
 class Stack:
     """What a stack plot shows: the background groups in style order, each the nominal histograms of its processes
     summed (groups without one left out), the data histogram (None if missing) and the signal (None if missing);
-    `blinded_from`: the first bin whose data is the prediction (a blinded ScoreBinning category), None if none."""
+    `blinded_from`: the first bin whose data is the prediction (a blinded ScoreBinning category), None if none;
+    `left_out`: the processes left out of card bins of a ScoreBinning category as in template_changes.json."""
 
     groups: list[tuple[str, Histogram]]
     data: Histogram | None
     signal: Histogram | None = None
     blinded_from: int | None = None
+    left_out: list[dict] = field(default_factory=list)
 
     @property
     def background(self) -> np.ndarray:
@@ -76,16 +81,17 @@ def stack(hset: HistogramSet, analysis: Analysis, channel: str, category: str, v
 
 def _score_stack(hset: HistogramSet, analysis: Analysis, channel: str, category: str, variable: str, region: str) -> Stack:
     """The stack of a ScoreBinning category in the bins of its card: in the nominal region the card processes as in the
-    card and the prediction in place of the data of the blinded bins; in another region its histograms rebinned (the
-    clipped processes clipped)."""
-    definition = next(c for c in analysis.channel(channel).categories if c.name == category)
+    card bins (each part without the processes its card bin leaves out) and the prediction in place of the data of the
+    blinded bins; in another region its histograms rebinned (the clipped processes clipped)."""
+    index, definition = next((i, c) for i, c in enumerate(analysis.channel(channel).categories) if c.name == category)
     view = resolve_category(hset, analysis, channel, definition)
     if view is None:
         return Stack([], None)
+    templates, left_out = card_templates(view) if region == NOMINAL else ({}, {})
 
     def shown(process: str) -> Histogram | None:
         if region == NOMINAL:
-            return view.templates.get(process)
+            return templates.get(process)
         h = _nominal(hset, channel, category, process, variable, region)
         return None if h is None else (clip(h.rebin(view.edges), process, NOMINAL_VARIATION)[0] if process in view.clip else h.rebin(view.edges))
 
@@ -99,7 +105,8 @@ def _score_stack(hset: HistogramSet, analysis: Analysis, channel: str, category:
             groups.append((group, total))
     data = _nominal(hset, channel, category, analysis.channel(channel).data(), variable, region)
     data = None if data is None else data.rebin(view.edges)
-    result = Stack(groups, data, shown(analysis.signal))
+    left_out = [{"bin": bin_name(analysis, channel, index, name), "process": process, "rate": rate} for name, rates in left_out.items() for process, rate in rates.items()]
+    result = Stack(groups, data, shown(analysis.signal), left_out=left_out)
     if region == NOMINAL and view.split is not None and data is not None and groups:
         data.values[view.split:] = result.background[view.split:]
         data.variances[view.split:] = np.clip(result.background[view.split:], 0.0, None)
@@ -124,6 +131,7 @@ def plot_stack(hset: HistogramSet, analysis: Analysis, channel: str, category: s
     if region != NOMINAL and not hset.select(channel=channel, category=category, region=region, variable=variable):
         raise ValueError(f"no histograms for {channel}/{category}/{region}/{variable}; fill them with `shapesmith hist --regions {region}`")
     shown = stack(hset, analysis, channel, category, variable, region)
+    log_left_out(f"{channel}/{category}/{variable}#{region} plot", shown.left_out)
     groups = shown.groups
     if not groups:
         if region != NOMINAL:

@@ -51,16 +51,17 @@ def asymptotic_command(name: str, combine: CombineConfig | None, mass: str = "12
     return combine_options.command(f"combine -M AsymptoticLimits -d workspace.root {COMMON.format(mass=mass)} --expectSignal 0 -n {name} {extra}".strip(), combine, precise_limit=True)
 
 
-def limit_commands(mass: str = "125", combine: CombineConfig | None = None, frozen: list[str] | None = None) -> list[str]:
-    """Workspace, AsymptoticLimits, Significance and best fit on the Asimov dataset; with `frozen` (the theory
-    nuisances of the cross section in the card) a second AsymptoticLimits with them frozen at 0."""
+def limit_commands(mass: str = "125", combine: CombineConfig | None = None, frozen: list[str] | None = None, limits_only: bool = False) -> list[str]:
+    """Workspace, AsymptoticLimits, Significance and best fit on the Asimov dataset (`limits_only`: neither the
+    significance nor the best fit); with `frozen` (the theory nuisances of the cross section in the card) a second
+    AsymptoticLimits with them frozen at 0."""
     common = COMMON.format(mass=mass)
-    commands = [
-        f"text2workspace.py {CARD} -o workspace.root -m {mass}",
-        asymptotic_command(".Limit", combine, mass),
-        combine_options.command(f"combine -M Significance -d workspace.root {common} --expectSignal 1 -n .Significance", combine),
-        combine_options.command(f"combine -M MultiDimFit --algo singles -d workspace.root {common} --expectSignal 1 -n .Fit", combine),
-    ]
+    commands = [f"text2workspace.py {CARD} -o workspace.root -m {mass}", asymptotic_command(".Limit", combine, mass)]
+    if not limits_only:
+        commands += [
+            combine_options.command(f"combine -M Significance -d workspace.root {common} --expectSignal 1 -n .Significance", combine),
+            combine_options.command(f"combine -M MultiDimFit --algo singles -d workspace.root {common} --expectSignal 1 -n .Fit", combine),
+        ]
     if frozen:
         commands.append(asymptotic_command(".LimitXS", combine, mass, f"{combine_options.parameters([f'{n}=0' for n in frozen])} {combine_options.frozen(frozen)}"))
     return commands
@@ -85,22 +86,23 @@ def xs_limit(cross_section: CrossSection, frozen: list[str], limit: dict[str, fl
             "limit": {key: value * cross_section.value_fb for key, value in limit.items()}}
 
 
-def collect(card_dir: Path, mass: str = "125", cross_section: CrossSection | None = None, frozen: list[str] | None = None) -> dict:
-    """The limits, significance and best fit of a card directory; with a cross section also its limit in fb (from
-    .LimitXS, or from .Limit when no theory nuisance was frozen)."""
+def collect(card_dir: Path, mass: str = "125", cross_section: CrossSection | None = None, frozen: list[str] | None = None, limits_only: bool = False) -> dict:
+    """The limits, significance and best fit of a card directory (`limits_only`: the limits; a significance or best
+    fit there belongs to an earlier run); with a cross section also its limit in fb (from .LimitXS, or from .Limit when
+    no theory nuisance was frozen)."""
     card_dir = Path(card_dir)
     result: dict = {}
     limit_file = card_dir / f"higgsCombine.Limit.AsymptoticLimits.mH{mass}.root"
     significance_file = card_dir / f"higgsCombine.Significance.Significance.mH{mass}.root"
     fit_file = card_dir / f"higgsCombine.Fit.MultiDimFit.mH{mass}.root"
-    for path in (limit_file, significance_file, fit_file):
+    for path in (limit_file,) if limits_only else (limit_file, significance_file, fit_file):
         if not path.exists():
             logger.warning(f"{card_dir.name}: {path.name} missing")
     if limit_file.exists():
         result["limit"] = read_limit(limit_file)
-    if significance_file.exists():
+    if significance_file.exists() and not limits_only:
         result["significance"] = _read(significance_file)[0][1]
-    if fit_file.exists():
+    if fit_file.exists() and not limits_only:
         entries = _read(fit_file)
         best = [r for q, _, r in entries if q == -1.0]
         others = [r for q, _, r in entries if q != -1.0]
@@ -161,9 +163,11 @@ def write_summary(results: dict[str, dict], output_dir: Path, name: str = "limit
         xs = res.get("xs_limit", {}).get("limit")
         xs_cell = (f" {xs['exp_median']:.1f} [{xs['exp_m1']:.1f}, {xs['exp_p1']:.1f}] |" if xs else " - |") if xs_header else ""
         if limit:
+            significance = f"{res['significance']:.2f}" if "significance" in res else "-"  # fit --limits-only has neither
+            best = f"{r.get('best')} [{r.get('low')}, {r.get('high')}]" if r else "-"
             lines.append(
                 f"| {state} | {limit['exp_median']:.2f} | [{limit['exp_m1']:.2f}, {limit['exp_p1']:.2f}] | [{limit['exp_m2']:.2f}, {limit['exp_p2']:.2f}] "
-                f"| {res.get('significance', float('nan')):.2f} | {r.get('best')} [{r.get('low')}, {r.get('high')}] |" + xs_cell
+                f"| {significance} | {best} |" + xs_cell
             )
         else:
             lines.append(f"| {state} | - | - | - | - | - |" + xs_cell)
@@ -177,8 +181,9 @@ def write_summary(results: dict[str, dict], output_dir: Path, name: str = "limit
     return json_path, md_path, pdf_path
 
 
-def run_limits(config: RunConfig, datacard_dir: Path, final_states: list[str], skip_combine: bool = False, cross_section: CrossSection | None = None) -> dict:
-    """The prefit Asimov limits of every final state (no masks: no fit to data) and the summary in `datacard_dir`."""
+def run_limits(config: RunConfig, datacard_dir: Path, final_states: list[str], skip_combine: bool = False, cross_section: CrossSection | None = None, limits_only: bool = False) -> dict:
+    """The prefit Asimov limits of every final state (no masks: no fit to data), with the significance and best fit
+    unless `limits_only`, and the summary in `datacard_dir`."""
     datacard_dir = Path(datacard_dir)
     results = {}
     for name in final_states:
@@ -186,8 +191,8 @@ def run_limits(config: RunConfig, datacard_dir: Path, final_states: list[str], s
         frozen = xs_frozen(cross_section, config.combine, card_nuisances(card_dir / CARD)) if (card_dir / CARD).exists() else None
         if not skip_combine:
             logger.info(f"{name}: combine in {card_dir}")
-            cmssw.run(limit_commands(combine=config.combine, frozen=frozen), config.combine, card_dir)
-        results[name] = collect(card_dir, cross_section=cross_section, frozen=frozen)
+            cmssw.run(limit_commands(combine=config.combine, frozen=frozen, limits_only=limits_only), config.combine, card_dir)
+        results[name] = collect(card_dir, cross_section=cross_section, frozen=frozen, limits_only=limits_only)
     write_summary(results, datacard_dir)
     return results
 

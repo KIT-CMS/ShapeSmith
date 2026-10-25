@@ -6,6 +6,7 @@ import json
 import numpy as np
 import pytest
 import uproot
+from rich.text import Text
 from typer.testing import CliRunner
 
 from shapesmith import cmssw
@@ -67,7 +68,8 @@ def test_the_commands_and_the_nuisance_checks(tmp_path):
     assert foreign_token("CMS_x_2018", "2018", eras) is None and foreign_token("lumi_13TeV_15161718_l", "2018", eras) is None
 
 
-def test_combine_runs_the_limits_on_the_combined_card(runs, monkeypatch):
+@pytest.mark.parametrize("error_color", [False, True], ids=["plain-errors", "colored-errors"])
+def test_combine_runs_the_limits_on_the_combined_card(runs, monkeypatch, error_color):
     directory, configs = runs
     calls = []
 
@@ -88,6 +90,15 @@ def test_combine_runs_the_limits_on_the_combined_card(runs, monkeypatch):
     report = (output / "nuisances.md").read_text()
     assert "CMS_ff_QCDStatShift_mt_2017 (2018 card): ends in the era 2017 of another run" in report
     assert "| lumi_13TeV_15161718_l | x | x |" in report and "| CMS_ff_QCDStatShift_mt_2018 |  | x |" in report
+    with uproot.recreate(output / "higgsCombine.Significance.Significance.mH125.root") as f:  # of an earlier combination
+        f["limit"] = {"quantileExpected": np.array([-1.0], dtype=np.float32), "limit": np.array([0.42])}
+    limits_only = CliRunner().invoke(app, ["combine", *[a for c in configs for a in ("-c", str(c))], "-o", str(output), "--limits-only"])
+    assert limits_only.exit_code == 0, limits_only.output
+    assert calls[-1][0][1:] == limit_commands(limits_only=True) and "| combination | 4.00 | [3.00, 6.00] | [2.00, 8.00] | - | - |" in limits_only.output
+    assert "significance" not in json.loads((output / "limits.json").read_text())["combination"]
+    refused = CliRunner().invoke(app, ["combine", *[a for c in configs for a in ("-c", str(c))], "-o", str(output), "--limits-only", "--background-only"], color=error_color,
+                                 env={"FORCE_COLOR": "1" if error_color else None, "NO_COLOR": None, "TERM": "xterm-256color" if error_color else "dumb"})
+    assert refused.exit_code == 2 and "--limits-only applies to the limits" in Text.from_ansi(refused.output).plain
 
 
 def test_combine_background_only_maps_the_bins_of_every_era(runs, monkeypatch):

@@ -31,6 +31,7 @@ UnblindOption = typer.Option(False, "--unblind", help="fit the data WITHOUT the 
 FinalStatesOption = typer.Option(None, "--final-states", help="comma separated; default: each channel and 'all'")
 CombinationOption = typer.Option(None, "--combination", help="the directory of a combination (`shapesmith combine -o DIR`) instead of the final states of the run")
 SkipCombineOption = typer.Option(False, "--skip-combine", help="only summarise existing combine outputs")
+LimitsOnlyOption = typer.Option(False, "--limits-only", help="only the limits (on mu and the cross section): neither the significance nor the best fit")
 
 
 def _logged(command):
@@ -228,7 +229,7 @@ def datacards(config: Path = ConfigOption, channels: Optional[str] = ChannelsOpt
 
 @app.command()
 @_logged
-def fit(config: Path = ConfigOption, channels: Optional[str] = ChannelsOption, overrides: Optional[list[str]] = SetOption, final_states: Optional[str] = typer.Option(None, help="comma separated; default: each channel and 'all' (with --background-only: the combination of the selected channels)"), skip_combine: bool = typer.Option(False, "--skip-combine", help="only collect existing combine outputs"), background_only: bool = typer.Option(False, "--background-only", help="a background-only fit to the data (FitDiagnostics, r frozen to 0) instead of the limits"), variant: Optional[str] = VariantOption, unblind: bool = UnblindOption):
+def fit(config: Path = ConfigOption, channels: Optional[str] = ChannelsOption, overrides: Optional[list[str]] = SetOption, final_states: Optional[str] = typer.Option(None, help="comma separated; default: each channel and 'all' (with --background-only: the combination of the selected channels)"), skip_combine: bool = typer.Option(False, "--skip-combine", help="only collect existing combine outputs"), background_only: bool = typer.Option(False, "--background-only", help="a background-only fit to the data (FitDiagnostics, r frozen to 0) instead of the limits"), variant: Optional[str] = VariantOption, unblind: bool = UnblindOption, limits_only: bool = LimitsOnlyOption):
     """Run combine (prefit Asimov expected limits on mu and the signal cross section, significance, best fit), or a background-only fit to the data with the blinded channels masked, and summarise the results."""
     from shapesmith.background_fit import run_background_fit
     from shapesmith.limits import run_limits
@@ -238,18 +239,20 @@ def fit(config: Path = ConfigOption, channels: Optional[str] = ChannelsOption, o
     datacard_dir = _datacard_dir(cfg, variant, analysis.channels)
     if unblind and not background_only:
         raise typer.BadParameter("--unblind applies to the fit to data (--background-only); the limits use the Asimov dataset")
+    if limits_only and background_only:
+        raise typer.BadParameter("--limits-only applies to the limits, not to --background-only")
     if background_only:
         results = run_background_fit(cfg, analysis, datacard_dir, _split(final_states) or states[-1:], skip_combine, unblind)  # default: 'all' or the only final state
         typer.echo((datacard_dir / "background_fit.md").read_text())
     else:
-        results = run_limits(cfg, datacard_dir, _split(final_states) or states, skip_combine, analysis.signal_cross_section)
+        results = run_limits(cfg, datacard_dir, _split(final_states) or states, skip_combine, analysis.signal_cross_section, limits_only)
         typer.echo((datacard_dir / "limits.md").read_text())
     logger.info(f"{len(results)} final states summarised")
 
 
 @app.command("combine")
 @_logged
-def combine_runs(configs: list[Path] = typer.Option(..., "--config", "-c", help="the run YAML of every era (repeat -c)"), output: Path = typer.Option(..., "--output", "-o", help="directory of the combination (combined card, fits, summaries)"), final_state: str = typer.Option("all", "--final-state", help="the final state of each run's datacards: <output_dir>/datacards/<final state>/"), overrides: Optional[list[str]] = SetOption, eras: Optional[list[str]] = typer.Option(None, "--era", help="load every run YAML once per era (-s era=<era>, its {era} filled; repeat --era)"), background_only: bool = typer.Option(False, "--background-only", help="a background-only fit to the data instead of the limits"), skip_combine: bool = typer.Option(False, "--skip-combine", help="only summarise existing combine outputs"), validate: bool = typer.Option(False, "--validate", help="also run CombineHarvester's ValidateDatacards.py on the combined card"), variant: Optional[str] = VariantOption, unblind: bool = UnblindOption):
+def combine_runs(configs: list[Path] = typer.Option(..., "--config", "-c", help="the run YAML of every era (repeat -c)"), output: Path = typer.Option(..., "--output", "-o", help="directory of the combination (combined card, fits, summaries)"), final_state: str = typer.Option("all", "--final-state", help="the final state of each run's datacards: <output_dir>/datacards/<final state>/"), overrides: Optional[list[str]] = SetOption, eras: Optional[list[str]] = typer.Option(None, "--era", help="load every run YAML once per era (-s era=<era>, its {era} filled; repeat --era)"), background_only: bool = typer.Option(False, "--background-only", help="a background-only fit to the data instead of the limits"), skip_combine: bool = typer.Option(False, "--skip-combine", help="only summarise existing combine outputs"), validate: bool = typer.Option(False, "--validate", help="also run CombineHarvester's ValidateDatacards.py on the combined card"), variant: Optional[str] = VariantOption, unblind: bool = UnblindOption, limits_only: bool = LimitsOnlyOption):
     """Combine the datacards of several runs (one per era, spec 6.9) with combineCards.py, then the limits or the background-only fit (the blinded channels of every card masked); overrides apply to every run."""
     from shapesmith.combination import Run, run_card, run_combination
 
@@ -263,7 +266,9 @@ def combine_runs(configs: list[Path] = typer.Option(..., "--config", "-c", help=
         runs.append(Run(cfg, analysis, run_card(cfg, final_state, _variant(variant, analysis.channels))))
     if unblind and not background_only:
         raise typer.BadParameter("--unblind applies to the fit to data (--background-only); the limits use the Asimov dataset")
-    result = run_combination(runs, output, background_only, skip_combine, validate, unblind)
+    if limits_only and background_only:
+        raise typer.BadParameter("--limits-only applies to the limits, not to --background-only")
+    result = run_combination(runs, output, background_only, skip_combine, validate, unblind, limits_only)
     typer.echo((output / ("background_fit.md" if background_only else "limits.md")).read_text())
     logger.info(f"combination of {len(runs)} runs: {json.dumps(result)[:200]}")
 

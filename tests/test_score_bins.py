@@ -268,6 +268,43 @@ def test_negative_jet_fakes_left_after_the_rebinning_are_clipped_and_recorded(tm
     assert np.concatenate([shapes[f"htt_mt_1{p}_2018/ZTT"].values for p in ("lo", "hi")]).tolist() == [20.0, 18, 16, 14, 12, 10, 8, 6, 4, 2]
 
 
+@pytest.mark.parametrize("zl,part,other,rate", [
+    ([5.0, 5, 5, 5, 5, 5, 0.1, -0.3, 0.05, -0.05], "hi", "lo", -0.2),  # R3 htt_mt_1hi_2018: VVJ -0.076
+    ([0.5, -1.0, 0.2, 0.1, -0.1, 0.0, 5, 5, 5, 5], "lo", "hi", -0.3),  # R5_wp htt_tt_1lo_2018: VVL -0.0094
+])
+def test_a_process_with_a_negative_sum_in_one_part_is_left_out_of_its_card_bin_and_of_the_plot(tmp_path, caplog, zl, part, other, rate):
+    """ZL sums to < 0 in one part of the blinded category only: that card bin leaves it out, lists and logs it; the
+    plot (and the gallery yields) leave it out of that part the same way, so that the plotted stack, the Asimov data
+    included, is the card bin by bin."""
+    analysis, hset = _hand_made(THESIS10, [3.0] * 10)
+    hset[HistKey("mt", "sig", "ZL", "nominal", NOMINAL_VARIATION, "score")] = Histogram(list(FINE10), zl, np.abs(zl) * 0.01)
+    with caplog.at_level("INFO", logger="shapesmith.score_bins"):
+        card = write_datacard(hset, analysis, ["mt"], tmp_path / "mt")
+    record = _record(card)["sig"]
+    split = record["blinding"]["first_hi_bin"]
+    assert record["edges"] == list(FINE10) and split == 6
+    shapes = _shapes(card)
+    assert f"htt_mt_1{other}_2018/ZL" in shapes and f"htt_mt_1{part}_2018/ZL" not in shapes
+    left_out = json.loads((card.parent / "template_changes.json").read_text())["left_out_processes"]
+    assert left_out == [{"bin": f"htt_mt_1{part}_2018", "process": "ZL", "rate": pytest.approx(rate)}]
+    assert [r.levelname for r in caplog.records if "left out there" in r.getMessage()] == ["WARNING"] and f"htt_mt_1{part}_2018/ZL {rate:g}" in caplog.text
+    shown = stack(hset, analysis, "mt", "sig", "score")
+    assert shown.left_out == left_out and shown.blinded_from == split
+    card_bins = [{p: shapes[f"htt_mt_1{name}_2018/{p}"] for p in ("ZTT", "ZL", "jetFakes", "HH") if f"htt_mt_1{name}_2018/{p}" in shapes} for name in ("lo", "hi")]
+    for group_name, members in (("Z", ("ZTT", "ZL")), ("jetFakes", ("jetFakes",))):
+        group = dict(shown.groups)[group_name]
+        for values in ("values", "variances"):
+            card_values = np.concatenate([sum(getattr(b[p], values) for p in members if p in b) for b in card_bins])
+            np.testing.assert_allclose(getattr(group, values), card_values, rtol=1e-12)
+    np.testing.assert_allclose(shown.background[split:], shapes["htt_mt_1hi_2018/data_obs"].values, rtol=1e-12)
+    np.testing.assert_allclose(shown.data.values, np.concatenate([shapes[f"htt_mt_1{name}_2018/data_obs"].values for name in ("lo", "hi")]), rtol=1e-12)
+    np.testing.assert_allclose(shown.signal.values, np.concatenate([b["HH"].values for b in card_bins]), rtol=1e-12)
+    caplog.clear()
+    with caplog.at_level("INFO", logger="shapesmith.score_bins"):
+        plot_stack(hset, analysis, "mt", "sig", "score", tmp_path)
+    assert f"mt/sig/score#nominal plot: 1 processes with a rate <= 0 in a card bin left out there (combine rejects their norm): htt_mt_1{part}_2018/ZL {rate:g}" in caplog.text
+
+
 def test_the_data_blind_rules_merge_away_a_negative_bin_before_clipping(tmp_path):
     rules = BinningRules(n_start=10, required={"jetFakes": ("jetFakes",)})
     analysis, hset = _hand_made(ScoreBinning(FINE10, rules=rules, clip=("jetFakes",)), [3.0, 3, 3, 3, 3, 3, 3, 3, 1.0, -0.5], signal=[0.25] * 10)

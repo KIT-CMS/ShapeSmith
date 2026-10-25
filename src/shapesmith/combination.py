@@ -131,10 +131,10 @@ def combined_blinding(runs: list[Run], output: Path) -> masking.Blinding:
     return masking.write_merged([run.card.parent for run in runs], output)
 
 
-def run_combination(runs: list[Run], output: Path, background_only: bool = False, skip_combine: bool = False, validate: bool = False, unblind: bool = False) -> dict:
-    """Combine the cards of the runs into <output>/combined.txt and run the limits or the background-only fit there
-    (the blinded channels of all cards masked unless `unblind`); the summary (limits.json/md/pdf or
-    background_fit.json/md and the fit plots) next to it."""
+def run_combination(runs: list[Run], output: Path, background_only: bool = False, skip_combine: bool = False, validate: bool = False, unblind: bool = False, limits_only: bool = False) -> dict:
+    """Combine the cards of the runs into <output>/combined.txt and run the limits (`limits_only`: without the
+    significance and the best fit) or the background-only fit there (the blinded channels of all cards masked unless
+    `unblind`); the summary (limits.json/md/pdf or background_fit.json/md and the fit plots) next to it."""
     check_runs(runs)
     output = Path(output)
     output.mkdir(parents=True, exist_ok=True)
@@ -149,7 +149,7 @@ def run_combination(runs: list[Run], output: Path, background_only: bool = False
     if not skip_combine:
         logger.info(f"combining {len(runs)} cards ({', '.join(run.era for run in runs)}) into {output / CARD}")
         commands = [combine_cards_command([run.card for run in runs])] + ([f"{validate_command()} > validate.log 2>&1"] if validate else [])
-        commands += fit_commands(combine=combine, masks=masks) if background_only else limit_commands(combine=combine, frozen=frozen)
+        commands += fit_commands(combine=combine, masks=masks) if background_only else limit_commands(combine=combine, frozen=frozen, limits_only=limits_only)
         cmssw.run(commands, combine, output)
     if background_only:
         values = json.loads((output / f"{FIT_OUTPUT}.json").read_text())
@@ -159,6 +159,6 @@ def run_combination(runs: list[Run], output: Path, background_only: bool = False
         (output / "background_fit.md").write_text("\n".join(summary_lines("combination", result["combination"])))
         plot_fit(values, result["combination"], runs[0].analysis, output, [] if unblind else blinding.masked, "combination")
         return result
-    result = {"combination": collect(output, cross_section=cross_section, frozen=frozen)}
+    result = {"combination": collect(output, cross_section=cross_section, frozen=frozen, limits_only=limits_only)}
     write_summary(result, output)
     return result

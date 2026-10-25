@@ -69,6 +69,8 @@ def test_limit_commands():
     assert "-M Significance" in script and "-n .Significance" in script
     assert "-M MultiDimFit --algo singles" in script and "-n .Fit" in script
     assert "--setParameterRanges r=-40,40" in script and "-t -1" in script
+    only = limit_commands(frozen=["QCDscale_HH"], limits_only=True)  # the workspace, the limit on r and on the cross section
+    assert only == [c for c in limit_commands(frozen=["QCDscale_HH"]) if "-n .Significance" not in c and "-n .Fit" not in c] and len(only) == 3
 
 
 def test_collect_and_summary(tmp_path):
@@ -86,3 +88,15 @@ def test_collect_and_summary(tmp_path):
     table = md_path.read_text()
     assert "| mt | 10.00 | [7.00, 14.00] | [5.00, 20.00] | 0.42 |" in table
     assert "| all |" in table
+
+
+def test_collect_limits_only_neither_reads_nor_misses_the_significance_and_the_best_fit(tmp_path, caplog):
+    card_dir = tmp_path / "mt"
+    card_dir.mkdir()
+    _limit_tree(card_dir / "higgsCombine.Limit.AsymptoticLimits.mH125.root", [0.025, 0.16, 0.5, 0.84, 0.975], [5.0, 7.0, 10.0, 14.0, 20.0])
+    _limit_tree(card_dir / "higgsCombine.Significance.Significance.mH125.root", [-1], [0.42])  # of an earlier run
+    with caplog.at_level("WARNING", logger="shapesmith.limits"):
+        assert set(collect(card_dir, limits_only=True)) == {"limit"}
+    assert "missing" not in caplog.text
+    collect(card_dir)
+    assert "higgsCombine.Fit.MultiDimFit.mH125.root missing" in caplog.text

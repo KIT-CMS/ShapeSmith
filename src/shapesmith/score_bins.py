@@ -3,10 +3,11 @@
 split (N14). `datacards` writes the cards from it, `plot` and the gallery yields show the same bins.
 
 Card processes: the signal and the backgrounds of the channel whose nominal template has a positive sum, as in
-datacards. Data-blind rules: every card background with its unweighted counts (histogram.raw_variable; an estimator
-output has those of its data); a raw-count group keeps the names among the card backgrounds and is dropped (logged)
-when none is left. Thesis binning: the fine bins rebinned to the start edges, then AutoRebin on the total of the card
-backgrounds.
+datacards; a card bin (the category, or its lo or hi part) leaves out a process whose nominal sum on its bins is not
+positive (card_processes, the rule of the cards and of the plots: combine rejects such a norm). Data-blind rules: every
+card background with its unweighted counts (histogram.raw_variable; an estimator output has those of its data); a
+raw-count group keeps the names among the card backgrounds and is dropped (logged) when none is left. Thesis binning:
+the fine bins rebinned to the start edges, then AutoRebin on the total of the card backgrounds.
 
 Clipping (SH6): the processes of ScoreBinning.clip and the outputs of the estimators that clip (ABCD, DataMinus with
 clip_negative) get their negative bins set to zero after the rebinning, nominal and every variation, keeping the
@@ -31,6 +32,7 @@ from shapesmith.model import ABCD, NOMINAL, Analysis, Category, Channel, DataMin
 from shapesmith.nn_binning import auto_rebin, blinding_index, resolve, snap
 
 logger = logging.getLogger(__name__)
+LO, HI = "lo", "hi"  # the parts of a blinded category (datacards.bin_name)
 
 
 @dataclass
@@ -184,6 +186,54 @@ def part(h: Histogram, start: int, stop: int | None = None) -> Histogram:
     """The bins start..stop - 1 of a histogram."""
     stop = len(h.values) if stop is None else stop
     return Histogram(h.edges[start:stop + 1].copy(), h.values[start:stop].copy(), h.variances[start:stop].copy())
+
+
+def card_parts(view: ScoreView) -> list[tuple[str, int, int | None]]:
+    """The card bins of a resolved category as (part, first bin, stop): the whole category ("") without a split, else
+    the lo part (none if the first bin is blinded) and the hi part."""
+    if view.split is None:
+        return [("", 0, None)]
+    return ([(LO, 0, view.split)] if view.split > 0 else []) + [(HI, view.split, None)]
+
+
+def card_processes(templates: dict[str, Histogram], start: int = 0, stop: int | None = None) -> tuple[dict[str, Histogram], dict[str, float]]:
+    """The processes of the card bin made of the bins start..stop - 1, on these bins: those whose nominal sum there is
+    positive; and the rates of the others, which the card bin leaves out (combine rejects a norm <= 0)."""
+    kept, left_out = {}, {}
+    for process, h in templates.items():
+        piece = part(h, start, stop)
+        if piece.sum() > 0.0:
+            kept[process] = piece
+        else:
+            left_out[process] = float(piece.sum())
+    return kept, left_out
+
+
+def card_templates(view: ScoreView) -> tuple[dict[str, Histogram], dict[str, dict[str, float]]]:
+    """The nominal templates of a resolved category as its card bins have them (plots, gallery yields): on the final
+    edges, zero in the parts that leave a process out (card_processes), without a process that no part keeps; and per
+    part (card_parts) the rates of the processes it leaves out."""
+    templates = {process: h.copy() for process, h in view.templates.items()}
+    parts = card_parts(view)
+    left_out = {}
+    for name, start, stop in parts:
+        rates = card_processes(view.templates, start, stop)[1]
+        for process in rates:
+            templates[process].values[start:stop] = 0.0
+            templates[process].variances[start:stop] = 0.0
+        if rates:
+            left_out[name] = rates
+    kept = {process: h for process, h in templates.items() if sum(process in rates for rates in left_out.values()) < len(parts)}
+    return kept, left_out
+
+
+def log_left_out(where: str, entries: list[dict]) -> None:
+    """The processes that card bins leave out ({"bin", "process", "rate"}): at WARNING if one has a negative rate (its
+    negative yield is missing from the prediction), else at INFO."""
+    if entries:
+        level = logging.WARNING if any(entry["rate"] < 0.0 for entry in entries) else logging.INFO
+        logger.log(level, f"{where}: {len(entries)} processes with a rate <= 0 in a card bin left out there (combine rejects their norm): "
+                   + ", ".join(f"{entry['bin']}/{entry['process']} {entry['rate']:.3g}" for entry in entries))
 
 
 def asimov(templates: dict[str, Histogram], signal: str | None, edges) -> Histogram:

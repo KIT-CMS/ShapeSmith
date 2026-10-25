@@ -192,6 +192,24 @@ def test_a_shifted_template_with_a_negative_sum_is_left_out_of_its_bin_and_proce
         assert f["htt_mt_2_2018/jetFakes_CMS_btagUp"].values().tolist() == pytest.approx([11.0])
 
 
+@pytest.mark.parametrize(("rate", "level"), [(0.0, "INFO"), (-0.25, "WARNING")])
+def test_a_process_with_a_rate_up_to_zero_is_left_out_of_its_bin_and_listed(tmp_path, caplog, rate, level):
+    """A process whose nominal sums to <= 0 in a bin (simulated events with negative weights, R3 htt_mt_1hi_2018: VVJ
+    -0.076) has no column there, only there; it is listed under "left_out_processes" and logged, at WARNING when its
+    rate is negative."""
+    hset = _one_bin_hset(0.9, 1.1)
+    hset[HistKey("mt", "sig", "ZL", "nominal", "Nominal", "score")] = Histogram((0.0, 1.0), [rate], [0.1])
+    hset[HistKey("mt", "bkg", "ZL", "nominal", "Nominal", "score")] = Histogram((0.0, 1.0), [2.0], [0.1])
+    with caplog.at_level("INFO", logger="shapesmith.score_bins"):
+        card = write_datacard(hset, build(), ["mt"], tmp_path / "mt")
+    lines = card.read_text().splitlines()
+    columns = list(zip([line for line in lines if line.startswith("bin ")][1].split()[1:], next(line for line in lines if line.startswith("process ")).split()[1:]))
+    assert columns == [("htt_mt_1_2018", "ZTT"), ("htt_mt_1_2018", "jetFakes"), ("htt_mt_2_2018", "ZTT"), ("htt_mt_2_2018", "ZL"), ("htt_mt_2_2018", "jetFakes")]
+    assert json.loads((card.parent / "template_changes.json").read_text())["left_out_processes"] == [{"bin": "htt_mt_1_2018", "process": "ZL", "rate": rate}]
+    records = [r for r in caplog.records if "in a card bin left out there" in r.getMessage()]
+    assert [r.levelname for r in records] == [level] and records[0].getMessage().endswith(f": htt_mt_1_2018/ZL {rate:.3g}")
+
+
 @pytest.mark.parametrize(("down", "up", "reason", "after"), [
     (1.2787, 0.9216, "asymmetry 3.6", (1.17855, 0.82145)),  # mt QCD non-closure MCShift 2018: half the distance of Down to Up
     (0.9337, 1.1832, "asymmetry 2.8", (0.87525, 1.12475)),  # StatShift 2018

@@ -12,6 +12,7 @@ import pytest
 import uproot
 from matplotlib.container import ErrorbarContainer
 from pydantic import ValidationError
+from rich.text import Text
 from typer.testing import CliRunner
 
 from shapesmith import checks, cmssw, combine_options, masking
@@ -359,6 +360,36 @@ def test_fit_masks_only_the_fit_to_data_and_unblind_needs_the_background_only_fi
     assert "--setParameters r=0,mask_htt_mt_2hi_2018=1" in calls[0][1] and "Masked (blinded) channels, not in the fit: htt_mt_2hi_2018" in result.output
     assert (card_dir / "plots" / "pulls.pdf").exists() and (card_dir / "plots" / "prefit" / "htt_mt_2hi_2018.png").exists()
     assert runner.invoke(app, ["fit", "-c", str(config), "--unblind"]).exit_code != 0  # the limits use the Asimov dataset
+
+
+@pytest.mark.parametrize("error_color", [False, True], ids=["plain-errors", "colored-errors"])
+def test_fit_limits_only_runs_and_reads_the_limits_alone(tmp_path, monkeypatch, error_color):
+    """--limits-only: the workspace and the limits, neither the significance nor the best fit, whose files of an earlier
+    run in the card directory are not read either."""
+    config = _stats_config(tmp_path)
+    card_dir = _card(tmp_path / "out" / "datacards" / "mt")
+    _limit_tree(card_dir / "higgsCombine.Significance.Significance.mH125.root", [-1], [0.42])  # of an earlier card
+    _limit_tree(card_dir / "higgsCombine.Fit.MultiDimFit.mH125.root", [-1, 0.32, 0.32], [0, 0, 0], {"r": np.array([1.0, -4.0, 6.0])})
+    calls = []
+
+    def fake_run(commands, combine, cwd, timeout=None):
+        calls.append(list(commands))
+        _limit_tree(cwd / "higgsCombine.Limit.AsymptoticLimits.mH125.root", QUANTILES, [5.0, 7.0, 10.0, 14.0, 20.0])
+
+    monkeypatch.setattr(cmssw, "run", fake_run)
+    result = runner.invoke(app, ["fit", "-c", str(config), "--limits-only"])
+    assert result.exit_code == 0, result.output
+    assert calls == [limit_commands(combine=CombineConfig(cmssw_dir="/unused", parallel=2), limits_only=True)] and len(calls[0]) == 2
+    summary = json.loads((card_dir.parent / "limits.json").read_text())["mt"]
+    assert summary == {"limit": dict(zip(["exp_m2", "exp_m1", "exp_median", "exp_p1", "exp_p2"], [5.0, 7.0, 10.0, 14.0, 20.0]))}
+    assert "| mt | 10.00 | [7.00, 14.00] | [5.00, 20.00] | - | - |" in result.output
+    skipped = runner.invoke(app, ["fit", "-c", str(config), "--limits-only", "--skip-combine"])
+    assert skipped.exit_code == 0 and len(calls) == 1 and "| mt | 10.00 | [7.00, 14.00] | [5.00, 20.00] | - | - |" in skipped.output
+    full = runner.invoke(app, ["fit", "-c", str(config)])
+    assert full.exit_code == 0 and len(calls[-1]) == 4 and "| 0.42 | 1.0 [-4.0, 6.0] |" in full.output
+    refused = runner.invoke(app, ["fit", "-c", str(config), "--limits-only", "--background-only"], color=error_color,
+                            env={"FORCE_COLOR": "1" if error_color else None, "NO_COLOR": None, "TERM": "xterm-256color" if error_color else "dumb"})
+    assert refused.exit_code == 2 and "--limits-only applies to the limits" in Text.from_ansi(refused.output).plain
 
 
 def test_aposteriori_and_injection_cli(tmp_path, monkeypatch):

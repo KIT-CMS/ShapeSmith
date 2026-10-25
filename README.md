@@ -30,9 +30,9 @@ shapesmith plot      -c run.yaml [--control] [--region nominal] [--blind] [--log
 shapesmith publish   -c run.yaml --to DIR --variant KEY [--label TEXT] [--description TEXT] [--channels et,mt]   # plots + yields -> static web gallery DIR/index.html
 shapesmith sync      -c run.yaml              # combine-style shape files per channel
 shapesmith datacards -c run.yaml [--min-background 1.0] [--no-systematics] [--variant stat_only]
-shapesmith fit       -c run.yaml [--final-states mt,all] [--skip-combine] [--variant V]   # limits (mu, sigma), significance, best fit
+shapesmith fit       -c run.yaml [--final-states mt,all] [--skip-combine] [--variant V] [--limits-only]   # limits (mu, sigma), significance, best fit
 shapesmith fit       -c run.yaml --background-only [--final-states all] [--variant V]   # background-only fit to the data, pulls, yields, plots
-shapesmith combine   -c run_2017.yaml -c run_2018.yaml ... -o DIR [--final-state all] [--background-only] [--validate] [--variant V]   # cards of several eras combined
+shapesmith combine   -c run_2017.yaml -c run_2018.yaml ... -o DIR [--final-state all] [--background-only] [--validate] [--variant V] [--limits-only]   # cards of several eras combined
 shapesmith combine   -c run.yaml --era 2017 --era 2018 ... -o DIR   # the same with one run YAML loaded per era ({era} filled)
 shapesmith gof       -c run.yaml [--final-states mt,all | --combination DIR] [--toys 500] [--variant V]   # saturated GoF against toys
 shapesmith impacts   -c run.yaml [--final-states all | --combination DIR] [--asimov] [--variant V]   # combineTool.py -M Impacts, plotImpacts.py
@@ -126,6 +126,10 @@ cards (`<datacards>/<check>.json/.md`, of a combination in `DIR`); a summary kee
   only statistics, needs no second call). `combine.xs_theory_nuisances` replaces the analysis's list. The summaries name
   the quantity: `xs_limit: {quantity: "sigma(ggF HH)", unit: fb, fb_per_r, frozen, limit}`; `limits.md` gets a column
   and `limits_xs.pdf`.
+- `fit --limits-only` and `combine --limits-only`: the limits on mu and the cross section without the significance and
+  the best fit (`-` in `limits.md`, absent from `limits.json`), for comparisons of models by their limits. The two
+  converged AsymptoticLimits dominate the time of a card with systematics: the four final states of a 2018 NN run
+  took 5 min 36 s instead of 6 min 10 s (stat only 13 s instead of 18 s for one channel).
 - `gof`: the saturated GoF of the background-only model (r frozen at 0) to the data against frequentist toys (jobs of
   25 toys with the seeds 1000, 1001, ..., `combine.parallel` at a time), per final state (channel x era) or of the
   combination: statistic, p-value (fraction of toys at least as large), `gof/gof.pdf`.
@@ -331,9 +335,12 @@ a prefit Asimov fit (`-t -1`) needs none. A card without a category with `blindi
 one is removed): nothing is masked; one whose categories have no bin above the threshold has `"masked": []`. The fits
 read it as described in "Limits and statistical checks" (`masking.py`). `datacards.bin_categories(analysis)` maps
 every possible card bin, the lo/hi parts included, to its channel and category (the summaries of the background-only
-fits of a run and of a combination). `plot` and the yields of `publish` show a score category in the bins of its card,
-with the prediction in place of the data in the blinded bins (shaded in the plot); the plot draws these bins with equal
-widths, in events per bin, with the edges as tick labels (`plotting.style.card_bin_axis`; with
+fits of a run and of a combination). A card bin leaves out a process whose nominal sum on its bins is not positive
+(combine rejects its norm; `score_bins.card_processes`), lists it under `left_out_processes` in `template_changes.json`
+and logs it, at WARNING when the sum is negative. `plot` and the yields of `publish` show a score category in the bins
+of its card, each part (the category, or its lo and hi part) without the processes its card bin leaves out (logged as
+by `datacards`), with the prediction in place of the data in the blinded bins (shaded in the plot); the plot draws these
+bins with equal widths, in events per bin, with the edges as tick labels (`plotting.style.card_bin_axis`; with
 `--normalize-by-bin-width` as dN/dx on the score axis). Not blinded: `sync` writes the fine bins with the full data,
 and `shapes.root` holds the data of every bin, its index `shapes.json` the sum of every histogram (none of them is read
 by combine). `plot --control` of a score variable over every event (e.g. the NN score in the inclusive category) shows
