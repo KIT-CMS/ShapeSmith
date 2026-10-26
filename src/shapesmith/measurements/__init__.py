@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Iterable, Protocol
 
 from shapesmith.config import RunConfig
-from shapesmith.events import Events, Query, load
+from shapesmith.events import REPEATED, Events, Query, load, repeated_record, write_repeated
 from shapesmith.model import Analysis
 from shapesmith.provenance import record, write_versions
 
@@ -59,5 +59,7 @@ def run_measure(config: RunConfig, analysis: Analysis, channels: list[str], sugg
     logger.info(f"measurement {analysis.measurement.name} ({mode}) of channels {', '.join(channels)} -> {output}")
     if not suggest_binning:
         write_versions(config, analysis.name, output)
+    if mode == "measure" and (path := write_repeated(output / REPEATED, analysis, repeated_record(config, analysis, channels))) is not None:
+        logger.info(f"repeated events recorded in {path}")
     analysis.measurement.run(MeasureContext(config, analysis, channels, output, suggest_binning, merge, refit))
     return output

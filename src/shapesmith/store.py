@@ -1,4 +1,9 @@
-"""Parquet skims and their manifests: <skim_dir>/<channel>/<nick>/{*.parquet, manifest.json}."""
+"""Parquet skims and their manifests: <skim_dir>/<channel>/<nick>/{*.parquet, manifest.json}.
+
+Repeated events: read_skims drops, in the samples it is told to, every row whose event key (e.g. run, lumi, event) an
+earlier row of the same sample has, in file order (repeated_rows): an event that two n-tuple files of a sample both
+hold is counted once. The skims themselves keep every row.
+"""
 from __future__ import annotations
 
 import json
@@ -7,6 +12,7 @@ import os
 from pathlib import Path
 from typing import Callable, Iterable
 
+import numpy as np
 import pandas as pd
 import pyarrow as pa
 import pyarrow.dataset as ds
@@ -65,21 +71,65 @@ def schema(skim_dir: Path, channel: str, nicks: Iterable[str]) -> set[str]:
     return columns or set()
 
 
-def read_skims(skim_dir: Path, channel: str, nicks: Iterable[str], columns: Iterable[str] | None) -> pd.DataFrame:
-    """All skim rows of the given nicks in one DataFrame, in nick and file order (only `columns` if given)."""
+def repeated_rows(table: pa.Table, key: Iterable[str]) -> np.ndarray:
+    """Per row whether an earlier row of the table has the same values of the `key` columns (the first one is kept).
+    Only rows whose last key column (the event number) occurs more than once can repeat: the full key is compared among
+    those (half the time of comparing every row on 19 M rows)."""
+    key = list(key)
+    values = {column: table.column(column).to_numpy() for column in key}
+    candidate = pd.Series(values[key[-1]]).duplicated(keep=False).to_numpy()
+    repeated = np.zeros(len(candidate), dtype=bool)
+    if candidate.any():
+        repeated[candidate] = pd.DataFrame({column: v[candidate] for column, v in values.items()}).duplicated(keep="first").to_numpy()
+    return repeated
+
+
+def _missing(dataset: ds.Dataset, columns: Iterable[str], skim_dir: Path, channel: str, nick: str) -> None:
+    missing = sorted(set(columns) - set(dataset.schema.names))
+    if missing:
+        raise SkimMissingError(f"skims of {nick} in {Path(skim_dir) / channel / nick} lack columns {missing} (re-run `shapesmith skim --force` after changing the analysis)")
+
+
+def read_skims(skim_dir: Path, channel: str, nicks: Iterable[str], columns: Iterable[str] | None, key: tuple[str, ...] = (), unique: Iterable[str] = ()) -> pd.DataFrame:
+    """All skim rows of the given nicks in one DataFrame, in nick and file order (only `columns` if given). The nicks in
+    `unique` keep only the first row of every value of the `key` columns (module docstring); without `key` none."""
     frames = []
     nicks = list(nicks)
+    unique = set(unique) if key else set()
     for nick in nicks:
         dataset = ds.dataset([str(f) for f in _files(skim_dir, channel, nick)], format="parquet")
-        if columns is not None:
-            missing = sorted(set(columns) - set(dataset.schema.names))
-            if missing:
-                raise SkimMissingError(f"skims of {nick} in {Path(skim_dir) / channel / nick} lack columns {missing} (re-run `shapesmith skim --force` after changing the analysis)")
-        table = dataset.to_table(columns=list(columns) if columns is not None else None)
+        wanted = None if columns is None else list(dict.fromkeys(columns))
+        if nick in unique and wanted is not None:
+            wanted += [column for column in key if column not in wanted]
+        if wanted is not None:
+            _missing(dataset, wanted, skim_dir, channel, nick)
+        elif nick in unique:
+            _missing(dataset, key, skim_dir, channel, nick)
+        table = dataset.to_table(columns=wanted)
+        if nick in unique:
+            repeated = repeated_rows(table, key)
+            if repeated.any():
+                table = table.filter(pa.array(~repeated))
+                logger.debug(f"{channel}/{nick}: {int(repeated.sum())} of {len(repeated)} skim rows repeat the event ({', '.join(key)}) of an earlier row, dropped")
+            if columns is not None:
+                table = table.select([column for column in wanted if column in set(columns)])
         frames.append(table.to_pandas())
     frame = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
     logger.debug(f"{channel}: {len(frame)} skim rows, {len(frame.columns)} columns of {len(nicks)} samples read")
     return frame
+
+
+def repeated_events(skim_dir: Path, channel: str, nick: str, key: tuple[str, ...]) -> dict:
+    """What read_skims drops of a sample: its skim rows, the rows that repeat the event of an earlier row and per skim
+    file the repeated rows in it (only files with any), from the `key` columns alone."""
+    files = _files(skim_dir, channel, nick)
+    dataset = ds.dataset([str(f) for f in files], format="parquet")
+    _missing(dataset, key, skim_dir, channel, nick)
+    tables = [pq.read_table(f, columns=list(key)) for f in files]
+    repeated = repeated_rows(pa.concat_tables(tables), key) if tables else np.zeros(0, dtype=bool)
+    bounds = np.cumsum([0] + [t.num_rows for t in tables])
+    per_file = {f.name: int(repeated[a:b].sum()) for f, a, b in zip(files, bounds[:-1], bounds[1:])}
+    return {"rows": int(len(repeated)), "repeated": int(repeated.sum()), "files": {name: n for name, n in per_file.items() if n}}
 
 
 def write_manifest(path: Path, manifest: dict) -> None:

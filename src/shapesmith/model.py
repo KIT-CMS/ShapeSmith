@@ -382,6 +382,10 @@ class Analysis:
     # and Down over the smaller one
     asymmetry_ratio: float = 2.0
     signal_cross_section: CrossSection | None = None  # limits also on the cross section (limits.py); None: on r only
+    # the columns that identify an event (e.g. run, lumi, event): every data and embedding sample is read without the
+    # skim rows that repeat the event of an earlier row of the sample, in file order (events.read_events), e.g. an event
+    # that two n-tuple files of a sample both hold; the skims of these samples keep the columns. (): every row
+    event_key: tuple[str, ...] = ()
 
     def channel(self, name: str) -> Channel:
         return self.channels[name]

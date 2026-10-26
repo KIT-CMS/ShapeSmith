@@ -47,7 +47,13 @@ shapesmith inspect   output/shapes.root [--unchanged]   # what a histogram file 
 ```
 
 `skim` reads the ntuples once into `<skim_dir>/<channel>/<nick>/*.parquet` plus a
-`manifest.json`; everything else works on the skims. `skim`, `hist`, `measure` and `ml-export`
+`manifest.json`; everything else works on the skims. With `Analysis.event_key` (e.g. `("run", "lumi", "event")`)
+every data and embedding sample is read without the skim rows that repeat the event of an earlier row of the same
+sample, in file order (`events.read_events`), e.g. an event that two n-tuple files of a sample both hold: `hist`,
+`measure`, the equal-data binning and `ml-export` count it once; the skims keep every row and the key columns (read
+for these samples). `hist`, `measure` and `ml-export` list the dropped rows per channel, sample and skim file in
+`repeated_events.json` next to their output (`<ml_dir>/` for the export; `ml-merge` merges the eras) and log each
+sample with repeats as a warning. `skim`, `hist`, `measure` and `ml-export`
 record what produced their outputs in `<directory>/versions/<analysis name>.json` (versions,
 git hashes of core, analysis and sample database, the full run configuration and its hash).
 

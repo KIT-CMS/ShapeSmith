@@ -17,7 +17,8 @@ Columns, in this order:
   `event % K == (k + 1) % K & thesis_training`);
 - the variables (float32), NaN where a process has no such column (MLExportConfig.mc_only in data and embedding).
 No folds and no class weights: the trainer derives its folds from `event` and its class weights from `weight`.
-`merge_eras` concatenates the exports of several eras.
+Rows of data and embedding come without their repeated events (Analysis.event_key, events.read_events), listed in
+`<ml_dir>/repeated_events.json`. `merge_eras` concatenates the exports of several eras and merges their records.
 """
 from __future__ import annotations
 
@@ -32,7 +33,7 @@ import pandas as pd
 import pyarrow.feather as feather
 
 from shapesmith.config import RunConfig
-from shapesmith.events import Query, load
+from shapesmith.events import REPEATED, Query, load, repeated_record, write_repeated
 from shapesmith.expressions import columns_of, evaluate
 from shapesmith.model import NOMINAL, Analysis, Channel, DataMinus, MLExportConfig
 from shapesmith.parallel import run_jobs
@@ -234,6 +235,7 @@ def run_ml_export(config: RunConfig, analysis: Analysis, channels: list[str]) ->
         if names:
             exported.append(channel)
             pending += export_blocks(analysis, channel)
+    dropped = repeated_record(config, analysis, exported)
     frames: dict[int, pd.DataFrame] = {}
     failures = []
     jobs = [(index, config, analysis, rows) for index, rows in enumerate(pending)]
@@ -261,14 +263,17 @@ def run_ml_export(config: RunConfig, analysis: Analysis, channels: list[str]) ->
         written.append(path)
     if exported:
         written.append(write_scheme(config.ml_dir, class_scheme(analysis, exported)))
+        if (path := write_repeated(Path(config.ml_dir) / REPEATED, analysis, dropped)) is not None:
+            written.append(path)
     return written
 
 
 def merge_eras(directories: list[Path], output: Path, channels: list[str] | None = None) -> list[Path]:
     """The exports of several eras (one ml_dir each) as one: per channel the rows of every era one after the other (the
     era column tells them apart, `row` stays that of its era), classes.json with the eras and, per channel and class,
-    the processes of any era, and the provenance records of every era in versions/<era>/. Every era needs the same
-    class scheme and the channels; the weights stay those of their era, the class weights are the trainer's."""
+    the processes of any era, the repeated events of every era (repeated_events.json) and the provenance records of every
+    era in versions/<era>/. Every era needs the same class scheme and the channels; the weights stay those of their era,
+    the class weights are the trainer's."""
     schemes = [json.loads((Path(d) / CLASSES).read_text()) for d in directories]
     for directory, scheme in zip(directories[1:], schemes[1:]):
         _check_scheme(schemes[0], scheme, str(Path(directory) / CLASSES))
@@ -301,8 +306,14 @@ def merge_eras(directories: list[Path], output: Path, channels: list[str] | None
     path = Path(output) / CLASSES
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(merged, indent=2))
+    written.append(path)
+    records = [json.loads((Path(d) / REPEATED).read_text()) for d in directories if (Path(d) / REPEATED).exists()]
+    if records:  # the repeated events of every era (events.write_repeated)
+        repeated = {**records[0], "eras": {era: entry for r in records for era, entry in r["eras"].items()}}
+        (Path(output) / REPEATED).write_text(json.dumps(repeated, indent=1))
+        written.append(Path(output) / REPEATED)
     for directory, scheme in zip(directories, schemes):
         versions = Path(directory) / "versions"
         if versions.is_dir():
             shutil.copytree(versions, Path(output) / "versions" / "+".join(scheme["eras"]), dirs_exist_ok=True)
-    return written + [path]
+    return written

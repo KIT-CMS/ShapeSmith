@@ -148,7 +148,7 @@ def validate(config: Path = ConfigOption, channels: Optional[str] = ChannelsOpti
         console.print(f"  cuts {list(channel.cuts)}, regions {[r.name for r in channel.regions]}")
         console.print(f"  categories {[c.name for c in channel.categories] or 'none'}, control variables {len(channel.variables)}, variations {len(channel.variations)}")
         console.print(f"  estimators {[type(e).__name__ for e in channel.estimators] or 'none'}, backgrounds {list(channel.backgrounds())}")
-        columns = set().union(*(needed_columns(channel, s, exported_by(analysis, channel)) for s in channel.samples))
+        columns = set().union(*(needed_columns(channel, s, exported_by(analysis, channel), analysis.event_key) for s in channel.samples))
         typer.echo(f"{name}: {len(columns)} columns required")
     typer.echo(f"analysis {analysis.name} is valid")
 
