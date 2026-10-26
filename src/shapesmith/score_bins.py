@@ -6,8 +6,10 @@ Card processes: the signal and the backgrounds of the channel whose nominal temp
 datacards; a card bin (the category, or its lo or hi part) leaves out a process whose nominal sum on its bins is not
 positive (card_processes, the rule of the cards and of the plots: combine rejects such a norm). Data-blind rules: every
 card background with its unweighted counts (histogram.raw_variable; an estimator output has those of its data); a
-raw-count group keeps the names among the card backgrounds and is dropped (logged) when none is left. Thesis binning:
-the fine bins rebinned to the start edges, then AutoRebin on the total of the card backgrounds.
+raw-count group keeps the names among the card backgrounds and is dropped (logged) when none is left; of the others the
+rule applies to those with a share >= rules.raw_min_share of the category's background (nn_binning.raw_shares; the
+record lists every share and the exempt groups). Thesis binning: the fine bins rebinned to the start edges, then
+AutoRebin on the total of the card backgrounds.
 
 Clipping (SH6): the processes of ScoreBinning.clip and the outputs of the estimators that clip (ABCD, DataMinus with
 clip_negative) get their negative bins set to zero after the rebinning, nominal and every variation, keeping the
@@ -21,7 +23,6 @@ from __future__ import annotations
 
 import dataclasses
 import logging
-import math
 from dataclasses import dataclass
 
 import numpy as np
@@ -86,11 +87,6 @@ def _required(rules, names: set[str], where: str) -> tuple[dict[str, tuple[str, 
     return groups, dropped
 
 
-def _finite(entry: dict) -> dict:
-    """A record entry with None for its infinite numbers (strict JSON)."""
-    return {key: None if isinstance(value, float) and not math.isfinite(value) else value for key, value in entry.items()}
-
-
 def _raw_counts(hset: HistogramSet, key: HistKey, where: str) -> np.ndarray:
     raw = dataclasses.replace(key, variable=raw_variable(key.variable))
     if raw not in hset:
@@ -124,8 +120,7 @@ def resolve_category(hset: HistogramSet, analysis: Analysis, channel_name: str, 
         templates.update({p: (h.values, h.variances, np.zeros(len(h.values))) for p, h in backgrounds.items() if p not in templates})
         resolution = resolve(fine_edges, signal, templates, rules)
         edges = list(resolution.edges)
-        record.update(method="data_blind", rules=dataclasses.asdict(rules), dropped_groups=dropped, start=list(resolution.start), capped=resolution.capped,
-                      leftover=list(resolution.leftover) if resolution.leftover else None, passed=resolution.passed, bins=[_finite(dataclasses.asdict(b)) for b in resolution.bins])
+        record.update(method="data_blind", rules=dataclasses.asdict(rules), dropped_groups=dropped, **resolution.record())
     else:
         start = [float(fine_edges[i]) for i in snap(binning.thesis, fine_edges)]
         total = Histogram.empty(start)
@@ -151,8 +146,13 @@ def resolve_category(hset: HistogramSet, analysis: Analysis, channel_name: str, 
     return ScoreView(edges, split, templates, clip_names, clipped, record)
 
 
+def _percent(share: float | None) -> str:
+    return "n/a" if share is None else f"{share:.1%}"
+
+
 def log_record(where: str, record: dict) -> None:
-    """The binning of a category at INFO, the rules its bins fail and the dropped raw-count groups as warnings."""
+    """The binning of a category and the raw-count groups exempt from their rule at INFO, the rules its bins fail and
+    the dropped raw-count groups as warnings."""
     blinding = record.get("blinding") or {}
     edge = f", blinded from {blinding['edge']:g}" if blinding.get("edge") is not None else (", nothing blinded" if blinding else "")
     logger.info(f"{where}: {record['method']} binning, {record['fine']['n_bins']} -> {len(record['edges']) - 1} bins, edges {', '.join(f'{e:g}' for e in record['edges'])}{edge}")
@@ -160,6 +160,9 @@ def log_record(where: str, record: dict) -> None:
         logger.warning(f"{where}: only {len(record['edges']) - 1} bins in a category with blinding")
     if record.get("dropped_groups"):
         logger.warning(f"{where}: the raw-count groups {', '.join(record['dropped_groups'])} have no card background, their rule is dropped")
+    if record.get("raw_exempt"):
+        shares = ", ".join(f"{label} {_percent(record['raw_shares'][label])}" for label in record["raw_exempt"])
+        logger.info(f"{where}: no raw-count rule for {shares} of the background (below {record['rules']['raw_min_share']:.0%})")
     failing = [b for b in record.get("bins", []) if b["failed"]]
     if failing:
         logger.warning(f"{where}: {len(failing)} of {len(record['bins'])} bins fail a rule of the data-blind binning: "

@@ -18,11 +18,21 @@ Data-blind algorithm (resolve, resolve_edges), with BinningRules `r`:
    next bin starts below it. A bin passes when
    - the total background is >= r.min_background,
    - the relative statistical uncertainty of the total background, sqrt(sum sumw2) / sum sumw, is <= r.max_rel_uncertainty,
-   - every group of r.required (label -> background names) has >= r.min_raw unweighted events (summed over its names),
-   - with r.non_negative, the signal and every background template are >= 0 (above -NEGATIVE_TOLERANCE).
+   - every group of r.required (label -> background names) that the rule applies to has >= r.min_raw unweighted events
+     (summed over its names). It applies to a group whose share of the category's background, the sums of weights of
+     the nominal templates from the first start edge (r.low) on, is >= r.raw_min_share; with raw_min_share 0 to every
+     group, without a positive background of the category to none (raw_shares),
+   - with r.negative_share (not None) no template, the signal and every background, is below -r.negative_share times
+     the total background of the bin (beyond -NEGATIVE_TOLERANCE; negative_share 0: every template >= 0).
 3. After r.max_bins accepted bins, or at the bottom, the rest (every lower start bin and the fine bins below r.low)
    joins the lowest accepted bin; where no bin passes, the category is one bin. The leftover can make the lowest bin
    fail a rule again (e.g. a negative template); the Resolution lists the rules each final bin fails.
+The defaults are the rule set C' of the NN spec 6.3 (decided 2026-10-26): SIGNAL_RULES for the HH category (50 start
+bins of equal signal, background >= 1, relative uncertainty <= 50 %, the raw-count rule for the groups with >= 10 % of
+the background, no template below -1 % of the bin's background, at most 15 bins) and BACKGROUND_RULES for the
+background categories (5 start bins of equal background, the same background, raw-count and negative rules, <= 10 %,
+at most 5 bins). The rules before C' (<= 30 %, the raw-count rule for every group, every template >= 0) are
+dataclasses.replace(rules, max_rel_uncertainty=0.3, raw_min_share=0.0, negative_share=0.0).
 
 Thesis binning (auto_rebin): the custom edges of the HH category (0, 0.2, 0.3, 0.35, ..., 0.98, 1) and 20 equal bins
 elsewhere, rebinned by CombineHarvester's AutoRebin with SetBinThreshold(1.0), SetBinUncertFraction(0.9) and
@@ -44,7 +54,7 @@ from typing import Literal
 
 import numpy as np
 
-NEGATIVE_TOLERANCE = 1e-9  # a template sum above -1e-9 counts as non-negative (rounding of cancelling weights)
+NEGATIVE_TOLERANCE = 1e-9  # beyond the share of a template: a sum above -1e-9 counts as zero (rounding of cancelling weights)
 THESIS_HH_EDGES = (0.0, 0.2, 0.3, 0.35, 0.4, 0.45, 0.5, 0.55, 0.6, 0.65, 0.7, 0.75, 0.8, 0.82, 0.84, 0.86, 0.88, 0.9, 0.92, 0.94, 0.96, 0.98, 1.0)
 THESIS_OTHER_EDGES = tuple(round(0.05 * i, 2) for i in range(21))  # 20 equal bins on [0, 1]
 AUTO_REBIN_THRESHOLD = 1.0  # SetBinThreshold of hh_datacards.py
@@ -56,13 +66,14 @@ Template = tuple[np.ndarray, np.ndarray, np.ndarray]  # sumw, sumw2, raw count p
 
 @dataclass(frozen=True)
 class BinningRules:
-    """The rules of the data-blind algorithm (module docstring). Defaults: the HH category of NN spec 6.3."""
+    """The rules of the data-blind algorithm (module docstring). Defaults: the HH category of NN spec 6.3 (rule set C')."""
 
     min_background: float = 1.0
-    max_rel_uncertainty: float = 0.30
+    max_rel_uncertainty: float = 0.50
     min_raw: float = 1.0
     required: Mapping[str, tuple[str, ...]] = field(default_factory=dict)  # group label -> background names
-    non_negative: bool = True
+    raw_min_share: float = 0.10  # the raw-count rule applies to a group with this share of the category's background
+    negative_share: float | None = 0.01  # no template below -negative_share x the bin's background; None: no such rule
     max_bins: int = 15
     start: Literal["signal", "background"] = "signal"
     n_start: int = 50
@@ -86,8 +97,8 @@ def category_rules(n_classes: int, signal: bool, required: Mapping[str, tuple[st
 @dataclass(frozen=True)
 class FinalBin:
     """One bin of a Resolution: its range, the signal and total background, the relative uncertainty of the
-    background, the raw count of every required group, the smallest template sum (and its name) and the rules it
-    fails (background, uncertainty, raw:<group>, negative:<name>)."""
+    background, the raw count of every required group (also of a group the rule does not apply to), the smallest
+    template sum (and its name) and the rules it fails (background, uncertainty, raw:<group>, negative:<name>)."""
 
     low: float
     high: float
@@ -99,21 +110,44 @@ class FinalBin:
     failed: tuple[str, ...]
 
 
+def _finite(entry: dict) -> dict:
+    """A record entry with None for its infinite numbers (strict JSON)."""
+    return {key: None if isinstance(value, float) and not math.isfinite(value) else value for key, value in entry.items()}
+
+
 @dataclass(frozen=True)
 class Resolution:
     """The edges of the data-blind algorithm and how they came about: the start edges, the final bins, whether the
-    bin cap stopped the merging (capped) and the range the lowest accepted bin took over (leftover; None if none)."""
+    bin cap stopped the merging (capped), the range the lowest accepted bin took over (leftover; None if none), the
+    share of every raw-count group in the category's background (raw_shares; None without a positive background) and
+    the groups the raw-count rule does not apply to (raw_exempt)."""
 
     edges: tuple[float, ...]
     start: tuple[float, ...]
     bins: tuple[FinalBin, ...]
     capped: bool
     leftover: tuple[float, float] | None
+    raw_shares: dict[str, float | None] = field(default_factory=dict)
+    raw_exempt: tuple[str, ...] = ()
 
     @property
     def passed(self) -> bool:
         """Every final bin passes every rule."""
         return not any(b.failed for b in self.bins)
+
+    def record(self) -> dict:
+        """The record of the resolution as nn_binning.json (score_bins) and the proxy limit of bbtautau-nn keep it:
+        raw-count shares and exempt groups, start edges, cap, leftover, passed and per final bin its sums and the rules
+        it fails (infinite numbers as None)."""
+        return {
+            "raw_shares": dict(self.raw_shares),
+            "raw_exempt": list(self.raw_exempt),
+            "start": list(self.start),
+            "capped": self.capped,
+            "leftover": list(self.leftover) if self.leftover else None,
+            "passed": self.passed,
+            "bins": [_finite(dataclasses.asdict(b)) for b in self.bins],
+        }
 
 
 def _check(fine_edges: np.ndarray, signal_sumw: np.ndarray, backgrounds: Mapping[str, Template], rules: BinningRules) -> None:
@@ -133,8 +167,17 @@ def _check(fine_edges: np.ndarray, signal_sumw: np.ndarray, backgrounds: Mapping
         raise ValueError(f"required groups without names: {', '.join(empty)}")
     if rules.max_bins < 1 or rules.n_start < 1:
         raise ValueError("max_bins and n_start must be >= 1")
+    if not 0.0 <= rules.raw_min_share <= 1.0:
+        raise ValueError(f"raw_min_share {rules.raw_min_share} is not in [0, 1]")
+    if rules.negative_share is not None and not rules.negative_share >= 0.0:
+        raise ValueError(f"negative_share {rules.negative_share} is negative (None: no negative rule)")
     if not rules.low < fine_edges[-1]:
         raise ValueError(f"low {rules.low} is not below the last fine edge {fine_edges[-1]}")
+
+
+def _first_index(fine_edges: np.ndarray, low: float) -> int:
+    """The index of the first fine edge at or above `low` (the first start edge; at most the last but one edge)."""
+    return min(int(np.searchsorted(fine_edges, low - 1e-12, side="left")), len(fine_edges) - 2)
 
 
 def _quantile_indices(weights: np.ndarray, first: int, n_start: int) -> list[int]:
@@ -154,8 +197,7 @@ def start_indices(fine_edges, signal_sumw, backgrounds: Mapping[str, Template], 
     """The fine-edge indices of the start bins (step 1): the first fine edge at or above rules.low, the quantile
     edges, the last fine edge."""
     fine_edges = np.asarray(fine_edges, dtype=np.float64)
-    first = int(np.searchsorted(fine_edges, rules.low - 1e-12, side="left"))
-    first = min(first, len(fine_edges) - 2)
+    first = _first_index(fine_edges, rules.low)
     if rules.start == "signal":
         weights = np.asarray(signal_sumw, dtype=np.float64)
     else:
@@ -163,10 +205,26 @@ def start_indices(fine_edges, signal_sumw, backgrounds: Mapping[str, Template], 
     return _quantile_indices(weights[first:], first, rules.n_start)
 
 
+def raw_shares(fine_edges, backgrounds: Mapping[str, Template], rules: BinningRules) -> tuple[dict[str, float | None], tuple[str, ...]]:
+    """The share of every group of rules.required in the background of the category, the sums of weights of its
+    templates from the first start edge (rules.low) on (None without a positive background), and the groups the
+    raw-count rule applies to: those with a share >= rules.raw_min_share, every group with raw_min_share 0."""
+    first = _first_index(np.asarray(fine_edges, dtype=np.float64), rules.low)
+    sums = {name: float(np.sum(np.asarray(t[0], dtype=np.float64)[first:])) for name, t in backgrounds.items()}
+    total = sum(sums.values())
+    shares, applied = {}, []
+    for label, names in rules.required.items():
+        group = sum(sums[name] for name in names)
+        shares[label] = group / total if total > 0.0 else None
+        if rules.raw_min_share <= 0.0 or (total > 0.0 and group >= rules.raw_min_share * total):
+            applied.append(label)
+    return shares, tuple(applied)
+
+
 class _Sums:
     """Cumulative sums per fine bin, so that the sums of any range of fine bins cost O(1)."""
 
-    def __init__(self, signal_sumw: np.ndarray, backgrounds: Mapping[str, Template], rules: BinningRules):
+    def __init__(self, signal_sumw: np.ndarray, backgrounds: Mapping[str, Template], rules: BinningRules, applied: tuple[str, ...]):
         def cumulative(values) -> np.ndarray:
             return np.concatenate([[0.0], np.cumsum(np.asarray(values, dtype=np.float64))])
 
@@ -176,6 +234,7 @@ class _Sums:
         self.variance = cumulative(np.sum([np.asarray(t[1], dtype=np.float64) for t in backgrounds.values()], axis=0)) if backgrounds else np.zeros(len(self.signal))
         self.raw = {label: cumulative(np.sum([np.asarray(backgrounds[n][2], dtype=np.float64) for n in names], axis=0)) for label, names in rules.required.items()}
         self.rules = rules
+        self.applied = applied  # the groups of the raw-count rule
 
     @staticmethod
     def _range(cumulative: np.ndarray, low: int, high: int) -> float:
@@ -193,9 +252,9 @@ class _Sums:
             failed.append("background")
         if not rel <= rules.max_rel_uncertainty:
             failed.append("uncertainty")
-        failed += [f"raw:{label}" for label, count in raw.items() if not count >= rules.min_raw]
-        if rules.non_negative:
-            failed += [f"negative:{name}" for name, value in sums.items() if value < -NEGATIVE_TOLERANCE]
+        failed += [f"raw:{label}" for label, count in raw.items() if label in self.applied and not count >= rules.min_raw]
+        if rules.negative_share is not None:
+            failed += [f"negative:{name}" for name, value in sums.items() if value < -NEGATIVE_TOLERANCE - rules.negative_share * max(background, 0.0)]
         return FinalBin(float(fine_edges[low]), float(fine_edges[high]), sums["signal"], background, rel, raw, smallest, tuple(failed))
 
 
@@ -205,7 +264,8 @@ def resolve(fine_edges, signal_sumw, backgrounds: Mapping[str, Template], rules:
     signal_sumw = np.asarray(signal_sumw, dtype=np.float64)
     _check(fine_edges, signal_sumw, backgrounds, rules)
     starts = start_indices(fine_edges, signal_sumw, backgrounds, rules)
-    sums = _Sums(signal_sumw, backgrounds, rules)
+    shares, applied = raw_shares(fine_edges, backgrounds, rules)
+    sums = _Sums(signal_sumw, backgrounds, rules, applied)
     accepted: list[tuple[int, int]] = []  # (low, high) fine-edge indices, from the top
     upper, k = starts[-1], len(starts) - 2
     while k >= 0 and len(accepted) < rules.max_bins:
@@ -221,7 +281,8 @@ def resolve(fine_edges, signal_sumw, backgrounds: Mapping[str, Template], rules:
         accepted = [(0, len(fine_edges) - 1)]
     indices = [0] + [high for _, high in reversed(accepted)]
     bins = tuple(sums.final_bin(fine_edges, low, high) for low, high in reversed(accepted))
-    return Resolution(tuple(float(fine_edges[i]) for i in indices), tuple(float(fine_edges[i]) for i in starts), bins, capped, leftover)
+    exempt = tuple(label for label in rules.required if label not in applied)
+    return Resolution(tuple(float(fine_edges[i]) for i in indices), tuple(float(fine_edges[i]) for i in starts), bins, capped, leftover, shares, exempt)
 
 
 def resolve_edges(fine_edges, signal_sumw, backgrounds: Mapping[str, Template], rules: BinningRules = SIGNAL_RULES) -> tuple[float, ...]:

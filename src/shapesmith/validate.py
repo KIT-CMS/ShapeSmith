@@ -113,6 +113,8 @@ def _score_binning_problems(channel: Channel, name: str, binning: ScoreBinning) 
         rules = binning.rules
         if rules.max_bins < 1 or rules.n_start < 1 or rules.max_rel_uncertainty <= 0.0:
             problems.append(f"variable {name}: the rules need max_bins >= 1, n_start >= 1 and max_rel_uncertainty > 0")
+        if not 0.0 <= rules.raw_min_share <= 1.0 or (rules.negative_share is not None and not rules.negative_share >= 0.0):
+            problems.append(f"variable {name}: the rules need raw_min_share in [0, 1] and negative_share >= 0 (or None)")
         if not binning.fine[0] <= rules.low < binning.fine[-1]:
             problems.append(f"variable {name}: rules.low {rules.low} lies outside the fine edges")
         problems += [f"variable {name}: raw-count group {label} has no background" for label, names in rules.required.items() if not names]

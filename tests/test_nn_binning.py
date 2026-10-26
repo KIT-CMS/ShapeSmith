@@ -40,11 +40,12 @@ def test_the_background_rule_merges_from_the_top():
     assert resolve_edges(FINE, SIGNAL, templates([5, 5, 5, 5, 5, 5, 5, 5, 0.6, 0.5]), dataclasses.replace(RULES, min_background=0.4)) == tuple(np.round(np.linspace(0, 1, 11), 6))
 
 
-def test_the_uncertainty_rule_merges_until_30_percent():
+def test_the_uncertainty_rule_merges_until_50_percent():
     # top bins: 10 events with sumw2 40 each -> relative uncertainty 0.63, 0.45, 0.37, 0.32, 0.28 for 1..5 merged
     sumw2 = [0.01] * 5 + [40] * 5
     edges = resolve_edges(FINE, SIGNAL, templates([10] * 10, sumw2), RULES)
-    assert edges == (0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 1.0)
+    assert edges == (0.0, 0.1, 0.2, 0.3, 0.4, 0.6, 0.8, 1.0)  # pairs from the top; [0.5, 0.6) needs a bin with sumw2 0.01
+    assert resolve_edges(FINE, SIGNAL, templates([10] * 10, sumw2), dataclasses.replace(RULES, max_rel_uncertainty=0.3)) == (0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 1.0)
     assert resolve_edges(FINE, SIGNAL, templates([10] * 10, sumw2), dataclasses.replace(RULES, max_rel_uncertainty=0.1)) == (0.0, 1.0)
 
 
@@ -59,15 +60,95 @@ def test_the_raw_count_rule_needs_an_event_of_every_group():
     assert resolve_edges(FINE, SIGNAL, backgrounds, split) == tuple(np.round(np.linspace(0, 1, 11), 6))
 
 
-def test_a_negative_template_merges_until_it_is_not_negative():
-    backgrounds = templates([5] * 10, jetFakes=[1] * 7 + [1.0, 0.1, -0.3])  # -0.3, -0.2, +0.8 from the top
+def test_a_negative_template_merges_until_it_is_above_one_percent_of_the_background():
+    backgrounds = templates([5] * 10, jetFakes=[1] * 7 + [1.0, 0.1, -0.3])  # -0.3, -0.2, +0.8 from the top (B 4.7, 9.8)
     assert resolve_edges(FINE, SIGNAL, backgrounds, RULES) == (0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 1.0)
-    assert resolve_edges(FINE, SIGNAL, backgrounds, dataclasses.replace(RULES, non_negative=False)) == tuple(np.round(np.linspace(0, 1, 11), 6))
+    assert resolve_edges(FINE, SIGNAL, backgrounds, dataclasses.replace(RULES, negative_share=None)) == tuple(np.round(np.linspace(0, 1, 11), 6))
     negative_signal = SIGNAL.copy()
     negative_signal[90:] = -0.01  # the signal counts as a template too (start bins from the background here)
     background_start = dataclasses.replace(RULES, start="background")
     assert resolve_edges(FINE, negative_signal, templates([5] * 10), background_start)[-3:] == (0.7, 0.8, 1.0)
-    assert resolve_edges(FINE, negative_signal, templates([5] * 10), dataclasses.replace(background_start, non_negative=False))[-3:] == (0.8, 0.9, 1.0)
+    assert resolve_edges(FINE, negative_signal, templates([5] * 10), dataclasses.replace(background_start, negative_share=None))[-3:] == (0.8, 0.9, 1.0)
+
+
+@pytest.mark.parametrize("top,share,merged", [
+    (-0.04, 0.01, False),  # -0.04 of B = 5 + 1 - 0.04 = 5.96: -0.67 %, allowed
+    (-0.07, 0.01, True),  # -1.18 %; merged -0.02 of 11.98 passes
+    (-0.04, 0.0, True),  # negative_share 0: every template >= 0, the rule before C'
+    (-5e-10, 0.0, False),  # within NEGATIVE_TOLERANCE
+    (-0.04, 0.005, True),
+    (-0.5, None, False),  # no negative rule
+])
+def test_the_negative_rule_allows_a_share_of_the_bin_background(top, share, merged):
+    """Only the top start bin has a small negative template (ZL), the next one +0.05: it merges where it fails."""
+    backgrounds = templates([5] * 10, jetFakes=[1] * 10, ZL=[0.0] * 8 + [0.05, top])
+    rules = dataclasses.replace(RULES, negative_share=share)
+    resolution = resolve(FINE, SIGNAL, backgrounds, rules)
+    assert resolution.edges[-2:] == ((0.8, 1.0) if merged else (0.9, 1.0))
+    assert resolution.passed
+
+
+def test_the_raw_count_rule_applies_to_the_groups_with_ten_percent_of_the_background():
+    """Top is 0.3 of 10.3 per start bin (2.9 %) and has no unweighted event in the two highest start bins: exempt from
+    the rule with the default share, merged with raw_min_share 0 (the rule before C') or a share below 2.9 %."""
+    backgrounds = templates([0.3] * 10, raw=[3] * 8 + [0, 0], tautau=[5] * 10, jetFakes=[5] * 10)
+    rules = dataclasses.replace(RULES, required=TOP_GROUPS)
+    resolution = resolve(FINE, SIGNAL, backgrounds, rules)
+    assert resolution.edges == tuple(np.round(np.linspace(0, 1, 11), 6)) and resolution.passed
+    assert resolution.raw_exempt == ("Top",)
+    assert resolution.raw_shares == pytest.approx({"Top": 0.3 / 10.3, "tautau": 5 / 10.3, "jetFakes": 5 / 10.3})
+    assert resolution.bins[-1].raw == {"Top": 0.0, "tautau": 1000.0, "jetFakes": 1000.0}  # counted, not required
+    merged = (0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 1.0)
+    assert resolve_edges(FINE, SIGNAL, backgrounds, dataclasses.replace(rules, raw_min_share=0.0)) == merged
+    assert resolve_edges(FINE, SIGNAL, backgrounds, dataclasses.replace(rules, raw_min_share=0.029)) == merged
+    assert resolve_edges(FINE, SIGNAL, backgrounds, dataclasses.replace(rules, raw_min_share=0.03)) != merged
+    assert resolve(FINE, SIGNAL, backgrounds, dataclasses.replace(rules, raw_min_share=0.0)).raw_exempt == ()
+
+
+def test_the_raw_count_rule_applies_from_a_share_equal_to_raw_min_share():
+    """Top is exactly half of the background (50 of 100): raw_min_share 0.5 applies the rule, a share above does not."""
+    backgrounds = templates([5] * 10, raw=[3] * 8 + [0, 0], tautau=[5] * 10)
+    rules = dataclasses.replace(RULES, required={"Top": ("Top",)}, raw_min_share=0.5)
+    assert resolve(FINE, SIGNAL, backgrounds, rules).raw_exempt == ()
+    assert resolve(FINE, SIGNAL, backgrounds, dataclasses.replace(rules, raw_min_share=0.5000001)).raw_exempt == ("Top",)
+
+
+def test_the_negative_rule_of_a_bin_without_positive_background():
+    """No share of a negative background: a small positive template never fails the negative rule."""
+    signal = np.full(100, 1e-4)
+    resolution = resolve(FINE, signal, templates([-0.5] * 10), dataclasses.replace(RULES, start="background"))
+    assert resolution.edges == (0.0, 1.0) and resolution.bins[0].failed == ("background", "uncertainty", "negative:Top")
+
+
+def test_the_raw_count_share_counts_the_background_from_low_on():
+    """Top is large below low = 0.5 and 2 % above it: its share is that of the scores the category can have."""
+    top = [50] * 5 + [0.2] * 5
+    backgrounds = templates(top, raw=[3] * 8 + [0, 0], tautau=[5] * 10, jetFakes=[5] * 10)
+    rules = dataclasses.replace(RULES, required=TOP_GROUPS, low=0.5, n_start=5)
+    resolution = resolve(FINE, SIGNAL, backgrounds, rules)
+    assert resolution.raw_exempt == ("Top",) and resolution.raw_shares["Top"] == pytest.approx(1.0 / 51.0)
+    assert resolution.edges[-3:] == (0.8, 0.9, 1.0)
+    assert resolve(FINE, SIGNAL, backgrounds, dataclasses.replace(rules, low=0.0, n_start=10)).raw_exempt == ()
+    # without a positive background of the category no group has a share, and none is required
+    empty = templates([0.0] * 10, raw=[0] * 10, tautau=[0.0] * 10, jetFakes=[0.0] * 10)
+    nothing = resolve(FINE, SIGNAL, empty, dataclasses.replace(RULES, required=TOP_GROUPS))
+    assert nothing.raw_shares == {"Top": None, "tautau": None, "jetFakes": None} and nothing.raw_exempt == tuple(TOP_GROUPS)
+    assert nothing.bins[0].failed == ("background", "uncertainty")
+    every = resolve(FINE, SIGNAL, empty, dataclasses.replace(RULES, required=TOP_GROUPS, raw_min_share=0.0))  # the rule before C'
+    assert every.raw_exempt == () and every.bins[0].failed == ("background", "uncertainty", "raw:Top")  # Top has no event
+
+
+def test_the_record_of_a_resolution():
+    backgrounds = templates([5] * 10, raw=[3] * 10, tautau=[0.2] * 10)
+    resolution = resolve(FINE, SIGNAL, backgrounds, dataclasses.replace(RULES, required={"Top": ("Top",), "tautau": ("tautau",)}))
+    record = resolution.record()
+    assert list(record) == ["raw_shares", "raw_exempt", "start", "capped", "leftover", "passed", "bins"]
+    assert record["raw_exempt"] == ["tautau"] and record["raw_shares"]["Top"] == pytest.approx(5 / 5.2)
+    assert record["start"] == list(resolution.start) and record["passed"] and record["leftover"] is None
+    assert record["bins"][0] == {**dataclasses.asdict(resolution.bins[0])}
+    json.dumps(record, allow_nan=False)
+    failing = resolve(FINE, SIGNAL, templates([0.0] * 10), RULES).record()
+    assert failing["bins"][0]["rel_uncertainty"] is None and not failing["passed"]  # inf -> None (strict JSON)
 
 
 def test_the_cap_keeps_the_highest_bins_and_merges_the_rest_into_the_lowest():
@@ -121,10 +202,14 @@ def test_the_record_names_the_rules_a_final_bin_fails():
 
 
 def test_category_rules():
+    """Rule set C' of spec 6.3: the HH category <= 50 %, the background categories <= 10 %, both the raw-count rule for
+    the groups with >= 10 % of the background and no template below -1 % of the bin's background."""
     rules = category_rules(5, True, TOP_GROUPS)
-    assert (rules.low, rules.max_rel_uncertainty, rules.max_bins, rules.start, rules.n_start, rules.required) == (0.2, 0.3, 15, "signal", 50, TOP_GROUPS)
+    assert (rules.low, rules.min_background, rules.max_rel_uncertainty, rules.max_bins, rules.start, rules.n_start, rules.required) == (0.2, 1.0, 0.5, 15, "signal", 50, TOP_GROUPS)
     background = category_rules(6, False)
-    assert (background.low, background.max_rel_uncertainty, background.max_bins, background.start, background.n_start) == (1 / 6, 0.1, 5, "background", 5)
+    assert (background.low, background.min_background, background.max_rel_uncertainty, background.max_bins, background.start, background.n_start) == (1 / 6, 1.0, 0.1, 5, "background", 5)
+    for r in (rules, background):
+        assert (r.min_raw, r.raw_min_share, r.negative_share) == (1.0, 0.1, 0.01)
 
 
 @pytest.mark.parametrize("backgrounds,rules,match", [
@@ -132,6 +217,8 @@ def test_category_rules():
     ({"Top": (np.ones(100), np.ones(100), np.ones(100))}, dataclasses.replace(RULES, required={"Top": ("Top", "QCD")}), "QCD"),
     ({"Top": (np.ones(100), np.ones(100), np.ones(100))}, dataclasses.replace(RULES, required={"Top": ()}), "groups without names"),
     ({"Top": (np.ones(100), np.ones(100), np.ones(100))}, dataclasses.replace(RULES, low=1.0), "low"),
+    ({"Top": (np.ones(100), np.ones(100), np.ones(100))}, dataclasses.replace(RULES, raw_min_share=1.5), "raw_min_share"),
+    ({"Top": (np.ones(100), np.ones(100), np.ones(100))}, dataclasses.replace(RULES, negative_share=-0.01), "negative_share"),
 ])
 def test_inconsistent_inputs_are_refused(backgrounds, rules, match):
     with pytest.raises(ValueError, match=match):

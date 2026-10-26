@@ -299,16 +299,19 @@ the nominal templates; data are never read for them (`shapesmith.nn_binning`, `s
   the unweighted counts of the events with a non-zero weight under the variable `<name>%raw`
   (`histogram.raw_variable`); `estimate` keeps them out of the estimators and gives a `DataMinus` or `ABCD` output
   those of the data it is made of.
-- `rules` (`nn_binning.BinningRules`): the data-blind algorithm of the NN spec 6.3. Start bins of equal signal (`start:
-  signal`, `n_start` 50) or equal total background (`background`, 5) in [`low`, upper fine edge] (`low` = 1/K for an
-  argmax category of K classes), merged from the top until every bin has a total background >= `min_background` (1),
-  a relative statistical uncertainty of the total background <= `max_rel_uncertainty` (0.30; background categories
-  0.10), >= `min_raw` (1) unweighted events of every group of `required` (label -> background names, e.g. Top, tautau,
-  jetFakes) and no negative template (signal included); at most `max_bins` (15; background categories 5) bins, the
-  rest (and the scores below `low`) in the lowest accepted bin, one bin where none passes.
+- `rules` (`nn_binning.BinningRules`): the data-blind algorithm of the NN spec 6.3, by default its rule set C'
+  (2026-10-26). Start bins of equal signal (`start: signal`, `n_start` 50) or equal total background (`background`, 5)
+  in [`low`, upper fine edge] (`low` = 1/K for an argmax category of K classes), merged from the top until every bin has
+  a total background >= `min_background` (1), a relative statistical uncertainty of the total background <=
+  `max_rel_uncertainty` (0.50; background categories 0.10), >= `min_raw` (1) unweighted events of every group of
+  `required` (label -> background names, e.g. Top, tautau, jetFakes) whose share of the category's background (nominal
+  templates, scores >= `low`) is >= `raw_min_share` (0.10; 0: every group), and no template (signal, every background)
+  below -`negative_share` (0.01) times the bin's total background (0: none below 0; None: no such rule); at most
+  `max_bins` (15; background categories 5) bins, the rest (and the scores below `low`) in the lowest accepted bin, one
+  bin where none passes. The rules before C' are `max_rel_uncertainty=0.3, raw_min_share=0, negative_share=0`.
   `nn_binning.resolve_edges(fine_edges, signal_sumw, {name: (sumw, sumw2, raw_count)}, rules) -> edges` is the pure
-  numpy function (`resolve` adds the record), `category_rules(n_classes, signal, required)` the rules of an HH or a
-  background category.
+  numpy function (`resolve` adds the record, `Resolution.record()` its JSON form), `category_rules(n_classes, signal,
+  required)` the rules of an HH or a background category (`SIGNAL_RULES`, `BACKGROUND_RULES`).
 - `thesis` (start edges, e.g. `nn_binning.THESIS_HH_EDGES`): the fine bins rebinned to them, then the AutoRebin of the
   master's thesis on the total background (`nn_binning.auto_rebin`, CombineHarvester's `AutoRebin` with
   SetBinThreshold(1.0), SetBinUncertFraction(0.9), SetRebinMode(1); tested against CombineHarvester).
@@ -320,8 +323,9 @@ the nominal templates; data are never read for them (`shapesmith.nn_binning`, `s
   (Asimov), the bins below `htt_<channel>_<k>lo_<era>` with the data; no lo channel if the first bin is above, one
   unsplit channel if no bin is.
 
-`datacards` writes per card `nn_binning.json` (per channel and category: method, rules, start and final edges, per bin
-the signal, background, uncertainty, raw counts and failed rules, the blinding edge and S/B per bin, the card bins)
+`datacards` writes per card `nn_binning.json` (per channel and category: method, rules, the share of every raw-count
+group and the groups exempt from its rule, start and final edges, per bin the signal, background, uncertainty, raw
+counts and failed rules, the blinding edge and S/B per bin, the card bins)
 and `blinding.json`, the contract with every fit and limit:
 
 ```json

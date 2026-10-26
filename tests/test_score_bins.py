@@ -314,6 +314,27 @@ def test_the_data_blind_rules_merge_away_a_negative_bin_before_clipping(tmp_path
     assert not (card.parent / BLINDING).exists()  # no blinding configured
 
 
+def test_the_record_names_the_raw_count_groups_without_the_rule(tmp_path, caplog):
+    """The jet fakes are 1.8 % of the category's background and have no unweighted event in the two highest bins: no
+    raw-count rule for them (rule set C', share >= 10 %), the record lists the shares and the exempt group, the log says
+    so; with raw_min_share 0 (the rule before) the two highest bins merge with the third."""
+    rules = BinningRules(n_start=10, required={"Z": ("ZTT", "ZL"), "jetFakes": ("jetFakes",)})
+    analysis, hset = _hand_made(ScoreBinning(FINE10, rules=rules, clip=("jetFakes",)), [0.3] * 10, signal=[0.25] * 10)
+    hset[HistKey("mt", "sig", "jetFakes", "nominal", NOMINAL_VARIATION, raw_variable("score"))] = Histogram(list(FINE10), np.array([5.0] * 8 + [0.0, 0.0]), np.zeros(10))
+    with caplog.at_level("INFO", logger="shapesmith.score_bins"):
+        card = write_datacard(hset, analysis, ["mt"], tmp_path / "mt")
+    record = _record(card)["sig"]
+    assert record["edges"] == [round(0.1 * i, 2) for i in range(11)] and record["passed"]
+    assert record["raw_exempt"] == ["jetFakes"] and record["rules"]["raw_min_share"] == 0.1 and record["rules"]["negative_share"] == 0.01
+    assert record["raw_shares"] == pytest.approx({"Z": 160.0 / 163.0, "jetFakes": 3.0 / 163.0})
+    assert record["bins"][-1]["raw"] == {"Z": 100.0, "jetFakes": 0.0}
+    assert "mt/sig/score: no raw-count rule for jetFakes 1.8% of the background (below 10%)" in caplog.text
+    before = ScoreBinning(FINE10, rules=dataclasses.replace(rules, raw_min_share=0.0), clip=("jetFakes",))
+    analysis = dataclasses.replace(analysis, channels={"mt": dataclasses.replace(analysis.channel("mt"), categories=(Category("sig", "cls == 0", Variable("score", "score", before)),))})
+    card = write_datacard(hset, analysis, ["mt"], tmp_path / "before")
+    assert _record(card)["sig"]["edges"][-2:] == [0.7, 1.0] and _record(card)["sig"]["raw_exempt"] == []
+
+
 def test_estimator_outputs_that_clip_are_clipped_after_the_rebinning(tmp_path):
     """DataMinus with clip_negative leaves the fine bins of a ScoreBinning category to datacards."""
     analysis, hset = _hand_made(THESIS10, [0.0] * 10, clip_negative=True)
@@ -390,6 +411,8 @@ def test_missing_unweighted_counts_are_reported(tmp_path):
     (ScoreBinning(FINE10, thesis=(0.0, 0.33, 1.0)), "thesis edges are not among the fine edges"),
     (ScoreBinning(FINE10, rules=BinningRules(required={"Top": ("TTL",)})), "TTL is no background"),
     (ScoreBinning(FINE10, rules=BinningRules(low=1.0)), "rules.low"),
+    (ScoreBinning(FINE10, rules=BinningRules(raw_min_share=1.5)), "raw_min_share in"),
+    (ScoreBinning(FINE10, rules=BinningRules(negative_share=-0.01)), "negative_share >= 0"),
     (ScoreBinning(FINE10, thesis=FINE10, clip=("QCD",)), "clips QCD"),
     (ScoreBinning(FINE10, thesis=FINE10, blinding=0.0), "blinding S/B must be > 0"),
     (ScoreBinning((0.0,), thesis=(0.0,)), "fine edges"),
