@@ -15,7 +15,7 @@ import correctionlib
 import correctionlib.schemav2 as cs
 import numpy as np
 
-Node = cs.Binning | cs.Category | cs.Transform | float
+Node = cs.Binning | cs.Category | cs.Transform | cs.Formula | float
 
 
 def _leaf(value):
@@ -37,6 +37,12 @@ def category(input: str, content: Mapping[str | int, Node], default: Node | None
     items = [cs.CategoryItem(key=key, value=_leaf(value)) for key, value in content.items()]
     fields = {"default": _leaf(default)} if default is not None else {}
     return cs.Category(nodetype="category", input=input, content=items, **fields)
+
+
+def formula(expression: str, variables: Sequence[str], parameters: Sequence[float] = ()) -> cs.Formula:
+    """A TFormula of the inputs `variables` (x, y, ... in order) with the parameters [0], [1], ..."""
+    fields = {"parameters": [float(p) for p in parameters]} if parameters else {}
+    return cs.Formula(nodetype="formula", expression=expression, parser="TFormula", variables=list(variables), **fields)
 
 
 def transform(input: str, expression: str, content: Node) -> cs.Transform:
@@ -86,3 +92,67 @@ def write(cset: cs.CorrectionSet, path: Path) -> Path:
 def read(path: Path) -> cs.CorrectionSet:
     data = Path(path).read_bytes()
     return cs.CorrectionSet.model_validate_json(gzip.decompress(data) if Path(path).suffix == ".gz" else data)
+
+
+def _node_points(node, points: dict[str, set]) -> None:
+    """Collect the bin edges (binning) and keys (category) of every input below a node, by input name."""
+    if isinstance(node, dict):
+        if node.get("nodetype") == "binning":
+            points.setdefault(node["input"], set()).update(("edge", float(e)) for e in node["edges"])
+        elif node.get("nodetype") == "category":
+            points.setdefault(node["input"], set()).update(("key", item["key"]) for item in node["content"])
+        for value in node.values():
+            _node_points(value, points)
+    elif isinstance(node, list):
+        for value in node:
+            _node_points(value, points)
+
+
+def grid(correction: dict, fixed: Mapping[str, object] | None = None) -> list[tuple]:
+    """Evaluation points of a correction (its JSON): per real input the centres between its bin edges, per category
+    input its keys, `fixed` inputs at their given value; the cartesian product in input order."""
+    import itertools
+
+    fixed = dict(fixed or {})
+    found: dict[str, set] = {}
+    _node_points(correction["data"], found)
+    axes = []
+    for variable in correction["inputs"]:
+        name = variable["name"]
+        if name in fixed:
+            axes.append([fixed[name]])
+            continue
+        entries = found.get(name, set())
+        edges = sorted(value for kind, value in entries if kind == "edge")
+        keys = sorted((value for kind, value in entries if kind == "key"), key=str)
+        values = [0.5 * (a + b) for a, b in zip(edges[:-1], edges[1:]) if b > a] if edges else keys
+        if not values:
+            raise ValueError(f"{correction['name']}: no points for the input {name}")
+        axes.append(values)
+    return list(itertools.product(*axes))
+
+
+def compare(first: Path, second: Path, fixed: Mapping[str, object] | None = None) -> dict[str, dict]:
+    """Every correction of both payloads evaluated on the grid of both (their edges and keys): correction -> number
+    of points, max and mean of |second / first - 1| (points where the first is 0 are left out) and the number of
+    points with a category key that only one of them has (`unmatched`, left out too; e.g. the process Wjets of the
+    fractions of a fake-factor payload with W+jets against one without)."""
+    sets = [json.loads(gzip.decompress(Path(p).read_bytes()) if Path(p).suffix == ".gz" else Path(p).read_bytes()) for p in (first, second)]
+    evaluators = [correctionlib.CorrectionSet.from_string(json.dumps(s)) for s in sets]
+    by_name = [{c["name"]: c for c in s["corrections"]} for s in sets]
+    result = {}
+    for name in by_name[0]:
+        if name not in by_name[1]:
+            continue
+        points = sorted(set(grid(by_name[0][name], fixed)) | set(grid(by_name[1][name], fixed)), key=str)
+        deviations, unmatched = [], 0
+        for point in points:
+            try:
+                a, b = (evaluator[name].evaluate(*point) for evaluator in evaluators)
+            except IndexError:  # a category key of only one payload
+                unmatched += 1
+                continue
+            if a != 0:
+                deviations.append(abs(b / a - 1.0))
+        result[name] = {"points": len(deviations), "max": max(deviations, default=0.0), "mean": float(np.mean(deviations)) if deviations else 0.0, "unmatched": unmatched}
+    return result

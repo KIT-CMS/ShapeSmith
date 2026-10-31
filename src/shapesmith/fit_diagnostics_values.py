@@ -9,13 +9,46 @@ parameter after the fit (fit_b) and, for the Gaussian-constrained ones, [mean, w
 `<name>_Pdf` in the workspace (combine 10 stores no prefit widths in nuisances_prefit); [value, error] of every
 normalisation `<bin>/<process>` and of the totals of each bin before (norm_prefit) and after the fit (norm_fit_b); and
 the data events per bin (shapes_prefit/<bin>/data, a density, times the bin widths).
+
+An undefined postfit error is written as null, never as a number: a parameter whose error is NaN or 0 (robustHesse
+drops a parameter of a negative eigenvalue from the covariance and leaves it the error 0), and a normalisation whose
+error is NaN or whose postfit template (shapes_fit_b/<bin>/<process>) has a NaN bin error (combine samples the
+covariance for --saveWithUncertainties; a dropped parameter makes the samples NaN and the stored error 0). Their names
+are listed under "undefined".
 """
 import json
+import math
 import sys
+
+
+def defined(error):
+    """The error, or None where it is undefined (NaN, or 0 for a floating parameter)."""
+    return None if math.isnan(error) or error == 0.0 else error
 
 
 def pairs(collection):
     return {arg.GetName(): [arg.getVal(), arg.getError()] for arg in collection}
+
+
+def parameters(collection):
+    """[value, error] of the floating parameters after the fit, an undefined error as None."""
+    return {arg.GetName(): [arg.getVal(), defined(arg.getError())] for arg in collection}
+
+
+def template_error_is_nan(shapes, key):
+    """A bin error of the postfit template <bin>/<process> is NaN (False without the template)."""
+    histogram = shapes.Get(key)
+    return bool(histogram) and histogram.InheritsFrom("TH1") and any(math.isnan(histogram.GetBinError(i)) for i in range(1, histogram.GetNbinsX() + 1))
+
+
+def normalisations(collection, shapes):
+    """[value, error] of the postfit normalisations, an undefined error (NaN, or a NaN template error) as None."""
+    result = {}
+    for arg in collection:
+        error = arg.getError()
+        undefined = math.isnan(error) or template_error_is_nan(shapes, arg.GetName())
+        result[arg.GetName()] = [arg.getVal(), None if undefined else error]
+    return result
 
 
 def constraints(workspace):
@@ -46,10 +79,14 @@ def main(workspace_path, path, output):
         "status": fit.status(),
         "covariance_quality": fit.covQual(),
         "prefit": constraints(workspace.Get("w")),
-        "postfit": pairs(fit.floatParsFinal()),
+        "postfit": parameters(fit.floatParsFinal()),
         "norm_prefit": pairs(handle.Get("norm_prefit")),
-        "norm_fit_b": pairs(handle.Get("norm_fit_b")),
+        "norm_fit_b": normalisations(handle.Get("norm_fit_b"), handle.Get("shapes_fit_b")),
         "data": data(handle.Get("shapes_prefit")),
+    }
+    values["undefined"] = {
+        "postfit": sorted(name for name, (_, error) in values["postfit"].items() if error is None),
+        "norm_fit_b": sorted(name for name, (_, error) in values["norm_fit_b"].items() if error is None),
     }
     with open(output, "w") as out:
         json.dump(values, out, indent=1)

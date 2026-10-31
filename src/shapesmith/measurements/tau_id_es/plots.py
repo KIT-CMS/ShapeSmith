@@ -1,5 +1,6 @@
-"""Plots of the measurement: the 2D likelihood scan per category, the postfit shapes of the singles fit, and prefit
-control plots of m_vis with a family of energy-scale grid points."""
+"""Plots of the measurement: the 2D likelihood scan per category with the result, the 1D profiles of both POIs with
+their 1 sigma intervals, the postfit shapes at the profile minima, and prefit control plots of m_vis with a family of
+energy-scale grid points."""
 from __future__ import annotations
 
 from pathlib import Path
@@ -13,7 +14,7 @@ import numpy as np  # noqa: E402
 import uproot  # noqa: E402
 
 from shapesmith.histogram import NOMINAL_VARIATION, HistKey, HistogramSet  # noqa: E402
-from shapesmith.measurements.tau_id_es.combine import Interval, Scan  # noqa: E402
+from shapesmith.measurements.tau_id_es.combine import ONE_SIGMA, Interval, Profile, Scan  # noqa: E402
 from shapesmith.measurements.tau_id_es.grid import CHANNEL, SIGNAL, grid_name  # noqa: E402
 from shapesmith.model import NOMINAL, Analysis  # noqa: E402
 
@@ -36,15 +37,20 @@ def _save(fig, path: Path) -> list[Path]:
     return paths
 
 
-def plot_scan(scan: Scan, sf: Interval, es: Interval, category: str, path: Path) -> list[Path]:
-    """2 delta NLL of the scan grid with the 68 % and 95 % contours and the singles result."""
+def plot_scan(scan: Scan, sf: Interval, es: Interval, category: str, path: Path, singles_sf: Interval | None = None, singles_es: Interval | None = None) -> list[Path]:
+    """2 delta NLL of the scan grid with the 68 % and 95 % contours, the result of the profile scans and, if given,
+    the singles cross-check."""
     finite = np.isfinite(scan.dnll)
     r, e, z = scan.r[finite], scan.es[finite], 2 * (scan.dnll[finite] - scan.dnll[finite].min())
     fig, ax = plt.subplots(figsize=(10, 9))
     filled = ax.tricontourf(r, e, np.minimum(z, 30.0), levels=30, cmap="viridis")
     lines = ax.tricontour(r, e, z, levels=sorted(LEVELS), colors=["white", "orange"])
     ax.clabel(lines, fmt={level: label for level, label in LEVELS.items()}, fontsize=14)
-    ax.errorbar([sf.best], [es.best], xerr=[[sf.best - sf.low], [sf.high - sf.best]], yerr=[[es.best - es.low], [es.high - es.best]], fmt="o", color="red", label="singles fit")
+    results = [(sf, es, "red", "o", "profile scans")]
+    if singles_sf is not None and singles_es is not None:
+        results.append((singles_sf, singles_es, "magenta", "s", "singles (cross-check)"))
+    for x, y, color, marker, label in results:
+        ax.errorbar([x.best], [y.best], xerr=[[x.best - x.low], [x.high - x.best]], yerr=[[y.best - y.low], [y.high - y.best]], fmt=marker, color=color, label=label)
     ax.set_xlabel(f"$r_{{EMB}}$ ({category})")
     ax.set_ylabel("tau ES shift [%]")
     ax.legend(loc="upper right")
@@ -52,8 +58,25 @@ def plot_scan(scan: Scan, sf: Interval, es: Interval, category: str, path: Path)
     return _save(fig, path)
 
 
+def plot_profile(profile: Profile, interval: Interval, name: str, category: str, path: Path) -> list[Path]:
+    """Delta NLL of a 1D profile scan with the 0.5 level, the best value and the interval ends."""
+    fig, ax = plt.subplots(figsize=(10, 8))
+    ax.plot(profile.values, profile.dnll, "o-", color="black", markersize=4, label="profile")
+    ax.axhline(ONE_SIGMA, color="gray", linestyle="--", label=f"$\\Delta$NLL = {ONE_SIGMA:g}")
+    ax.axvline(interval.best, color="red", label=f"best {interval.best:.4g}")
+    for edge in (interval.low, interval.high):
+        ax.axvline(edge, color="red", linestyle=":")
+    ax.set_ylim(0, max(3.0, min(float(profile.dnll.max()), 10.0)))
+    ax.set_xlabel(f"{'$r_{EMB}$' if name == 'r' else 'tau ES shift [%]'} ({category})")
+    ax.set_ylabel(r"$\Delta$NLL")
+    ax.text(0.04, 0.95, f"[{interval.low:.4g}, {interval.high:.4g}]", transform=ax.transAxes, va="top", fontsize=16)
+    ax.legend(loc="upper right")
+    return _save(fig, path)
+
+
 def plot_postfit(shapes: Path, output_dir: Path) -> list[Path]:
-    """Data and the stacked postfit processes of every bin of the singles fit, with the data/prediction ratio."""
+    """Data and the stacked postfit processes of every bin of the fit at the profile minima, with the data/prediction
+    ratio."""
     written = []
     with uproot.open(shapes) as f:
         for directory in (name for name in f.keys(cycle=False, recursive=False) if name.endswith("_postfit")):

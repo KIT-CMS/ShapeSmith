@@ -82,9 +82,18 @@ def test_the_ttbar_fake_factors_carry_the_data_scale_and_no_mc_shift(measured):
     ff = evaluator(payloads, "ttbar_fake_factors")
     for pt in (35.0, 90.0):
         assert ff.evaluate(pt, 3.0, "ttbarSystMCShiftUp") == ff.evaluate(pt, 3.0, "nominal") == ff.evaluate(pt, 3.0, "ttbarSystMCShiftDown")
-    scale = record["ttbar_data_scale"][0]["factor"]
+    (entry,) = record["ttbar_data_scale"]
     raw = np.array(record["ttbar_fake_factors"][0]["numerator"]) / np.array(record["ttbar_fake_factors"][0]["denominator"])
-    assert np.allclose(record["ttbar_fake_factors"][0]["y"], raw * scale, rtol=1e-12) and scale != 1.0
+    assert np.allclose(record["ttbar_fake_factors"][0]["y"], raw * entry["factor"], rtol=1e-12)
+    # the mini skims give a negative factor (-1.04): 1 is applied, the measured one recorded, the fake factors stay positive
+    assert entry["factor"] == 1.0 and entry["measured"] < 0 and ff.evaluate(35.0, 3.0, "nominal") > 0
+
+
+def test_a_scale_factor_that_is_not_positive_is_replaced_by_one():
+    from shapesmith.measurements.fake_factors.measure import usable_scale
+
+    assert usable_scale(0.63) == 0.63 and usable_scale(2.03) == 2.03
+    assert usable_scale(-0.15) == usable_scale(0.0) == usable_scale(float("nan")) == usable_scale(float("inf")) == 1.0
 
 
 def test_the_fractions_sum_to_one_in_every_variation(measured):

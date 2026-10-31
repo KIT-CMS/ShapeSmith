@@ -4,7 +4,9 @@ An analysis sets `Analysis.measurement` to an object with a `name` and a `run(co
 `shapesmith measure` runs it with its output directory `<output_dir>/<name>/<era>/`. The measurement reads the skims
 itself (`context.events`), possibly in several passes, and writes its results there. A measurement with a
 `gallery(output, channels)` method returning a `shapesmith.web.gallery.Content` can be published with
-`shapesmith publish`.
+`shapesmith publish`. The modes of a run: measure (default), `suggest_binning` (propose bin edges, write nothing),
+`merge` (combine the results of earlier runs into one payload) and `refit` (repeat the fits from the inputs an earlier
+run stored, without filling histograms); a measurement refuses the modes it does not support.
 """
 from __future__ import annotations
 
@@ -29,6 +31,7 @@ class MeasureContext:
     output: Path
     suggest_binning: bool = False  # print proposed bin edges instead of measuring
     merge: bool = False  # combine the results of earlier runs (e.g. one per switch combination) into one payload
+    refit: bool = False  # repeat the fits from the stored inputs of an earlier run, without histogramming
 
     def events(self, query: Query, columns: Iterable[str] = ()) -> Events:
         return load(self.config, self.analysis, query, columns)
@@ -46,13 +49,15 @@ class Measurement(Protocol):
     def run(self, context: MeasureContext) -> None: ...
 
 
-def run_measure(config: RunConfig, analysis: Analysis, channels: list[str], suggest_binning: bool = False, merge: bool = False) -> Path:
+def run_measure(config: RunConfig, analysis: Analysis, channels: list[str], suggest_binning: bool = False, merge: bool = False, refit: bool = False) -> Path:
     if analysis.measurement is None:
         raise ValueError(f"analysis {analysis.name} defines no measurement")
+    if suggest_binning + merge + refit > 1:
+        raise ValueError("--suggest-binning, --merge and --refit exclude each other")
     output = Path(config.output_dir) / analysis.measurement.name / analysis.era
-    mode = "suggest-binning" if suggest_binning else "merge" if merge else "measure"
+    mode = "suggest-binning" if suggest_binning else "merge" if merge else "refit" if refit else "measure"
     logger.info(f"measurement {analysis.measurement.name} ({mode}) of channels {', '.join(channels)} -> {output}")
     if not suggest_binning:
         write_versions(config, analysis.name, output)
-    analysis.measurement.run(MeasureContext(config, analysis, channels, output, suggest_binning, merge))
+    analysis.measurement.run(MeasureContext(config, analysis, channels, output, suggest_binning, merge, refit))
     return output

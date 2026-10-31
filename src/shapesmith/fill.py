@@ -145,7 +145,10 @@ def fill_booking(config: RunConfig, analysis: Analysis, channel_name: str, booki
     lumi_pb = lumi(analysis, channel, process)
     result: dict[HistKey, Histogram] = {}
     for f in fills:
-        selected = frame[mask(frame, f.cuts)]
+        # only the columns this fill reads: copying every column of the frame per fill took 70 % of the time of a
+        # booking with many column variations and doubled its memory (tau-ID MC: ~1000 columns, ~130 fills)
+        used = {"norm_weight"} | columns_of(f.weights + [e for _, cut, var in f.targets for e in (cut, var) if e])
+        selected = frame.loc[mask(frame, f.cuts), [column for column in frame.columns if column in used]]
         w = event_weights(selected, f.weights, lumi_pb)
         for target, cut, expr in f.targets:
             in_category = mask(selected, [cut]) if cut else np.ones(len(selected), dtype=bool)

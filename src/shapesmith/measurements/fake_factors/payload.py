@@ -3,12 +3,12 @@
 | correction | inputs | syst keys (default: the nominal) |
 |---|---|---|
 | `{p}{s}_fake_factors` | variable, split, syst | `{p}{s}{StatShift,SystMCShift,SystBandHigh,SystBandLow,SystBandAsym}{Up,Down}` |
-| `process_fractions{s}` | process, variable, split, syst | `process_fractions{s}{nominal,frac_QCD_up/down,frac_ttbar_J_up/down}`; processes QCD, ttbar |
-| `QCD{s}_DR_SR_correction` | variable, split, syst | `QCD{s}_DR_SR_Corr{StatShift,SystMCShift,SystBandAsym}{Up,Down}`, `nominal` |
+| `process_fractions{s}` | process, variable, split, syst | `process_fractions{s}{nominal,frac_QCD_up/down,frac_ttbar_J_up/down}` (and `frac_Wjets_up/down`); processes QCD, ttbar (and Wjets) |
+| `{p}{s}_DR_SR_correction` | variable, split, syst | `{p}{s}_DR_SR_Corr{StatShift,SystMCShift,SystBandAsym}{Up,Down}`, `nominal` (QCD, Wjets) |
 | `{p}{s}_non_closure_<var>_correction` | variable, split, syst | `{p}{s}_non_closure_<var>_Corr...` and the global `{p}{s}_non_closure_Corr...`, `nominal` |
 | `{p}{s}_compound_correction` | the non-closure variables in order, split, syst | the product of the non-closures of {p}{s} |
 
-{p} is QCD or ttbar, {s} the leg suffix. Every correction is binned in the split categories first, then in its
+{p} is QCD, Wjets or ttbar, {s} the leg suffix. Every correction is binned in the split categories first, then in its
 variable (flow clamp), below a `syst` category.
 """
 from __future__ import annotations
@@ -22,7 +22,7 @@ from shapesmith.measurements.fake_factors.fit import BAND_ASYM, MC, STAT, Fitted
 from shapesmith.measurements.fake_factors.model import Binned, Split
 
 CORRECTION_VARIATIONS = tuple(f"{name}{direction}" for name in (STAT, MC, BAND_ASYM) for direction in ("Up", "Down"))
-FRACTION_PROCESSES = {"QCD": "QCD", "ttbar_J": "ttbar"}  # TauFakeFactors process -> payload category
+FRACTION_PROCESSES = {"QCD": "QCD", "Wjets": "Wjets", "ttbar_J": "ttbar"}  # TauFakeFactors process -> payload category
 
 
 def _by_category(split: Split, variable: str, steps: Sequence[Step]) -> cs.Binning:
@@ -43,12 +43,12 @@ def fake_factors(name: str, binned: Binned, split: Split, fitted: Sequence[Fitte
 
 def fractions(name: str, binned: Binned, split: Split, values: Mapping[str, Mapping[str, Sequence]], version: int) -> cs.Correction:
     """`name` = process_fractions{s}; values[variation][process] holds the fraction values per category, variation
-    nominal or frac_<process>_up/down."""
+    nominal or frac_<process>_up/down, process those of FRACTION_PROCESSES that were measured."""
 
     def by_process(variation: str) -> cs.Category:
         return payloads.category("process", {
             label: _by_category(split, binned.variable, [Step(edges, category) for edges, category in zip(binned.edges, values[variation][process])])
-            for process, label in FRACTION_PROCESSES.items()
+            for process, label in FRACTION_PROCESSES.items() if process in values[variation]
         })
 
     data = payloads.category("syst", {name + variation: by_process(variation) for variation in values}, default=by_process("nominal"))

@@ -1,13 +1,15 @@
 /* ShapeSmith gallery viewer: one column per variant, the same plot in every column.
    A plain ES2020 script without dependencies that works over HTTP and from file://; the manifest comes
-   from manifest.js (window.SHAPESMITH_GALLERY). The pure functions below are exported for the node tests. */
+   from manifest.js (window.SHAPESMITH_GALLERY). On a site page (<html data-level="site">) site.js lists the
+   eras (window.SHAPESMITH_SITE), each a gallery in <era>/, and the viewer loads <era>/manifest.js on a switch.
+   The pure functions below are exported for the node tests. */
 (function () {
   'use strict';
 
   const THIN = '\u2009';
   const MINUS = '\u2212';
   const DASH = '\u2013';
-  const HASH_KEYS = ['ch', 'reg', 'cat', 'var'];
+  const HASH_KEYS = ['era', 'ch', 'reg', 'cat', 'var'];
   const THEME_KEY = 'shapesmith-gallery-theme';
 
   // ---------------------------------------------------------------- pure logic
@@ -138,7 +140,60 @@
   }
 
   function stateToHash(s) {
-    return { ch: s.channel, reg: s.region, cat: s.category, var: s.variable, cols: s.enabled };
+    const hash = { ch: s.channel, reg: s.region, cat: s.category, var: s.variable, cols: s.enabled };
+    return s.era ? Object.assign({ era: s.era }, hash) : hash; // the era on a site page only
+  }
+
+  /** `current` (keys of the shown gallery) with the keys of `previous` that the gallery does not know put back after
+      their predecessor in `previous`: a column of another era stays wanted while an era without it is shown. */
+  function keepUnknown(previous, current, known) {
+    const out = (current || []).slice();
+    (previous || []).forEach((key, i) => {
+      if (known.includes(key) || out.includes(key)) return;
+      const before = previous.slice(0, i).reverse().find((k) => out.includes(k));
+      out.splice(before === undefined ? 0 : out.indexOf(before) + 1, 0, key);
+    });
+    return out;
+  }
+
+  /** The wanted selection after a change: the shown one with `patch`, keeping the columns the gallery lacks. */
+  function carry(m, wanted, s, patch) {
+    const next = Object.assign({ order: s.order, cols: s.enabled }, patch);
+    const known = variantKeys(m);
+    return Object.assign({}, wanted, patch, { order: keepUnknown(wanted.order, next.order, known), cols: keepUnknown(wanted.cols, next.cols, known) });
+  }
+
+  // ---------------------------------------------------------------- site: one gallery per era
+
+  /** The eras of a site manifest with a key, in its order. */
+  function siteEras(site) {
+    return (isObject(site) && Array.isArray(site.eras) ? site.eras : []).filter((e) => isObject(e) && typeof e.key === 'string' && e.key);
+  }
+
+  /** The era to show: the wanted one if the site has it, else the most recent (the last). */
+  function pickEra(site, wanted) {
+    const keys = siteEras(site).map((e) => e.key);
+    if (keys.includes(wanted)) return wanted;
+    return keys.length ? keys[keys.length - 1] : null;
+  }
+
+  /** The directory of an era's gallery relative to the site page, e.g. "2018/". */
+  function eraBase(era) {
+    return era ? encodeURIComponent(era) + '/' : '';
+  }
+
+  /** The manifest of an era's gallery ("manifest.js" for the script, "manifest.json" for fetch), cache-busted by its update. */
+  function eraManifestUrl(site, era, name) {
+    const entry = siteEras(site).find((e) => e.key === era);
+    const stamp = entry && entry.updated ? String(entry.updated).replace(/[-:]/g, '') : '';
+    return eraBase(era) + (name || 'manifest.js') + (stamp ? '?v=' + encodeURIComponent(stamp) : '');
+  }
+
+  /** The site page at the selection, from a gallery that is one era of a site (manifest.site); null otherwise. */
+  function siteLink(m, s) {
+    const site = isObject(m) && isObject(m.site) && m.site.key ? m.site : null;
+    if (!site) return null;
+    return '../index.html#' + serializeHash(Object.assign(stateToHash(s || {}), { era: site.key }));
   }
 
   /** The published formats (e.g. ["png", "pdf"]) of one variant at the selection, or null. */
@@ -156,10 +211,11 @@
     return String(m.updated || '').replace(/[-:]/g, '');
   }
 
-  function imageUrl(m, variant, sel, ext) {
+  /** The plot file of a variant at the selection; `base` is the gallery directory relative to the page ("" or "2018/"). */
+  function imageUrl(m, variant, sel, ext, base) {
     const path = [variant, sel.channel, sel.region, sel.category, sel.variable].map((k) => encodeURIComponent(k)).join('/');
     const stamp = sourceStamp(m, variant, sel.channel);
-    return 'data/' + path + '.' + ext + (stamp ? '?v=' + encodeURIComponent(stamp) : '');
+    return (base || '') + 'data/' + path + '.' + ext + (stamp ? '?v=' + encodeURIComponent(stamp) : '');
   }
 
   const AXIS_TITLES = { channels: 'Channel', regions: 'Region', categories: 'Category', variables: 'Variable' };
@@ -304,7 +360,7 @@
     module.exports = {
       parseHash, serializeHash, resolve, resolveColumns, stateToHash, plotFormats, sourceStamp, imageUrl,
       describeMissing, yieldTable, yieldLine, formatNumber, formatRatio, filterVariables, formatTime,
-      axisTitle, noteOf, factTable, hasYields,
+      axisTitle, noteOf, factTable, hasYields, keepUnknown, carry, siteEras, pickEra, eraBase, eraManifestUrl, siteLink,
     };
   }
   if (typeof document === 'undefined') return;
@@ -312,6 +368,12 @@
   // ---------------------------------------------------------------- page
 
   let M = null;
+  let SITE = null; // the site manifest on a site page, else null
+  let ERA = null; // the era shown on a site page
+  let BASE = ''; // the directory of the shown gallery relative to the page
+  let loading = 0; // the latest era switch; an earlier one that finishes later is dropped
+  let bound = false;
+  const eraManifests = {};
   let S = null; // the resolved selection
   let W = {}; // the wanted one: a choice that is unavailable for now comes back once it is available again
   let lastHash = null;
@@ -372,57 +434,133 @@
     });
   }
 
+  const validGallery = (m) => isObject(m) && Array.isArray(m.variants);
+  const http = () => /^https?:$/.test(location.protocol) && !!window.fetch;
+
+  function fetchJson(url) {
+    return fetch(url, { cache: 'no-cache' }).then((r) => (r.ok ? r.json() : null));
+  }
+
   function start() {
     initTheme();
-    const valid = (m) => isObject(m) && Array.isArray(m.variants);
+    if (document.documentElement.dataset.level === 'site') return startSite();
     const missing = () => notice('No gallery manifest found: manifest.js next to this page is missing or does not define window.SHAPESMITH_GALLERY. Publish a gallery into this directory with ShapeSmith first.', true);
-    if (valid(window.SHAPESMITH_GALLERY)) init(window.SHAPESMITH_GALLERY);
-    else if (/^https?:$/.test(location.protocol) && window.fetch) {
-      fetch('manifest.json', { cache: 'no-cache' })
-        .then((r) => (r.ok ? r.json() : null))
-        .then((m) => (valid(m) ? init(m) : missing()), missing);
-    } else missing();
+    if (validGallery(window.SHAPESMITH_GALLERY)) init(window.SHAPESMITH_GALLERY);
+    else if (http()) fetchJson('manifest.json').then((m) => (validGallery(m) ? init(m) : missing()), missing);
+    else missing();
   }
 
   function init(m) {
+    show(m);
+    if (variantKeys(M).length) apply(parseHash(location.hash));
+  }
+
+  function startSite() {
+    const valid = (site) => siteEras(site).length > 0;
+    const missing = () => notice('No site manifest found: site.js next to this page is missing, does not define window.SHAPESMITH_SITE or lists no era. Publish a gallery of this site with ShapeSmith first.', true);
+    const begin = (site) => {
+      SITE = site;
+      $('title').textContent = site.title || 'ShapeSmith gallery';
+      $('era-field').hidden = false;
+      const wanted = parseHash(location.hash);
+      selectEra(wanted.era, wanted);
+    };
+    if (valid(window.SHAPESMITH_SITE)) begin(window.SHAPESMITH_SITE);
+    else if (http()) fetchJson('site.json').then((site) => (valid(site) ? begin(site) : missing()), missing);
+    else missing();
+  }
+
+  /** The manifest of an era's gallery: <era>/manifest.js as a script (works from file://), over HTTP manifest.json if that fails. */
+  function loadEra(era) {
+    if (eraManifests[era]) return Promise.resolve(eraManifests[era]);
+    const done = (m) => {
+      if (!validGallery(m)) throw new Error('no gallery manifest');
+      eraManifests[era] = m;
+      return m;
+    };
+    const viaFetch = () => (http() ? fetchJson(eraManifestUrl(SITE, era, 'manifest.json')).then(done) : Promise.reject(new Error('no gallery manifest')));
+    return new Promise((resolve, reject) => {
+      const script = document.createElement('script');
+      const previous = window.SHAPESMITH_GALLERY;
+      window.SHAPESMITH_GALLERY = undefined;
+      const finish = (m) => {
+        window.SHAPESMITH_GALLERY = previous;
+        script.remove();
+        if (validGallery(m)) resolve(done(m));
+        else viaFetch().then(resolve, reject);
+      };
+      script.onload = () => finish(window.SHAPESMITH_GALLERY); // runs right after the script, before any other
+      script.onerror = () => finish(null);
+      script.src = eraManifestUrl(SITE, era, 'manifest.js');
+      document.head.append(script);
+    });
+  }
+
+  /** Shows the era (or the most recent one) with the wanted selection, which falls back where that era lacks it. */
+  function selectEra(wanted, selection) {
+    const era = pickEra(SITE, wanted);
+    const token = ++loading;
+    renderEras(era);
+    loadEra(era).then((m) => {
+      if (token !== loading) return;
+      ERA = era;
+      BASE = eraBase(era);
+      show(m);
+      renderEras(era);
+      if (variantKeys(M).length) apply(Object.assign({}, selection, { era: era }));
+    }, () => {
+      if (token !== loading) return;
+      renderEras(ERA);
+      notice('The gallery of era ' + era + ' could not be loaded: ' + eraBase(era) + 'manifest.js is missing or does not define a gallery.', true);
+    });
+  }
+
+  /** The era buttons with `current` (the shown era, or the one that loads) pressed; any other era is selectable. */
+  function renderEras(current) {
+    $('eras').replaceChildren(...siteEras(SITE).map((e) => el('button', {
+      type: 'button', class: 'seg', 'aria-pressed': String(e.key === current), 'data-focus': 'era:' + e.key,
+      title: e.title || null, onclick: () => { if (e.key !== current) selectEra(e.key, S ? carry(M, W, S, {}) : W); },
+    }, el('span', { text: e.label || e.key }))));
+  }
+
+  /** Shows a gallery manifest: header, axis titles, provenance; the selection is applied afterwards. */
+  function show(m) {
     // channels are shown by their key (et, mt, ...), not by the analysis' mathtext label
     M = Object.assign({}, m, { channels: (m.channels || []).map((c) => Object.assign({}, c, { label: c.key })) });
     m = M;
-    const title = m.title || 'ShapeSmith gallery';
-    $('title').textContent = title;
-    if (m.updated) {
-      $('updated').textContent = 'Updated ' + formatTime(m.updated);
-      $('updated').setAttribute('datetime', m.updated);
-    }
-    if (m.generator) $('generator').textContent = (m.updated ? ' · ' : '') + m.generator;
-    if (m.description) {
-      $('description').textContent = m.description;
-      $('about').hidden = false;
-    }
+    $('notice').hidden = true;
+    $('title').textContent = (SITE ? SITE.title : m.title) || 'ShapeSmith gallery';
+    $('updated').textContent = m.updated ? 'Updated ' + formatTime(m.updated) : '';
+    if (m.updated) $('updated').setAttribute('datetime', m.updated);
+    else $('updated').removeAttribute('datetime');
+    $('generator').textContent = m.generator ? (m.updated ? ' · ' : '') + m.generator : '';
+    $('description').textContent = m.description || '';
+    $('about').hidden = !m.description;
+    $('site-link').hidden = !!SITE || !siteLink(m, {}); // a gallery of a site links to the site page
     if (m.schema !== 1) notice('This viewer reads manifest schema 1, the manifest has schema ' + m.schema + '; parts of it may not be shown.');
-    if (!variantKeys(m).length) return notice('This gallery has no published variants yet.');
+    const empty = !variantKeys(m).length;
+    $('controls').hidden = $('main').hidden = empty;
+    if (empty) return notice('This gallery has no published variants yet.');
     for (const [axis, id] of [['channels', 'channel-label'], ['regions', 'region-label'], ['categories', 'category-label'], ['variables', 'var-label']]) {
       $(id).textContent = axisTitle(m, axis);
     }
-    $('controls').hidden = false;
-    $('main').hidden = false;
     $('yields-panel').hidden = !hasYields(m);
-    $('yields-panel').open = wide();
+    if (!bound) $('yields-panel').open = wide();
     bind();
     renderProvenance();
-    apply(parseHash(location.hash));
   }
 
   function apply(wanted) {
     W = wanted;
     S = resolve(M, wanted);
+    S.era = ERA;
     render();
     writeHash();
     preload();
   }
 
   function change(patch) {
-    apply(Object.assign({}, W, { order: S.order, cols: S.enabled }, patch));
+    apply(carry(M, W, S, patch));
   }
 
   function step(delta) {
@@ -432,6 +570,8 @@
   }
 
   function writeHash() {
+    const link = SITE ? null : siteLink(M, S);
+    if (link) $('site-link').href = link;
     const hash = serializeHash(stateToHash(S));
     if (hash === lastHash) return;
     lastHash = hash;
@@ -451,7 +591,7 @@
       for (const key of S.enabled) {
         if (!(plotFormats(M, key, sel) || []).includes('png')) continue;
         const img = new Image();
-        img.src = imageUrl(M, key, sel, 'png');
+        img.src = imageUrl(M, key, sel, 'png', BASE);
         preloaded.push(img);
       }
     }
@@ -472,7 +612,8 @@
     renderGrid();
     if (lightbox != null) renderLightbox();
     if (focused) restoreFocus(focused);
-    document.title = (S.variable ? labelOf(S.variables, S.variable) + ' · ' + labelOf(S.channels, S.channel) + ' — ' : '') + (M.title || 'ShapeSmith gallery');
+    const page = (SITE ? SITE.title : M.title) || 'ShapeSmith gallery';
+    document.title = (S.variable ? labelOf(S.variables, S.variable) + ' · ' + labelOf(S.channels, S.channel) + (ERA ? ' · ' + ERA : '') + ' — ' : ERA ? ERA + ' — ' : '') + page;
   }
 
   function restoreFocus(id) {
@@ -595,11 +736,11 @@
       note ? el('span', { class: 'card-ratio', text: note })
         : row.ratio != null ? el('span', { class: 'card-ratio', title: yieldLine(row), text: 'Data/Pred ' + formatRatio(row.data, row.prediction) }) : null,
       // the PNG opens by clicking the plot; the header links only the other formats
-      ...formats.filter((ext) => ext !== 'png').map((ext) => el('a', { class: 'card-link', href: imageUrl(M, key, S, ext), target: '_blank', rel: 'noopener', text: ext.toUpperCase() })),
+      ...formats.filter((ext) => ext !== 'png').map((ext) => el('a', { class: 'card-link', href: imageUrl(M, key, S, ext, BASE), target: '_blank', rel: 'noopener', text: ext.toUpperCase() })),
     ]);
     let plate;
     if (formats.includes('png')) {
-      const png = imageUrl(M, key, S, 'png');
+      const png = imageUrl(M, key, S, 'png', BASE);
       const img = el('img', { loading: 'lazy', decoding: 'async', alt: altText(key, S), src: png });
       if (aspect) img.style.aspectRatio = 'auto ' + aspect;
       img.addEventListener('load', () => {
@@ -748,7 +889,7 @@
     const missing = $('lb-missing');
     if (formats.includes('png')) {
       img.alt = altText(key, S);
-      img.src = imageUrl(M, key, S, 'png');
+      img.src = imageUrl(M, key, S, 'png', BASE);
       img.hidden = false;
       missing.hidden = true;
     } else {
@@ -822,6 +963,8 @@
   }
 
   function bind() {
+    if (bound) return;
+    bound = true;
     $('region').addEventListener('change', (e) => change({ reg: e.target.value }));
     $('category').addEventListener('change', (e) => change({ cat: e.target.value }));
     $('prev').addEventListener('click', () => step(-1));
@@ -849,7 +992,10 @@
     document.addEventListener('keydown', onKey);
     window.addEventListener('hashchange', () => {
       const hash = location.hash.replace(/^#/, '');
-      if (hash !== lastHash) apply(parseHash(hash));
+      if (hash === lastHash) return;
+      const wanted = parseHash(hash);
+      if (SITE && pickEra(SITE, wanted.era) !== ERA) selectEra(wanted.era, wanted);
+      else apply(wanted);
     });
   }
 

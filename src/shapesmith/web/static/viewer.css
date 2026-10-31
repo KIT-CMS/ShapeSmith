@@ -69,7 +69,10 @@ button, input, select { font: inherit; color: inherit; }
 .masthead { padding: 1.25rem var(--gutter) .75rem; }
 .title-row { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: .5rem 1rem; }
 h1 { margin: 0; font-size: clamp(1.35rem, 4vw, 1.9rem); line-height: 1.2; letter-spacing: -.01em; overflow-wrap: anywhere; }
+.title-main { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem 1.25rem; min-width: 0; }
+.era-field { display: inline-flex; align-items: center; gap: .5rem; }
 .meta { margin: .3rem 0 0; color: var(--muted); font-size: .875rem; }
+.site-link { margin-left: .75rem; color: var(--link); }
 .theme { display: inline-flex; align-items: center; gap: .4rem; color: var(--muted); font-size: .875rem; }
 .about { margin-top: .5rem; max-width: 90ch; }
 .about summary { cursor: pointer; color: var(--muted); font-size: .9rem; }

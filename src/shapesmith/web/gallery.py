@@ -5,6 +5,11 @@ manifest.js, so that the page also works from file://) and the plots in data/<va
 <variable>.png|.pdf. A variant is one column of the gallery, e.g. one run configuration; publishing a variant for some
 channels replaces exactly those channels of it and leaves the rest of the gallery as it is.
 
+A gallery can be one era of a site (`web.site`): the site directory holds the galleries of the eras as its subdirectories
+(<site>/<era>/, each a complete gallery as above), the viewer once more with site.json and site.js, which list the eras.
+The site page loads the manifest of the chosen era and switches between them; publishing a gallery of a site rewrites
+the site's list from the galleries in its subdirectories.
+
 A run publishes its control or category plots, or, for an analysis with a measurement, what the measurement's
 `gallery(output, channels)` returns (its plots on the same four axes, notes per plot and facts per channel). A gallery
 holds one kind: "control" or the name of the measurement.
@@ -44,6 +49,10 @@ AXES = ("channels", "regions", "categories", "variables")
 
 Cell = tuple[str, str, str]  # (region, category, variable)
 CONTROL = "control"
+SITE_LEVEL = "site"
+ERA_KEY_PATTERN = r"[A-Za-z0-9][A-Za-z0-9_-]*"  # the name of a gallery directory in a site; no file of the site matches it
+# the edits that turn the index.html of a gallery into the site page: the site level marked, site.js for manifest.js
+SITE_PAGE = (('<html lang="en">', '<html lang="en" data-level="site">'), ('src="manifest.js?', 'src="site.js?'))
 
 
 @dataclass
@@ -88,6 +97,74 @@ def _gallery(target: Path) -> dict | None:
     raise FileExistsError(f"{target} is not empty and not a ShapeSmith gallery (no manifest.json written by shapesmith); nothing published")
 
 
+def _site(site: Path) -> dict | None:
+    """The site manifest in `site`, or None for a new site: a missing or empty directory, or one that holds galleries
+    only (they become eras of the site). Any other directory is refused, as in _gallery."""
+    if not site.exists():
+        return None
+    if not site.is_dir():
+        raise NotADirectoryError(f"{site} is not a directory")
+    path = site / "site.json"
+    if path.is_file():
+        try:
+            manifest = json.loads(path.read_text())
+        except (OSError, ValueError):
+            manifest = None
+        if isinstance(manifest, dict) and str(manifest.get("generator", "")).startswith(GENERATOR) and manifest.get("level") == SITE_LEVEL:
+            if manifest.get("schema") != SCHEMA:
+                raise ValueError(f"{path} has schema {manifest.get('schema')}, this ShapeSmith writes schema {SCHEMA}")
+            return manifest
+    else:
+        def gallery(entry: Path) -> bool:  # a gallery or an empty directory
+            try:
+                return entry.is_dir() and not entry.is_symlink() and (_gallery(entry) is not None or not any(entry.iterdir()))
+            except (OSError, ValueError):
+                return False
+
+        if all(gallery(entry) for entry in site.iterdir()):
+            return None
+    raise FileExistsError(f"{site} is not empty and not a ShapeSmith site (no site.json written by shapesmith); nothing published")
+
+
+def era_order(key: str) -> tuple:
+    """Sort key of the eras of a site: by year, a whole year before its halves (2016, 2016preVFP, 2016postVFP), names
+    without a year last."""
+    match = re.match(r"(\d+)(.*)", key)
+    if match is None:
+        return (1, 0, 0, key)
+    rest = match.group(2).lower()
+    return (0, int(match.group(1)), 1 if rest.startswith("pre") else 2 if rest.startswith("post") else 0, key)
+
+
+def _site_manifest(site: Path, previous: dict | None, web: WebConfig, kind: str, name: str, updated: str) -> dict:
+    """The site manifest: the galleries of `kind` in the subdirectories of the site, in era order (era_order)."""
+    eras = []
+    for entry in site.iterdir():
+        if not entry.is_dir() or entry.is_symlink() or not re.fullmatch(ERA_KEY_PATTERN, entry.name):
+            continue
+        try:
+            manifest = _gallery(entry)
+        except (OSError, ValueError):
+            manifest = None
+        if not manifest:
+            logger.warning(f"{entry} is no ShapeSmith gallery: not an era of the site {site}")
+            continue
+        if manifest.get("kind", CONTROL) != kind:
+            logger.warning(f"{entry} is a gallery of {manifest.get('kind', CONTROL)} plots, not of {kind}: not an era of the site {site}")
+            continue
+        eras.append({"key": entry.name, "label": entry.name, "title": manifest.get("title"), "updated": manifest.get("updated")})
+    eras.sort(key=lambda era: era_order(era["key"]))
+    return {
+        "schema": SCHEMA,
+        "generator": f"{GENERATOR} {__version__}",
+        "level": SITE_LEVEL,
+        "kind": kind,
+        "title": web.title or (previous or {}).get("title") or name,
+        "updated": updated,
+        "eras": eras,
+    }
+
+
 def _plots(analysis: Analysis, channel: str, directory: Path) -> dict[Cell, dict[str, Path]]:
     """The plot files of a channel, (region, category, variable) -> {extension: path}, in analysis order. File names
     are matched against the channel's categories and variables, whose names contain underscores themselves."""
@@ -112,28 +189,32 @@ def _plots(analysis: Analysis, channel: str, directory: Path) -> dict[Cell, dict
 
 
 def _yields(config: RunConfig, analysis: Analysis, plots: dict[str, dict[Cell, dict[str, Path]]]) -> dict:
-    """{channel: {region: {category: yields}}}: the data, the prediction and the stacked groups of one plot per
-    region and category (the `yield` variable if there is one), from the histograms the plots are made of."""
+    """{channel: {region: {category: yields}}}: the data, the prediction and the stacked groups of each region and
+    category, from the histograms the plots are made of: those of the `yield` variable where the run filled it, plotted
+    or not (every event of the region), else those of its first plotted variable (the events inside its axis range)."""
     cells = {}
     for channel, files in plots.items():
         for region, category, variable in files:
             cells.setdefault((channel, region, category), []).append(variable)
-    chosen = {cell: YIELD_VARIABLE if YIELD_VARIABLE in variables else variables[0] for cell, variables in cells.items()}
+    candidates = {cell: list(dict.fromkeys((YIELD_VARIABLE, variables[0]))) for cell, variables in cells.items()}
     result = {}
     for control in (True, False):
-        wanted = [(channel, category, region, variable) for (channel, region, category), variable in chosen.items() if (category == INCLUSIVE) == control]
+        wanted = {(channel, category, region): tried for (channel, region, category), tried in candidates.items() if (category == INCLUSIVE) == control}
         path = Path(config.output_dir) / ("control_shapes.root" if control else "shapes.root")
         if not wanted:
             continue
         if not path.is_file():
             logger.warning(f"{path} is missing: no yields for {len(wanted)} plots")
             continue
-        keys = set(wanted)
+        keys = {(*cell, variable) for cell, tried in wanted.items() for variable in tried}
         hset = HistogramSet.load(path, keep=lambda key: key.variation == NOMINAL_VARIATION and (key.channel, key.category, key.region, key.variable) in keys)
-        for channel, category, region, variable in wanted:
-            shown = stack(hset, analysis, channel, category, variable, region)
-            if not shown.groups:
-                logger.warning(f"{channel}/{category}/{region}/{variable}: no histograms in {path}, no yields")
+        for (channel, category, region), tried in wanted.items():
+            for variable in tried:
+                shown = stack(hset, analysis, channel, category, variable, region)
+                if shown.groups:
+                    break
+            else:
+                logger.warning(f"{channel}/{category}/{region}/{tried[-1]}: no histograms in {path}, no yields")
                 continue
             result.setdefault(channel, {}).setdefault(region, {})[category] = {
                 "variable": variable,
@@ -336,6 +417,9 @@ def _manifest(previous: dict | None, name: str, web: WebConfig, source: dict, co
         "description": web.about if web.about is not None else previous.get("description", ""),
         "updated": updated,
     }
+    site = {"key": Path(web.dir).name} if web.site is not None else previous.get("site")
+    if site:
+        manifest["site"] = site  # the gallery is this era of the site in its parent directory
     axes = {**previous.get("axes", {}), **content.axes}
     if axes:
         manifest["axes"] = axes
@@ -361,12 +445,18 @@ def publish(config: RunConfig, analysis: Analysis, web: WebConfig, channels: lis
     """Publish the plots of `channels` (default: the configured channels with plots) and their yields as variant
     `web.variant` of the gallery in `web.dir`; returns the manifest. An analysis with a measurement publishes the
     measurement's gallery content instead. Copies only changed plots, removes stale ones of the published channels of
-    the variant only, and refuses a directory that is neither empty nor a gallery, and a gallery of another kind."""
+    the variant only, and refuses a directory that is neither empty nor a gallery, and a gallery of another kind. With
+    `web.site` the gallery is the era `web.dir` names of that site, whose page and era list are rewritten as well."""
     if web.dir is None or web.variant is None:
         raise ValueError("publish needs a gallery directory and a variant: --to and --variant, or `web: {dir: ..., variant: ...}` in the run configuration")
     if not re.fullmatch(VARIANT_PATTERN, web.variant):
         raise ValueError(f"variant {web.variant!r} must match {VARIANT_PATTERN}")
-    target = Path(web.dir).absolute()
+    target = Path(os.path.normpath(Path(web.dir).absolute()))
+    site = Path(os.path.normpath(Path(web.site).absolute())) if web.site is not None else None
+    if site is not None:
+        if target.parent != site or not re.fullmatch(ERA_KEY_PATTERN, target.name):
+            raise ValueError(f"the gallery {target} of the site {site} must be a subdirectory of it named {ERA_KEY_PATTERN}, e.g. {site / '2018'}; nothing published")
+        previous_site = _site(site)
     previous = _gallery(target)
     static = _static()
     viewer = [f for f in static.iterdir() if f.is_file()] if static.is_dir() else []
@@ -381,6 +471,13 @@ def publish(config: RunConfig, analysis: Analysis, web: WebConfig, channels: lis
     kind = (previous or {}).get("kind", CONTROL if previous else content.kind)
     if kind != content.kind:
         raise ValueError(f"{target} is a gallery of {kind} plots, not of {content.kind}: publish into a gallery of its own; nothing published")
+    if site is not None and (previous_site or {}).get("kind", content.kind) != content.kind:
+        raise ValueError(f"{site} is a site of {previous_site['kind']} galleries, not of {content.kind}: publish into a site of its own; nothing published")
+    if site is not None:
+        index = next(f for f in viewer if f.name == "index.html").read_text(encoding="utf-8")
+        missing = [old for old, _ in SITE_PAGE if index.count(old) != 1]
+        if missing:
+            raise FileNotFoundError(f"the index.html of the viewer ({static}) has no single {missing[0]!r} to make the site page of; nothing published")
     plots = content.plots
     links = [link for channel in plots for link in _links(target, target / "data" / web.variant / channel)]
     if links:
@@ -410,8 +507,8 @@ def publish(config: RunConfig, analysis: Analysis, web: WebConfig, channels: lis
         stale[channel] = (root, set(keep))
         logger.info(f"{channel}: {len(files)} plots ({copied} files copied) -> {root}")
     for file in viewer:
-        content = file.read_bytes()
-        _write(target / file.name, content.replace(STAMP.encode(), stamp.encode()) if file.name == "index.html" else content)
+        data = file.read_bytes()
+        _write(target / file.name, data.replace(STAMP.encode(), stamp.encode()) if file.name == "index.html" else data)
     text = json.dumps(manifest, indent=1)
     _write(target / "manifest.json", text.encode())
     _write(target / "manifest.js", f"window.SHAPESMITH_GALLERY = {text};\n".encode())
@@ -420,4 +517,22 @@ def publish(config: RunConfig, analysis: Analysis, web: WebConfig, channels: lis
         if removed:
             logger.info(f"{channel}: {removed} stale files removed from {root}")
     logger.info(f"variant {web.variant} ({', '.join(plots)}) published to {target}/index.html")
+    if site is not None:
+        _write_site(site, _site_manifest(site, previous_site, web, content.kind, analysis.name, now.isoformat(timespec="seconds")), viewer, stamp)
     return target / "manifest.json"
+
+
+def _write_site(site: Path, manifest: dict, viewer: list[Traversable], stamp: str) -> None:
+    """The site page (the viewer with the edits SITE_PAGE), site.json and site.js."""
+    for file in viewer:
+        data = file.read_bytes()
+        if file.name == "index.html":
+            text = data.decode("utf-8").replace(STAMP, stamp)
+            for old, new in SITE_PAGE:
+                text = text.replace(old, new)
+            data = text.encode("utf-8")
+        _write(site / file.name, data)
+    text = json.dumps(manifest, indent=1)
+    _write(site / "site.json", text.encode())
+    _write(site / "site.js", f"window.SHAPESMITH_SITE = {text};\n".encode())
+    logger.info(f"site {site}/index.html: eras {', '.join(era['key'] for era in manifest['eras'])}")

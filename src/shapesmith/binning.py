@@ -1,8 +1,8 @@
 """Equal-data binning: the edges of an `EqualData` variable from the data of the run, as smhtt_ul gof/build_binning.py
 (get_data_selection and get_1d_binning).
 
-Per category: the data process of the channel in the nominal region, its events in the category, the values of the
-variable in (low, high); the unweighted percentiles 0, 100 / n_bins, ..., 100 (linear interpolation), duplicates
+Per category: the data process of the channel in the nominal region, its events in the category (or, with
+EqualData.cut, those passing that cut), the values of the variable in (low, high); the unweighted percentiles 0, 100 / n_bins, ..., 100 (linear interpolation), duplicates
 removed, every edge moved by -1e-4 and the last one by +2e-4 on top, so that the smallest and the largest value are
 inside. `run_hist` resolves the edges whenever it fills, so every region and variation of a category shares them, and
 records them in `binning.json` next to its output. smhtt_ul's mask of default values (-11, -999, -10, -1) is not
@@ -57,7 +57,7 @@ def resolve(config: RunConfig, analysis: Analysis, channel_name: str, targets: l
     if not pending:
         return list(targets), {}
     channel = analysis.channel(channel_name)
-    exprs = [t.variable.expr for t in pending] + [t.cut for t in pending if t.cut]
+    exprs = [t.variable.expr for t in pending] + [cut for t in pending if (cut := t.variable.edges.cut or t.cut)]
     frame = load(config, analysis, Query(channel_name, channel.data(), NOMINAL), columns_of(exprs)).frame
     resolved, record = [], {}
     for target in targets:
@@ -65,14 +65,16 @@ def resolve(config: RunConfig, analysis: Analysis, channel_name: str, targets: l
         if not isinstance(rule, EqualData):
             resolved.append(target)
             continue
-        values = evaluate(frame[mask(frame, [target.cut])] if target.cut else frame, target.variable.expr)
+        cut = rule.cut or target.cut
+        values = evaluate(frame[mask(frame, [cut])] if cut else frame, target.variable.expr)
         try:
             edges = equal_data_edges(values, rule)
         except ValueError as error:
             raise ValueError(f"{channel_name}/{target.category}/{target.variable.name}: equal-data binning: {error}") from None
         resolved.append(dataclasses.replace(target, variable=dataclasses.replace(target.variable, edges=edges)))
         n_data = int(inside(values, rule).size)
-        record.setdefault(target.category, {})[target.variable.name] = {"rule": dataclasses.asdict(rule), "n_data": n_data, "edges": list(edges)}
+        rule_record = {name: value for name, value in dataclasses.asdict(rule).items() if name != "cut" or value is not None}
+        record.setdefault(target.category, {})[target.variable.name] = {"rule": rule_record, "n_data": n_data, "edges": list(edges)}
         logger.info(f"{channel_name}/{target.category}/{target.variable.name}: {len(edges) - 1} equal-data bins from {n_data} data events, edges {', '.join(f'{edge:.6g}' for edge in edges)}")
     return resolved, record
 

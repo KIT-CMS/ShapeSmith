@@ -1,15 +1,18 @@
 """The fake-factor measurement of one channel, in TauFakeFactors' order (FF_Updated ff_calculation.py and
 ff_corrections.py):
 
-1. per leg the QCD and ttbar fake factors and the process fractions -> fake_factors_<ch>.json.gz;
-2. per QCD leg the orthogonal fake factors and their non-closures in the DR->SR regions, then the DR->SR correction
-   (the intermediate payloads -> FF_for_DRtoSR_<ch>.json.gz);
+1. per leg the QCD, W+jets (optional) and ttbar fake factors and the process fractions -> fake_factors_<ch>.json.gz;
+2. per process with a DR->SR correction (QCD from data, W+jets from W MC) the orthogonal fake factors and their
+   non-closures in the DR->SR regions, then the DR->SR correction (the intermediate payloads ->
+   FF_for_DRtoSR_<ch>.json.gz);
 3. per process the non-closures in table order, each measured with the fake factors, the DR->SR correction (QCD) and
    the earlier non-closures applied per event -> FF_corrections_<ch>.json.gz.
 
 Fake factors and corrections are applied per event with correctionlib, from the payload models of this run, as the
 CROWN friend applies them. A "yield" is the histogram of the target process minus the subtracted processes, nominal
-and with every subtracted histogram shifted by +-1 sigma (SystMCShift).
+and with every subtracted histogram shifted by +-1 sigma (SystMCShift). The W+jets yields also subtract QCD from
+the same-sign version of the region (TauFakeFactors' QCD_SS_estimate), weighted with the applied corrections in a
+closure as FF_Updated's W+jets non-closure.
 """
 from __future__ import annotations
 
@@ -30,11 +33,27 @@ from shapesmith.measurements.fake_factors.hist import Hist
 
 if TYPE_CHECKING:
     from shapesmith.measurements import MeasureContext
-    from shapesmith.measurements.fake_factors.model import Binned, FakeFactorMeasurement, Fractions, Leg, ProcessFF, Split
+    from shapesmith.measurements.fake_factors.model import Binned, FakeFactorMeasurement, Fractions, Leg, ProcessFF, SameSignQCD, Split
 
 logger = logging.getLogger(__name__)
 
 Yields = tuple[Hist, Hist, Hist]  # nominal, subtracted shifted up, subtracted shifted down
+
+
+@dataclass(frozen=True)
+class Steps:
+    """Where and what a ratio measures: `target` minus `subtract` (and minus the same-sign `qcd`) in the SR-like over
+    the AR-like region."""
+
+    target: str
+    sr_like: str
+    ar_like: str
+    subtract: tuple[str, ...]
+    qcd: SameSignQCD | None = None
+
+    @classmethod
+    def of(cls, process: ProcessFF) -> Steps:
+        return cls(process.target, process.sr_like, process.ar_like, process.subtract, process.qcd)
 
 
 @dataclass(frozen=True)
@@ -79,6 +98,15 @@ class EventSource:
         return weights
 
 
+def usable_scale(scale: float) -> float:
+    """The data/MC scale factor of an MC fake factor as applied: itself if positive and finite, else 1. The factor is
+    the ratio of data minus MC in the scale regions and can turn negative with few events there; the smoothing clips
+    the negative ratios to 0, and every fake factor and non-closure of the process would be 0. A positive factor
+    cancels in the corrected fake factor (the first non-closure, measured on top of it, absorbs it), so 1 changes only
+    the raw fake factor."""
+    return scale if np.isfinite(scale) and scale > 0 else 1.0
+
+
 def evaluator(correction: cs.Correction) -> Callable:
     """The nominal of a payload correction per event, with the inputs as float (as TauFakeFactors and the friend)."""
     evaluate = payloads.correction_set([correction], {}).to_evaluator()[correction.name].evaluate
@@ -99,7 +127,7 @@ class ChannelMeasurement:
 
     def measure(self, legs: tuple[Leg, ...]) -> None:
         for leg in legs:
-            self.fake_factors += [self.process_fake_factors(p.name + leg.suffix, p, p.sr_like, p.ar_like, p.subtract) for p in leg.processes]
+            self.fake_factors += [self.process_fake_factors(p.name + leg.suffix, p, Steps.of(p)) for p in leg.processes]
             self.fake_factors.append(self.fractions(f"process_fractions{leg.suffix}", leg.fractions))
         by_name = {c.name: c for c in self.fake_factors}
         for leg in legs:
@@ -108,7 +136,7 @@ class ChannelMeasurement:
                 applied = [by_name[f"{name}_fake_factors"]]
                 if process.dr_sr is not None:
                     applied.append(self.dr_sr(name, process))
-                closures = self.non_closures(name, process, process.non_closures, process.sr_like, process.ar_like, process.subtract, applied)
+                closures = self.non_closures(name, process, process.non_closures, Steps.of(process), applied)
                 self.corrections += closures
                 if closures:
                     self.compounds.append(payload.compound(name, process.non_closures, process.split))
@@ -116,37 +144,51 @@ class ChannelMeasurement:
     def dr_sr(self, name: str, process: ProcessFF) -> cs.Correction:
         """The DR->SR correction, measured with the orthogonal fake factors and their non-closures."""
         dr_sr = process.dr_sr
-        orthogonal = self.process_fake_factors(name, process, dr_sr.sr_like, dr_sr.ar_like, dr_sr.subtract, stage="for_DRtoSR/")
-        closures = self.non_closures(name, process, dr_sr.non_closures, dr_sr.sr_like, dr_sr.ar_like, dr_sr.subtract, [orthogonal], stage="for_DRtoSR/")
+        target = dr_sr.target or process.target
+        steps = Steps(target, dr_sr.sr_like, dr_sr.ar_like, dr_sr.subtract)
+        orthogonal = self.process_fake_factors(name, process, steps, stage="for_DRtoSR/")
+        closures = self.non_closures(name, process, dr_sr.non_closures, steps, [orthogonal], stage="for_DRtoSR/")
         self.intermediate += [orthogonal, *closures]
-        correction = self.closure(name, "DR_SR", process, dr_sr.correction, dr_sr.sr, dr_sr.ar, dr_sr.subtract, [orthogonal, *closures])
+        correction = self.closure(name, "DR_SR", process, dr_sr.correction, Steps(target, dr_sr.sr, dr_sr.ar, dr_sr.subtract), [orthogonal, *closures])
         self.corrections.append(correction)
         return correction
 
-    def process_fake_factors(self, name: str, process: ProcessFF, sr_like: str, ar_like: str, subtract: tuple[str, ...], stage: str = "") -> cs.Correction:
-        """{name}_fake_factors, the target yield in `sr_like` over that in `ar_like`, times the data/MC factor of an
-        MC fake factor."""
-        scale = None if process.scale is None else self.data_scale(process)
+    def process_fake_factors(self, name: str, process: ProcessFF, steps: Steps, stage: str = "") -> cs.Correction:
+        """{name}_fake_factors, the target yield in the SR-like over that in the AR-like region of `steps`, times the
+        data/MC factor of an MC fake factor with a data scale (ttbar)."""
+        scale = None if process.scale is None or stage else self.data_scale(process)
         if scale is not None:
             logger.info(f"{self.source.channel} {stage}{name}: data/MC scale factor {scale:.4f}")
-            self.record[f"{stage}{name}_data_scale"] = [{"factor": scale}]
+            entry = {"factor": usable_scale(scale)}
+            if entry["factor"] != scale:
+                logger.warning(
+                    f"{self.source.channel} {stage}{name}: the data/MC scale factor {scale:.4f} is not positive, 1 is used instead "
+                    "(a negative factor makes every fake factor 0; a positive one cancels in the corrected fake factor)"
+                )
+                entry["measured"] = scale
+            self.record[f"{stage}{name}_data_scale"] = [entry]
+            scale = entry["factor"]
 
         def measure(category: int) -> Ratio:
-            ratio = self.ratio(process, process.fake_factors, category, (sr_like, ar_like), subtract, from_data=scale is None)
+            ratio = self.ratio(process.split, process.fake_factors, category, steps)
             return ratio if scale is None else replace(ratio, nominal=ratio.nominal.scaled(scale))
 
         fitted = self.fitted(f"{stage}{name}_fake_factors", process.fake_factors, process.split, measure)
         return payload.fake_factors(name, process.fake_factors, process.split, fitted, self.measurement.version)
 
-    def closure(self, name: str, correction_name: str, process: ProcessFF, binned: Binned, sr_like: str, ar_like: str, subtract: tuple[str, ...], applied: list[cs.Correction], stage: str = "") -> cs.Correction:
-        """{name}_{correction_name}_correction: the target yield in `sr_like` over that in `ar_like` weighted per event
-        with the `applied` fake factors and corrections. From data, bins <= 0 are set to 1 +- 1."""
-        from_data = process.scale is None
+    def closure(self, name: str, correction_name: str, process: ProcessFF, binned: Binned, steps: Steps, applied: list[cs.Correction], stage: str = "") -> cs.Correction:
+        """{name}_{correction_name}_correction: the target yield in the SR-like over that in the AR-like region of
+        `steps`, weighted per event with the `applied` fake factors and corrections (the same-sign QCD events too).
+        From data, bins <= 0 are set to 1 +- 1."""
+        from_data = steps.target == self.source.data
         evaluators = [evaluator(correction) for correction in applied]
-        weights = {p: self.source.weighted(p, ar_like, evaluators) for p in (process.target, *subtract)}
+        regions = [(p, steps.ar_like) for p in (steps.target, *steps.subtract)]
+        if steps.qcd is not None:
+            regions += [(p, steps.qcd.region(steps.ar_like)) for p in (self.source.data, *steps.qcd.subtract)]
+        weights = {(p, region): self.source.weighted(p, region, evaluators) for p, region in regions}
 
         def measure(category: int) -> Ratio:
-            ratio = self.ratio(process, binned, category, (sr_like, ar_like), subtract, from_data, weights)
+            ratio = self.ratio(process.split, binned, category, steps, weights)
             if not from_data:
                 return ratio
             return replace(ratio, nominal=ratio.nominal.with_empty_bins_set_to_one(), mc_shifted=tuple(h.with_empty_bins_set_to_one() for h in ratio.mc_shifted))
@@ -154,31 +196,38 @@ class ChannelMeasurement:
         fitted = self.fitted(f"{stage}{name}_{correction_name}", binned, process.split, measure)
         return payload.correction(name, correction_name, binned, process.split, fitted, self.measurement.version)
 
-    def non_closures(self, name: str, process: ProcessFF, non_closures: tuple[Binned, ...], sr_like: str, ar_like: str, subtract: tuple[str, ...], applied: list[cs.Correction], stage: str = "") -> list[cs.Correction]:
+    def non_closures(self, name: str, process: ProcessFF, non_closures: tuple[Binned, ...], steps: Steps, applied: list[cs.Correction], stage: str = "") -> list[cs.Correction]:
         """The non-closures in table order, each on top of `applied` and the earlier ones."""
         result = []
         for binned in non_closures:
-            result.append(self.closure(name, f"non_closure_{binned.variable}", process, binned, sr_like, ar_like, subtract, applied + result, stage))
+            result.append(self.closure(name, f"non_closure_{binned.variable}", process, binned, steps, applied + result, stage))
         return result
 
-    def ratio(self, process: ProcessFF, binned: Binned, category: int, regions: tuple[str, str], subtract: tuple[str, ...], from_data: bool, ar_weights: dict[str, np.ndarray] | None = None) -> Ratio:
+    def ratio(self, split: Split, binned: Binned, category: int, steps: Steps, weights: dict[tuple[str, str], np.ndarray] | None = None) -> Ratio:
         """The yield in the SR-like over the (weighted) yield in the AR-like region; from data also the ratios of the
         shifted yields."""
-        sr_like, ar_like = regions
-        numerator = self.yields(process.target, subtract, sr_like, binned, process.split, category)
-        denominator = self.yields(process.target, subtract, ar_like, binned, process.split, category, ar_weights)
+        numerator = self.yields(steps, steps.sr_like, binned, split, category)
+        denominator = self.yields(steps, steps.ar_like, binned, split, category, weights)
         nominal, up, down = (n.divide(d) for n, d in zip(numerator, denominator))
-        return Ratio(nominal, (up, down) if from_data else None, numerator[0], denominator[0])
+        return Ratio(nominal, (up, down) if steps.target == self.source.data else None, numerator[0], denominator[0])
 
-    def yields(self, target: str, subtract: tuple[str, ...], region: str, binned: Binned, split: Split, category: int, weights: dict[str, np.ndarray] | None = None) -> Yields:
+    def yields(self, steps: Steps, region: str, binned: Binned, split: Split, category: int, weights: dict[tuple[str, str], np.ndarray] | None = None) -> Yields:
+        """The target minus the subtracted processes and, with a same-sign QCD estimate, minus QCD (each subtracted
+        histogram shifted by +-1 sigma in the shifted yields); `weights` per (process, region) replace the event weights."""
         edges = binned.edges[category]
 
-        def hist(process: str) -> Hist:
-            return self.source.hist(process, region, binned.variable, edges, split, category, weights[process] if weights else None)
+        def hist(process: str, where: str) -> Hist:
+            return self.source.hist(process, where, binned.variable, edges, split, category, (weights or {}).get((process, where)))
 
-        nominal = up = down = hist(target)
-        for process in subtract:
-            h = hist(process)
+        nominal = up = down = hist(steps.target, region)
+        subtracted = [hist(process, region) for process in steps.subtract]
+        if steps.qcd is not None:
+            same_sign = steps.qcd.region(region)
+            qcd = hist(self.source.data, same_sign)
+            for process in steps.qcd.subtract:
+                qcd = qcd.add(hist(process, same_sign), -1.0)
+            subtracted.append(qcd.with_negative_bins_zeroed())
+        for h in subtracted:
             nominal, up, down = nominal.add(h, -1.0), up.add(h.shifted(1.0), -1.0), down.add(h.shifted(-1.0), -1.0)
         return nominal, up, down
 
@@ -204,7 +253,8 @@ class ChannelMeasurement:
         return ratio / (total(process.target, scale.sr_like) / total(process.target, scale.ar_like))
 
     def fractions(self, name: str, fractions: Fractions) -> cs.Correction:
-        """process_fractions{s}: QCD and ttbar over their sum, nominal and with each of them shifted by +-1 sigma."""
+        """process_fractions{s}: QCD, ttbar (and Wjets) over their sum, nominal and with each of them shifted by
+        +-1 sigma."""
         values: dict[str, dict[str, list[np.ndarray]]] = {}
         for category in fractions.split.categories:
             hists = self.fraction_hists(fractions, category)
@@ -225,14 +275,17 @@ class ChannelMeasurement:
         return payload.fractions(name, fractions.binned, fractions.split, values, self.measurement.version)
 
     def fraction_hists(self, fractions: Fractions, category: int) -> dict[str, Hist]:
-        """QCD = data - all MC with negative bins 0, and ttbar, in one category."""
+        """QCD = data - all MC with negative bins 0, Wjets (with W+jets fake factors) and ttbar, in one category."""
         def hist(process: str) -> Hist:
             return self.source.hist(process, fractions.region, fractions.binned.variable, fractions.binned.edges[category], fractions.split, category)
 
         qcd = hist(self.source.data)
         for process in fractions.subtract:
             qcd = qcd.add(hist(process), -1.0)
-        return {"QCD": qcd.with_negative_bins_zeroed(), "ttbar_J": hist(fractions.ttbar)}
+        result = {"QCD": qcd.with_negative_bins_zeroed()}
+        if fractions.wjets is not None:
+            result["Wjets"] = hist(fractions.wjets)
+        return {**result, "ttbar_J": hist(fractions.ttbar)}
 
     def fitted(self, name: str, binned: Binned, split: Split, measure: Callable[[int], Ratio]) -> list[Fitted]:
         """The fit per category of the ratio `measure(category)`, recorded under `name`."""

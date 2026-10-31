@@ -14,7 +14,7 @@ from rich.table import Table
 
 from shapesmith import __version__, logs
 from shapesmith.config import RunConfig, WebConfig, load_analysis, load_config
-from shapesmith.ntuples import join_url
+from shapesmith.ntuples import describe
 from shapesmith.provenance import record, write_versions
 
 app = typer.Typer(help=f"ShapeSmith {__version__}: CROWN ntuples -> skims -> histograms -> datacards, fits, plots, ML folds, measurements.", no_args_is_help=True)
@@ -60,7 +60,7 @@ def _log_start(config: RunConfig, config_path: Path, overrides: list[str], selec
     logger.info(f"ShapeSmith {__version__} {_command['name']}: {Path(config_path).absolute()}" + (f", overrides {' '.join(overrides)}" if overrides else ""))
     logger.info(f"analysis {config.analysis}{_git(versions['analysis'])}, era {config.era}, channels {','.join(selected)}, {config.workers} workers, log level {config.log_level}")
     database = f", sample database {config.sample_database}{_git(versions['sample_database'])}" if config.sample_database else ""
-    logger.info(f"shapesmith{_git(versions['shapesmith'])}{database}, ntuples {join_url(config.ntuples.server, config.ntuples.base)}")
+    logger.info(f"shapesmith{_git(versions['shapesmith'])}{database}, ntuples {describe(config.ntuples)}")
     if log_file is not None:
         logger.info(f"log file {log_file}")
     logger.debug(f"resolved configuration: {json.dumps(versions['config'], sort_keys=True)}")
@@ -172,12 +172,12 @@ def estimate(config: Path = ConfigOption, channels: Optional[str] = ChannelsOpti
 
 @app.command()
 @_logged
-def measure(config: Path = ConfigOption, channels: Optional[str] = ChannelsOption, overrides: Optional[list[str]] = SetOption, suggest_binning: bool = typer.Option(False, "--suggest-binning", help="log proposed bin edges instead of measuring"), merge: bool = typer.Option(False, "--merge", help="combine the results of the earlier runs (e.g. one per working point) into one payload"), workers: Optional[int] = WorkersOption):
+def measure(config: Path = ConfigOption, channels: Optional[str] = ChannelsOption, overrides: Optional[list[str]] = SetOption, suggest_binning: bool = typer.Option(False, "--suggest-binning", help="log proposed bin edges instead of measuring"), merge: bool = typer.Option(False, "--merge", help="combine the results of the earlier runs (e.g. one per working point) into one payload"), refit: bool = typer.Option(False, "--refit", help="repeat the fits from the inputs an earlier run stored (e.g. synced/ shapes), without histogramming"), workers: Optional[int] = WorkersOption):
     """Run the analysis's measurement; results in <output_dir>/<measurement>/<era>/."""
     from shapesmith.measurements import run_measure
 
     cfg, analysis, selected = _setup(config, channels, workers=workers, overrides=overrides)
-    logger.info(f"measurement output: {run_measure(cfg, analysis, selected, suggest_binning, merge)}")
+    logger.info(f"measurement output: {run_measure(cfg, analysis, selected, suggest_binning, merge, refit)}")
 
 
 @app.command()
@@ -224,6 +224,24 @@ def fit(config: Path = ConfigOption, channels: Optional[str] = ChannelsOption, o
     logger.info(f"{len(results)} final states summarised")
 
 
+@app.command("combine")
+@_logged
+def combine_runs(configs: list[Path] = typer.Option(..., "--config", "-c", help="the run YAML of every era (repeat -c)"), output: Path = typer.Option(..., "--output", "-o", help="directory of the combination (combined card, fits, summaries)"), final_state: str = typer.Option("all", "--final-state", help="the final state of each run's datacards: <output_dir>/datacards/<final state>/"), overrides: Optional[list[str]] = SetOption, eras: Optional[list[str]] = typer.Option(None, "--era", help="load every run YAML once per era (-s era=<era>, its {era} filled; repeat --era)"), background_only: bool = typer.Option(False, "--background-only", help="a background-only fit to the data instead of the limits"), skip_combine: bool = typer.Option(False, "--skip-combine", help="only summarise existing combine outputs"), validate: bool = typer.Option(False, "--validate", help="also run CombineHarvester's ValidateDatacards.py on the combined card")):
+    """Combine the datacards of several runs (one per era, spec 6.9) with combineCards.py, then the limits or the background-only fit; overrides apply to every run."""
+    from shapesmith.combination import Run, run_card, run_combination
+
+    runs = []
+    for index, (path, run_overrides) in enumerate((path, [*(overrides or []), *([f"era={era}"] if era else [])]) for path in configs for era in (eras or [None])):
+        cfg = load_config(path, run_overrides)
+        if index == 0:
+            logs.configure(cfg.log_level, logs.log_path(output, _command["name"]), [cfg.analysis.partition(":")[0].split(".")[0]])
+        _log_start(cfg, path, run_overrides, list(cfg.channels), None)
+        runs.append(Run(cfg, load_analysis(cfg), run_card(cfg, final_state)))
+    result = run_combination(runs, output, background_only, skip_combine, validate)
+    typer.echo((output / ("background_fit.md" if background_only else "limits.md")).read_text())
+    logger.info(f"combination of {len(runs)} runs: {json.dumps(result)[:200]}")
+
+
 @app.command()
 @_logged
 def plot(config: Path = ConfigOption, channels: Optional[str] = ChannelsOption, overrides: Optional[list[str]] = SetOption, control: bool = typer.Option(False, "--control"), category: Optional[str] = typer.Option(None), variables: Optional[str] = typer.Option(None), region: str = typer.Option("nominal", "--region", help="histogram region to plot"), blind: bool = typer.Option(False, "--blind"), log: bool = typer.Option(False, "--log"), signal_scale: Optional[float] = typer.Option(None), normalize_by_bin_width: bool = typer.Option(False, "--normalize-by-bin-width")):
@@ -238,12 +256,12 @@ def plot(config: Path = ConfigOption, channels: Optional[str] = ChannelsOption, 
 
 @app.command()
 @_logged
-def publish(config: Path = ConfigOption, channels: Optional[str] = ChannelsOption, overrides: Optional[list[str]] = SetOption, to: Optional[Path] = typer.Option(None, "--to", help="gallery directory (default: web.dir of the configuration)"), variant: Optional[str] = typer.Option(None, "--variant", help="the gallery column, [a-z0-9_]+ (default: web.variant)"), label: Optional[str] = typer.Option(None, "--label", help="label of the variant"), description: Optional[str] = typer.Option(None, "--description", help="description of the variant"), title: Optional[str] = typer.Option(None, "--title", help="title of the gallery"), about: Optional[str] = typer.Option(None, "--about", help="text of the gallery's About section")):
+def publish(config: Path = ConfigOption, channels: Optional[str] = ChannelsOption, overrides: Optional[list[str]] = SetOption, to: Optional[Path] = typer.Option(None, "--to", help="gallery directory (default: web.dir of the configuration)"), variant: Optional[str] = typer.Option(None, "--variant", help="the gallery column, [a-z0-9_]+ (default: web.variant)"), label: Optional[str] = typer.Option(None, "--label", help="label of the variant"), description: Optional[str] = typer.Option(None, "--description", help="description of the variant"), title: Optional[str] = typer.Option(None, "--title", help="title of the gallery"), about: Optional[str] = typer.Option(None, "--about", help="text of the gallery's About section"), site: Optional[Path] = typer.Option(None, "--site", help="site directory with an era switch that holds the gallery (--to) as one of its subdirectories (default: web.site)")):
     """Copy the plots and their yields (of a measurement analysis: the measurement's plots) into a static web gallery (one column per variant); publishing a variant again replaces its channels."""
     from shapesmith.web import publish as publish_gallery
 
     cfg, analysis, selected = _setup(config, channels, overrides=overrides)
-    options = {"dir": to.absolute() if to else None, "variant": variant, "label": label, "description": description, "title": title, "about": about}
+    options = {"dir": to.absolute() if to else None, "variant": variant, "label": label, "description": description, "title": title, "about": about, "site": site.absolute() if site else None}
     web = (cfg.web or WebConfig()).model_copy(update={key: value for key, value in options.items() if value is not None})
     publish_gallery(cfg, analysis, web, selected if channels else None, config, overrides or [])
 

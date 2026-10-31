@@ -58,7 +58,7 @@ def _plot_fit(name: str, entry: dict, path: Path) -> Path:
 def _plot_fractions(name: str, entry: dict, path: Path) -> Path:
     figure, ax = plt.subplots(figsize=(10, 8))
     bottom = np.zeros(len(entry["edges"]) - 1)
-    for (process, values), colour in zip(entry["fractions"].items(), ("#5790fc", "#e42536")):
+    for (process, values), colour in zip(entry["fractions"].items(), ("#5790fc", "#f89c20", "#e42536") if len(entry["fractions"]) > 2 else ("#5790fc", "#e42536")):
         ax.stairs(bottom + np.asarray(values), entry["edges"], baseline=bottom, fill=True, color=colour, label=process)
         bottom = bottom + np.asarray(values)
     ax.set_ylim(0, 1.3)

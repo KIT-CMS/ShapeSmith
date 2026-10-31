@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any, Iterable, Literal
 
 import yaml
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, SerializerFunctionWrapHandler, field_validator, model_serializer
 
 from shapesmith.model import Analysis, SampleKind
 from shapesmith.validate import validate
@@ -28,7 +28,22 @@ class NtupleConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
     server: str = ""  # e.g. root://cmsdcache-kit-disk.gridka.de ; empty = local file system
     base: str  # .../CROWNRun
+    # the main n-tuples of a sample kind from another base, e.g. the MC and embedding of a re-production beside the data
+    # of the first one ({mc: .../TAG_B/CROWNRun, embedding: ...}); the kinds not listed read `base`
+    bases: dict[SampleKind, str] = Field(default_factory=dict)
     friends: list[FriendConfig] = Field(default_factory=list)
+
+    def base_of(self, kind: str) -> str:
+        """The base of the main n-tuples of a sample kind: its entry in `bases`, else `base`."""
+        return self.bases.get(kind, self.base)
+
+    @model_serializer(mode="wrap")
+    def _without_empty_bases(self, handler: SerializerFunctionWrapHandler) -> dict:
+        # without per-kind bases the configuration dumps as before, so its resolved form and hash (versions/) stay
+        data = handler(self)
+        if not self.bases:
+            data.pop("bases", None)
+        return data
 
 
 class CombineConfig(BaseModel):
@@ -50,6 +65,17 @@ class WebConfig(BaseModel):
     description: str | None = None  # of the variant
     title: str | None = None  # of the gallery
     about: str | None = None  # text of the gallery's "About this gallery" section (collapsed)
+    # the site that holds the gallery as one of its eras: `dir` is a direct subdirectory of it, whose name is the key in
+    # the era switch of the site page (<site>/index.html), e.g. site: .../smrun2_binned_v7b and dir: .../smrun2_binned_v7b/{era}
+    site: Path | None = None
+
+    @model_serializer(mode="wrap")
+    def _without_empty_site(self, handler: SerializerFunctionWrapHandler) -> dict:
+        # a gallery without a site dumps as before, so the resolved configuration and its hash (versions/) stay
+        data = handler(self)
+        if self.site is None:
+            data.pop("site", None)
+        return data
 
 
 class RunConfig(BaseModel):
@@ -73,8 +99,35 @@ class RunConfig(BaseModel):
     def _upper_case(cls, value: Any) -> Any:
         return value.upper() if isinstance(value, str) else value
 
+    @field_validator("era", mode="before")
+    @classmethod
+    def _era_as_text(cls, value: Any) -> Any:
+        # `era: 2018` or `-s era=2017` parse as YAML integers
+        return str(value) if isinstance(value, int) and not isinstance(value, bool) else value
 
-RELATIVE_PATH_FIELDS = ("skim_dir", "output_dir", "ml_dir", "sample_database", "web.dir")
+
+RELATIVE_PATH_FIELDS = ("skim_dir", "output_dir", "ml_dir", "sample_database", "web.dir", "web.site")
+ERA_PLACEHOLDER = "{era}"
+
+
+def fill_era(raw: dict) -> dict:
+    """Every `{era}` in a string of the configuration (paths, switches, texts; not in `era` itself) becomes the era of
+    the run, so that one run YAML serves every era: `-s era=2017`."""
+    era = raw.get("era")
+    if era is None:
+        return raw
+    era = str(era)
+
+    def fill(value: Any) -> Any:
+        if isinstance(value, str):
+            return value.replace(ERA_PLACEHOLDER, era)
+        if isinstance(value, dict):
+            return {key: fill(item) for key, item in value.items()}
+        if isinstance(value, list):
+            return [fill(item) for item in value]
+        return value
+
+    return {key: value if key == "era" else fill(value) for key, value in raw.items()}
 
 
 def apply_overrides(raw: dict, overrides: Iterable[str]) -> dict:
@@ -94,10 +147,11 @@ def apply_overrides(raw: dict, overrides: Iterable[str]) -> dict:
 
 
 def load_config(path: str | Path, overrides: Iterable[str] = ()) -> RunConfig:
-    """Load the run YAML (+ `key=value` overrides); relative paths are relative to the YAML's directory, not to the working directory."""
+    """Load the run YAML (+ `key=value` overrides), then fill `{era}` with the era of the run (fill_era); relative
+    paths are relative to the YAML's directory, not to the working directory."""
     path = Path(path).absolute()
     with open(path) as handle:
-        raw = apply_overrides(yaml.safe_load(handle), overrides)
+        raw = fill_era(apply_overrides(yaml.safe_load(handle), overrides))
     for field in RELATIVE_PATH_FIELDS:
         *parents, leaf = field.split(".")
         section = raw

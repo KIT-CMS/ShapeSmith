@@ -38,13 +38,19 @@ class Sample:
     nevents: int = 1
     generator_weight: float = 1.0
     cut: str | None = None  # per-sample event selection applied at skim time, e.g. to keep one generator-level part of a sample
+    # the era of its n-tuples when it is borrowed from another era or the analysis spans several eras (None: the era
+    # of the run); it is normalised with the luminosity of the analysis that uses it, times lumi_scale
+    era: str | None = None
+    # the share of the analysis luminosity that its era contributes, for an analysis over several eras (e.g. one
+    # fake-factor measurement of 2016preVFP and 2016postVFP: 19.52 / 36.33 and 16.81 / 36.33); 1 otherwise
+    lumi_scale: float = 1.0
 
     @property
     def norm_weight(self) -> float:
         """Per-event normalisation constant (without lumi and without sign(genWeight))."""
         if self.kind != "mc":
             return 1.0
-        return self.xsec / (self.nevents * self.generator_weight)
+        return self.xsec / (self.nevents * self.generator_weight) * self.lumi_scale
 
 
 @dataclass(frozen=True)
@@ -89,11 +95,13 @@ NOMINAL_REGION = Region(NOMINAL)
 @dataclass(frozen=True)
 class EqualData:
     """Edges from the data of the run (binning.py): `n_bins` bins with equal data counts in (low, high), computed from
-    the data of the category in the nominal region whenever histograms are filled."""
+    the data of the category in the nominal region whenever histograms are filled; with `cut`, from the data passing
+    that cut instead of the category's (e.g. common edges of a pass and a fail category)."""
 
     n_bins: int
     low: float
     high: float
+    cut: str | None = None
 
 
 @dataclass(frozen=True)
@@ -299,6 +307,15 @@ class Analysis:
     style: Style | None = None
     ml: MLExportConfig | None = None
     measurement: Measurement | None = None  # run by `shapesmith measure`
+    # Up/Down variations (name without the direction) that datacards write as an lnN instead of a shape: per bin and
+    # process the ratio of the varied to the nominal yield, e.g. a weight variation whose shape effect is negligible
+    lnn_variations: tuple[str, ...] = ()
+    # Up/Down variations (name without the direction) that datacards symmetrise around the nominal where their pair is
+    # one-sided or strongly asymmetric (datacards.symmetrise), e.g. the fake-factor shifts of a measurement payload
+    symmetrised_variations: tuple[str, ...] = ()
+    # the asymmetry above which a pair of symmetrised_variations is symmetrised: the larger relative yield effect of Up
+    # and Down over the smaller one
+    asymmetry_ratio: float = 2.0
 
     def channel(self, name: str) -> Channel:
         return self.channels[name]

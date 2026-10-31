@@ -25,13 +25,15 @@ shapesmith validate  -c run.yaml              # build + validate the analysis, l
 shapesmith skim      -c run.yaml [--channels mt] [--samples TT,SingleMuon] [--force] [--workers 8]   # ntuples (+ friends) -> Parquet
 shapesmith hist      -c run.yaml [--control] [--regions all] [--skip-systematics] [--processes ZTT,data]  # histograms (ROOT + JSON index)
 shapesmith estimate  -c run.yaml [--control]  # estimated processes and variations (Channel.estimators)
-shapesmith measure   -c run.yaml [--suggest-binning] [--merge]   # Analysis.measurement -> <output_dir>/<measurement>/<era>/
+shapesmith measure   -c run.yaml [--suggest-binning] [--merge] [--refit]   # Analysis.measurement -> <output_dir>/<measurement>/<era>/
 shapesmith plot      -c run.yaml [--control] [--region nominal] [--blind] [--log]
 shapesmith publish   -c run.yaml --to DIR --variant KEY [--label TEXT] [--description TEXT] [--channels et,mt]   # plots + yields -> static web gallery DIR/index.html
 shapesmith sync      -c run.yaml              # combine-style shape files per channel
 shapesmith datacards -c run.yaml [--min-background 1.0] [--no-systematics]
 shapesmith fit       -c run.yaml [--final-states mt,all] [--skip-combine]   # limits, significance, best fit
 shapesmith fit       -c run.yaml --background-only [--final-states all]   # background-only fit to the data, pulls, yields
+shapesmith combine   -c run_2017.yaml -c run_2018.yaml ... -o DIR [--final-state all] [--background-only] [--validate]   # cards of several eras combined
+shapesmith combine   -c run.yaml --era 2017 --era 2018 ... -o DIR   # the same with one run YAML loaded per era ({era} filled)
 shapesmith ml-export -c run.yaml              # Feather training folds
 shapesmith inspect   output/shapes.root [--unchanged]   # what a histogram file contains; variations equal to their nominal
 ```
@@ -54,6 +56,12 @@ the selected channels (`all`, or the only final state), and writes
 prefit and postfit [value, error] yields (with the totals `total_background`, `total_signal`,
 `total`). It fits the observed data of every bin of the card.
 
+`combine` (the combination of eras, one run YAML each, or one run YAML loaded once per `--era`) runs `combineCards.py` over the card of one final state of
+every run (the bin names stay, they carry the era; two runs of one era are refused) into `DIR/combined.txt`, optionally
+CombineHarvester's `ValidateDatacards.py`, then the limits or the background-only fit of `fit` there, with the same
+summaries; `DIR/nuisances.md` lists every nuisance with the eras it appears in and flags names that end in another
+run's era token.
+
 `publish` copies the plots of `<output_dir>/plots/` into a web gallery (`DIR/index.html`, a static
 viewer reading `manifest.json`; also works from `file://`): one column per variant (`--variant`,
 `[a-z0-9_]+`, e.g. one run configuration), with the data, prediction and stacked-group yields of
@@ -64,21 +72,34 @@ and everything is world-readable. Variants and channels keep the order of their 
 new variant comes last, a new channel next to the channels of its run already in the gallery, else
 last. `--title`/`--about` set the gallery's title and the text of its collapsed "About this gallery"
 section. A directory that is neither empty nor a gallery is refused.
-`web: {dir, variant, label, description, title, about}` in the run YAML sets the defaults of the
+`web: {dir, variant, label, description, title, about, site}` in the run YAML sets the defaults of the
 options. For an analysis with a measurement, `publish` takes the measurement's plots from
 `<output_dir>/<measurement>/<era>/` instead (the fake factors: by process, split category and
 quantity, with the p-value of each correction and the ttbar data/MC factors); a gallery holds
 either control plots or one measurement.
+`--site SITE` (`web.site`) makes the gallery one era of a site: `DIR` must be a subdirectory of
+`SITE` (`web: {site: /web/USER/public_html/TAG, dir: "/web/USER/public_html/TAG/{era}"}`), and
+`SITE/index.html` shows the galleries of every subdirectory with an era switch (the era in the
+link, the most recent by default; channel, region, category, variable and columns stay where the
+other era has them). Each publish rewrites the site's era list (`site.json`, `site.js`) from its
+subdirectories; each era stays a complete gallery of its own. A gallery without a site stays as it is.
 
 ## The analysis model
 
 Everything that differs by channel lives in its `Channel`: samples, cuts, processes, regions,
 categories, control variables, variations and estimators.
 
-- `Sample(nick, group, kind, xsec, nevents, generator_weight, cut)`: kind `data`, `mc` or
-  `embedding`; `norm_weight = xsec / (nevents * generator_weight) * sign(genWeight)` for MC.
+- `Sample(nick, group, kind, xsec, nevents, generator_weight, cut, era, lumi_scale)`: kind `data`, `mc` or
+  `embedding`; `norm_weight = xsec / (nevents * generator_weight) * lumi_scale * sign(genWeight)` for MC.
   A sample's own `cut` (e.g. one generator-level part of an inclusive sample) is applied at skim
-  time; its normalisation stays that of the whole sample.
+  time; its normalisation stays that of the whole sample. `era` borrows the sample from another
+  era, or places it in an analysis over several eras: its n-tuples are read from `<base>/<era>/<nick>` (the base of
+  its kind), and it is
+  normalised with the luminosity of the analysis that uses it (None: the era of the run) times `lumi_scale`, its
+  era's share of that luminosity (e.g. 2016preVFP in a 2016 measurement of both halves; 1 otherwise).
+- `Variable(name, expr, edges)`: fixed edges, or `EqualData(n_bins, low, high, cut)`, edges with equal data counts
+  computed whenever histograms are filled, from the data of the category or, with `cut`, of that cut (common edges of
+  a pass and a fail category).
 - `Process(name, group, role, plot_group, selection)`: role `data`, `signal`, `background` or
   `auxiliary` (booked in the nominal region only, for an estimator; never in datacards, plots or
   the ML export). A process owns its whole weight set.
@@ -105,6 +126,11 @@ categories, control variables, variations and estimators.
 - `Analysis.control_channels`: channels that `datacards` and `fit` put into every final state
   (each selected channel and `all`) but never make a final state themselves, e.g. a ttbar
   control channel fitted together with the signal channels; `ml-export` skips them.
+- `Analysis.lnn`: `LnN(name, processes, value, channels)`, `$CHANNEL` and `$ERA` expanded per bin;
+  entries with the same name share one datacard line (at most one may apply to a column), e.g. one
+  value on MC and another on the embedded sample. `Analysis.lnn_variations`: Up/Down variations
+  (names without the direction) that datacards write as an lnN instead of a shape, `down/up` = the
+  varied over the nominal yield per bin and process.
 
 **The event rule** (`shapesmith.events`, used by hist, the ML export and measurements): cuts are
 the channel cuts with the region's replacements, the process cuts and the skim cuts; weights are
@@ -125,15 +151,23 @@ variations. `hist` always refills the requested scopes and keeps the other histo
 
 Per sample, the skim keeps the columns of every expression its processes can use and the
 shifted branches of its column variations. An event is kept if the skim cuts pass nominally or
-under any column variation of its kind (hist re-applies the varied skim cuts). Where the channel
+under any column variation of its kind (hist re-applies the varied skim cuts). The skim adds the
+bookkeeping columns `sample_nick`, `norm_weight`, `is_data`, `is_mc` and `is_embedding`; the kind
+flags exist before the skim cuts, so a cut may depend on the kind (e.g. a trigger cut the
+embedded sample does without). Where the channel
 declares CROWN shifts for a sample (its kind and group), every file must carry a shifted branch for each of them,
 and every shifted branch `c__X` of a needed column must be declared; otherwise the skim fails.
 
 A friend is read for the samples of its kinds (`applies_to`) in its channels (`channels`, default
 all), so a channel without that friend production (e.g. a control channel) does not look for it.
 
+A sample is read from the base of its kind: `ntuples.bases` (e.g. `{mc: .../TAG_B/CROWNRun, embedding: ...}`, the
+MC and embedding of a re-production beside the data of the first one), else `ntuples.base`; a friend split by kind is
+two friends with their `applies_to`. A configuration without `bases` behaves, logs and is recorded (resolved
+configuration, its hash) exactly as before.
+
 The manifest records the skim contract. A stored skim is reused when its skim cuts,
-normalisation and sample cut are unchanged, its recorded column variations and friends contain
+normalisation, sample cut, n-tuple era (of a borrowed sample) and n-tuple base (of a kind in `ntuples.bases`) are unchanged, its recorded column variations and friends contain
 the current ones, and its Parquet schema holds the needed columns; so one skim made with all
 variations and friends serves every subset. Incompatible skims are listed together, with the
 `skim --force --samples ...` fix. A new friend version gets a new friend base (a friend rewritten
@@ -158,23 +192,44 @@ the results of earlier runs into one payload). Measurements:
 - `shapesmith.measurements.tau_id_es`: tau-ID scale factor and energy scale of embedded taus, the
   chain of smhtt_ul `tauID_SFs_dev`. One run per working-point combination fills the mt channel
   and the mm control region, writes the shapes in the input format of MorphingTauID2017 and runs
-  per category in CMSSW the datacards, T2W, a 2D likelihood scan, close-up 1D scans of both POIs
-  and the MultiDimFit singles fit, the result (`results.json`, plots). As in the predecessor, the
-  close-up scans and the singles fit start at the lowest grid point of the step before, within its
-  2 sigma intervals widened by a margin. The energy scale is a grid of template column variations
-  in units of 0.1 % (`grid.py`); `--merge` writes the correctionlib payload of all combinations.
-  A 1 sigma interval at the fit range or a failed crossing is an error.
+  per category in CMSSW the datacards, T2W, a 2D likelihood scan and the profiles of both POIs (v7 spec 5.4, U11):
+  ES from a 1D scan (41 points) with r profiled, r from the envelope of a 2D grid with both POIs fixed in the ES window
+  of the ES profile (the likelihood has several minima in ES, which a floating ES follows); best value from the
+  parabola at the lowest point, the 1σ interval from the interpolated ΔNLL = 0.5 crossings; a side without a crossing
+  is rescanned on a widened range, and one that still has none is a problem naming its side. The postfit shapes come
+  from a fit with both POIs fixed at the profile minima; the predecessor's singles fit runs as a cross-check
+  (`report.md` flags deviations > 20 % of the interval width). `--refit` repeats the CMSSW part from the stored
+  `synced/` shapes. The energy scale is a grid of template column variations in units of 0.1 % (`grid.py`);
+  `--merge` writes the correctionlib payload of all combinations, its pT-binned ES changing linearly across 36-42 GeV
+  (no gap in the corrected pT at 40 GeV), after checking every interval against its fit range.
 - `shapesmith.measurements.fake_factors`: the fake-factor measurement (the SM method of
-  TauFakeFactors). An analysis sets `Analysis.measurement = FakeFactorMeasurement(legs)`, built
+  TauFakeFactors). An analysis sets `Analysis.measurement = FakeFactorMeasurement(legs, name=...)`, built
   from its region and process names and per-channel tables (`Binned`, `Fit`, `Split`,
-  `ProcessFF`, `DrSr`, `DataScale`, `Fractions`, `Leg`). `shapesmith measure` writes
+  `ProcessFF`, `DrSr`, `DataScale`, `SameSignQCD`, `Fractions`, `Leg`). A leg has QCD, ttbar and optionally W+jets
+  fake factors: from data minus the MC and minus QCD from the same-sign version of each region (`SameSignQCD`), with a
+  DR->SR correction from W MC (`DrSr(target=...)`), and three-process fractions. `shapesmith measure` writes
   `fake_factors_<ch>.json.gz` and `FF_corrections_<ch>.json.gz` (the conventions of the CROWN
   fake-factor friend), the intermediate DR->SR payload, `measurement_<ch>.json` (every ratio, fit
-  input and result) and plots; `--suggest-binning` prints equipopulated edges instead. The
+  input and result) and plots into `<output_dir>/<name>/<era>/` (one name per payload variant); `--suggest-binning`
+  prints equipopulated edges instead, last as one JSON line; with `placeholder_edges` set (an era without its own
+  edges) only `--suggest-binning` runs. The
   histograms (`hist.py`: centre of mass, MC-suppressed errors), fits (`fit.py`: bands,
   SystMCShift, the compatibility-with-1 reset, sparsify) and the kernel are checked against ROOT
   and TauFakeFactors (`tests/reference/make_fake_factor_reference.py`); the normative algorithm is
   the "Algorithm reference" of the design spec.
+- `shapesmith.measurements.tau_trigger`: the efficiency of the tau leg of the di-tau trigger for the tt embedding (v7
+  E33), μτh tag and probe per isolation class (`wp_class`) and selection variant: per (decay mode, pT) bin a pass and
+  a fail category; a card with the signal (embedded taus) shape of pass + fail in both bins, the rateParams
+  `eff` [0, 1] on it in pass and `(1-@0)` in fail and a common `r_<signal>`, lnN normalisations and the
+  pass/fail anti-correlated fake trigger efficiency; a 1D profile scan of `eff` (an interval at 0 or 1 is a problem),
+  the singles fit as a cross-check; the counting cross-check in a counting region and m_vis window, ε_MC and
+  ε_EMB^mon. `--refit` from the stored shapes, `--suggest-binning` merges pT bins from the top until the statistical
+  error of ε_data, counted in `suggest_regions` and `suggest_window`, stays below `max_error` (relative or
+  absolute), `--merge` writes the `tau_trigger` payload (KIT/POG schema, flow clamp) with the variants
+  and a significant fit-counting difference in up/down, after checking every combination; it refuses a class the
+  consumer books (`wp_classes`) without a measurement. A signal shape may be a variation of the channel or an
+  estimator output (a template shift of the signal, a summed variation). The ε(pT) plots draw any number of
+  reference payloads (`references`, e.g. the POG and the KIT embedding file).
 
 Building blocks:
 
@@ -197,7 +252,8 @@ switches: {jet_fakes: mc, embedding: false}   # free-form, interpreted by the an
 sample_database: ../../KingMaker_sample_database/nanoAOD_v15/datasets.json   # relative paths: relative to this file
 ntuples:
   server: root://cmsdcache-kit-disk.gridka.de
-  base: /store/user/USER/CROWN/ntuples/TAG/CROWNRun
+  base: /store/user/USER/CROWN/ntuples/TAG/CROWNRun      # <base>/<era>/<nick>/<channel>/*.root
+  bases: {mc: /store/user/USER/CROWN/ntuples/TAG_B/CROWNRun}   # optional: the kinds with their own base (default: base)
   friends:                                # later friends override earlier ones; applies_to and channels default to all
     - {base: /store/user/USER/CROWN/ntuples/TAG/CROWNFriends/nn_v1, applies_to: [mc, data, embedding]}
     - {base: /store/user/USER/CROWN/ntuples/TAG/CROWNFriends/ff_v1, channels: [et, mt, tt]}
@@ -209,6 +265,12 @@ log_level: INFO                           # DEBUG | INFO | WARNING | ERROR
 combine: {cmssw_dir: /work/USER/CMSSW_14_1_9, scram_arch: el9_amd64_gcc12}
 web: {dir: /web/USER/public_html/TAG, variant: emb_ff, label: "embedding + FF"}   # shapesmith publish
 ```
+
+`-s key=value` overrides an entry (values parsed as YAML). Then every `{era}` in a string of the configuration
+(paths, friends, switches, web texts; not `era` itself) becomes the era of the run, so one YAML serves every era:
+`skim_dir: /ceph/USER/shapesmith/TAG/skims/{era}`, `switches: {sample_lists: ["list_{era}"]}`, run with
+`-s era=2017`. Inside a flow collection (`[...]`, `{...}`) a value with `{era}` is quoted. An era written as a
+number (`era: 2018`, `-s era=2017`) is read as text.
 
 ## Logging
 

@@ -50,3 +50,30 @@ def test_transform_node():
     cset = payloads.correction_set([payloads.correction("es", [payloads.variable("eta")], by_abs_eta)], {})
     evaluator = correctionlib.CorrectionSet.from_string(payloads.dumps(cset))
     assert evaluator["es"].evaluate(-2.0) == 2.0 and evaluator["es"].evaluate(0.5) == 1.0
+
+
+def test_compare_two_payloads_on_their_grid(tmp_path):
+    from shapesmith.payloads import binning, category, compare, correction, correction_set, grid, variable, write
+
+    def payload(scale, path):
+        data = category("syst", {"nominal": binning("pt", [20.0, 40.0, 100.0], [1.0 * scale, 2.0])}, default=binning("pt", [20.0, 40.0, 100.0], [1.0 * scale, 2.0]))
+        return write(correction_set([correction("ff", [variable("pt"), variable("syst", "string")], data)], {}), path)
+
+    first, second = payload(1.0, tmp_path / "a.json.gz"), payload(1.1, tmp_path / "b.json.gz")
+    corr = json.loads(gzip.decompress(first.read_bytes()))["corrections"][0]
+    assert grid(corr, {"syst": "nominal"}) == [(30.0, "nominal"), (70.0, "nominal")]
+    result = compare(first, second, {"syst": "nominal"})
+    assert result["ff"]["points"] == 2 and result["ff"]["max"] == pytest.approx(0.1) and result["ff"]["mean"] == pytest.approx(0.05)
+    assert result["ff"]["unmatched"] == 0
+
+
+def test_compare_leaves_out_the_keys_of_only_one_payload(tmp_path):
+    """Fractions with the process Wjets against fractions without it: the common keys are compared, the others counted."""
+    from shapesmith.payloads import binning, category, compare, correction, correction_set, variable, write
+
+    def payload(processes, path):
+        data = category("process", {p: binning("pt", [20.0, 40.0, 100.0], [0.5, 0.25]) for p in processes})
+        return write(correction_set([correction("fractions", [variable("process", "string"), variable("pt")], data)], {}), path)
+
+    result = compare(payload(("QCD", "ttbar"), tmp_path / "a.json.gz"), payload(("QCD", "Wjets", "ttbar"), tmp_path / "b.json.gz"))
+    assert result["fractions"] == {"points": 4, "max": 0.0, "mean": 0.0, "unmatched": 2}

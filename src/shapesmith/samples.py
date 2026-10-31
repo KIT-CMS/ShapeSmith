@@ -38,7 +38,8 @@ def read_sample_list(path: Path) -> tuple[str, ...]:
 
 
 def normalisation(database: Path, nicks: tuple[str, ...] | list[str]) -> dict[str, dict]:
-    """nick -> {kind, xsec, nevents, generator_weight} from the database; every missing nick is reported at once."""
+    """nick -> {kind, xsec, nevents, generator_weight, era} from the database (era None where the entry has none);
+    every missing nick is reported at once."""
     db = json.loads(Path(database).read_text())
     missing = [nick for nick in nicks if nick not in db]
     if missing:
@@ -46,4 +47,7 @@ def normalisation(database: Path, nicks: tuple[str, ...] | list[str]) -> dict[st
             f"{len(missing)} nicks are not in {database} (the database may have renamed them, see the git log of the"
             " sample database):\n" + "\n".join(missing)
         )
-    return {nick: {"kind": kind_of(db[nick]["sample_type"]), **{field: db[nick][field] for field in FIELDS}} for nick in nicks}
+    return {
+        nick: {"kind": kind_of(db[nick]["sample_type"]), **{field: db[nick][field] for field in FIELDS}, "era": str(db[nick]["era"]) if "era" in db[nick] else None}
+        for nick in nicks
+    }

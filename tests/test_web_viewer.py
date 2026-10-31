@@ -8,7 +8,7 @@ import pytest
 import shapesmith
 
 STATIC = Path(shapesmith.__file__).parent / "web" / "static"
-NODE_TESTS = Path(__file__).parent / "web" / "viewer.test.mjs"
+NODE_TESTS = sorted((Path(__file__).parent / "web").glob("*.test.mjs"))
 node = pytest.mark.skipif(shutil.which("node") is None, reason="node is not installed")
 
 
@@ -22,6 +22,8 @@ def test_static_files_and_stamp_placeholder():
     assert html.index('src="manifest.js?') < html.index('src="viewer.js?')
     # no external resources: the page works offline and from file://
     assert not re.search(r'(src|href)="(https?:)?//', html)
+    # the publisher makes the site page from it (gallery.SITE_PAGE): one <html lang="en"> and one manifest.js script
+    assert html.count('<html lang="en">') == 1 and html.count('src="manifest.js?') == 1 and "data-level" not in html
 
 
 @node
@@ -31,5 +33,6 @@ def test_viewer_script_syntax():
 
 @node
 def test_viewer_pure_logic():
-    result = subprocess.run(["node", "--test", str(NODE_TESTS)], capture_output=True, text=True, timeout=120)
+    assert len(NODE_TESTS) >= 2  # viewer.test.mjs (pure logic) and site.test.mjs (the era switch of a site page)
+    result = subprocess.run(["node", "--test", *map(str, NODE_TESTS)], capture_output=True, text=True, timeout=120)
     assert result.returncode == 0, result.stdout + result.stderr
