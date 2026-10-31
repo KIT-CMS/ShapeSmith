@@ -52,6 +52,14 @@ def test_run_measure_writes_into_its_own_directory(mini_run):
     assert (output / "versions" / "mini.json").exists()
 
 
+def test_a_measure_run_records_the_repeated_events(mini_run):
+    """With an event key the data are read without repeated events, listed in repeated_events.json of the output."""
+    config, _ = mini_run
+    output = run_measure(config, dataclasses.replace(build(config), event_key=("event",)), ["mt"])
+    record = json.loads((output / "repeated_events.json").read_text())
+    assert record["event_key"] == ["event"] and record["eras"]["2018"]["mt"] == {"checked": ["DATA_A"], "repeated": {}}
+
+
 def test_measure_command(tmp_path):
     make_mini_dataset(tmp_path / "data", n_files=1, n_events=100)
     config = tmp_path / "run.yaml"

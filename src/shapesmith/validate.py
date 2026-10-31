@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from shapesmith.histogram import part_of
-from shapesmith.model import ABCD, NOMINAL, ROLES, SAMPLE_KINDS, Analysis, AnalysisError, Channel, ColumnVariation, DataMinus, EqualData, TemplateShift, VariationSum, WeightVariation
+from shapesmith.model import ABCD, NOMINAL, ROLES, SAMPLE_KINDS, Analysis, AnalysisError, Channel, ColumnVariation, DataMinus, EqualData, ScoreBinning, TemplateShift, VariationSum, WeightVariation
 
 
 def _duplicates(what: str, names: list[str]) -> list[str]:
@@ -93,8 +93,44 @@ def _estimator_problems(channel: Channel, region_names: set[str]) -> list[str]:
     return problems
 
 
+def _score_binning_problems(channel: Channel, name: str, binning: ScoreBinning) -> list[str]:
+    """A ScoreBinning: increasing fine edges, exactly one of rules and thesis (start edges among the fine edges),
+    sensible rules, and raw-count groups and clipped processes that the channel has."""
+    from shapesmith.nn_binning import snap
+
+    problems = []
+    if len(binning.fine) < 2 or any(b <= a for a, b in zip(binning.fine, binning.fine[1:])):
+        return [f"variable {name}: the fine edges must hold at least two increasing values"]
+    if (binning.rules is None) == (binning.thesis is None):
+        problems.append(f"variable {name}: needs exactly one of rules and thesis")
+    if binning.thesis is not None:
+        try:
+            snap(binning.thesis, binning.fine)
+        except ValueError:
+            problems.append(f"variable {name}: the thesis edges are not among the fine edges")
+    backgrounds = set(channel.backgrounds())
+    if binning.rules is not None:
+        rules = binning.rules
+        if rules.max_bins < 1 or rules.n_start < 1 or rules.max_rel_uncertainty <= 0.0:
+            problems.append(f"variable {name}: the rules need max_bins >= 1, n_start >= 1 and max_rel_uncertainty > 0")
+        if not 0.0 <= rules.raw_min_share <= 1.0 or (rules.negative_share is not None and not rules.negative_share >= 0.0):
+            problems.append(f"variable {name}: the rules need raw_min_share in [0, 1] and negative_share >= 0 (or None)")
+        if not binning.fine[0] <= rules.low < binning.fine[-1]:
+            problems.append(f"variable {name}: rules.low {rules.low} lies outside the fine edges")
+        problems += [f"variable {name}: raw-count group {label} has no background" for label, names in rules.required.items() if not names]
+        problems += [f"variable {name}: raw-count group {label}: {n} is no background or estimator output" for label, names in rules.required.items() for n in names if n not in backgrounds]
+    if binning.blinding is not None and not binning.blinding > 0.0:
+        problems.append(f"variable {name}: the blinding S/B must be > 0")
+    problems += [f"variable {name}: clips {n}, which is no background or estimator output" for n in binning.clip if n not in backgrounds]
+    return problems
+
+
 def _binning_problems(channel: Channel) -> list[str]:
     problems = []
+    for category in channel.categories:
+        if isinstance(category.variable.edges, ScoreBinning):
+            problems += _score_binning_problems(channel, category.variable.name, category.variable.edges)
+    problems += [f"variable {v.name}: a ScoreBinning is for categories only" for v in channel.variables.values() if isinstance(v.edges, ScoreBinning)]
     for variable in [c.variable for c in channel.categories] + list(channel.variables.values()):
         rule = variable.edges
         if not isinstance(rule, EqualData):
@@ -109,11 +145,30 @@ def _binning_problems(channel: Channel) -> list[str]:
 
 
 def _ml_problems(analysis: Analysis) -> list[str]:
-    """Every ML process is exported by some channel; an estimator output, exported as the data of its region_of
-    region, never from the nominal region."""
+    """Every ML process is exported by some channel into one of the classes, and every class gets a process; an
+    estimator output, exported as the data of its region_of region, never from the nominal region; the variables and
+    identifiers are distinct column names of the export."""
+    from shapesmith.ml_export import reserved_columns
+
     ml = analysis.ml
     exported = {name for channel in analysis.channels.values() for name in ml.exported(channel)}
     problems = [f"ML export: {name} is no signal or background process or estimator output of any channel" for name in ml.processes if name not in exported]
+    problems += [
+        f"ML export: {name} has the class {ml.class_of[name]}, which is not among the classes"
+        for name in ml.processes
+        if ml.class_of[name] not in ml.classes
+    ]
+    used = {ml.class_of[p] for p in exported}
+    problems += [f"ML export: no exported process has the class {name}" for name in ml.classes if name not in used]
+    for what, names in (("class", ml.classes), ("variable", ml.variables), ("identifier", ml.identifiers)):
+        problems += [f"ML export: {problem}" for problem in _duplicates(what, list(names))]
+    reserved = reserved_columns(ml)
+    problems += [f"ML export: the variable {v} is a reserved column of the export"
+                 for v in ml.variables if v in reserved]
+    problems += [f"ML export: the mc_only variable {v} is not among the variables"
+                 for v in ml.mc_only if v not in ml.variables]
+    if len(ml.classes) > 127:
+        problems.append("ML export: more than 127 classes (class_index is int8)")
     for channel in analysis.channels.values():
         processes = {p.name for p in channel.processes}
         problems += [

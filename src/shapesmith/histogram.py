@@ -23,6 +23,7 @@ NOMINAL_VARIATION = "Nominal"
 INCLUSIVE = "inclusive"  # the category of control-variable histograms
 TEMPLATE_SEPARATOR = "@"
 PART_SEPARATOR = "%"
+RAW_SUFFIX = "%raw"  # of the variable of unweighted event counts (raw_variable)
 
 
 def is_template(variation: str) -> bool:
@@ -51,6 +52,17 @@ def part_of(variation: str, part: str) -> str:
 def is_part(variation: str) -> bool:
     """A part of a summed variation: an input of the VariationSum, never written to a shapes file."""
     return PART_SEPARATOR in variation
+
+
+def raw_variable(variable: str) -> str:
+    """The variable under which `hist` stores the unweighted event counts (events with a non-zero weight) of the
+    nominal histograms of a ScoreBinning variable, in every booked region; `estimate` gives a DataMinus or ABCD output
+    those of the data it is made of. Only the data-blind binning reads them: no plot, shape or estimate."""
+    return f"{variable}{RAW_SUFFIX}"
+
+
+def is_raw(variable: str) -> bool:
+    return variable.endswith(RAW_SUFFIX)
 
 
 @dataclass

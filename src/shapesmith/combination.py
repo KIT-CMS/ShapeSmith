@@ -8,6 +8,11 @@ shape files are referenced with absolute paths, so the combination lives in its 
 every nuisance with the runs it appears in and flags a name that ends in the token of another run's era (e.g.
 `_2017` in the 2018 card), the check of spec 9.9 for nuisances doubled by mistake; a name ending in a prefix of the
 run's own era (`_2016` in a 2016preVFP card) is the shared one of a year.
+
+The cards of a variant (`datacards --variant`) are <output_dir>/datacards/<variant>/<final state>/. The blinding.json
+of the cards merge into <output>/blinding.json (masking.merge): the background-only fit masks their blinded channels
+unless `unblind`. The limits are prefit Asimov limits (no masks), on r and on the signal cross section of the
+analysis (limits.py; theory nuisances of every card frozen).
 """
 from __future__ import annotations
 
@@ -17,12 +22,13 @@ import shlex
 from dataclasses import dataclass
 from pathlib import Path
 
-from shapesmith import cmssw
+from shapesmith import cmssw, masking
 from shapesmith.background_fit import OUTPUT as FIT_OUTPUT
-from shapesmith.background_fit import fit_commands, summarise_bins, summary_lines
+from shapesmith.background_fit import fit_commands, plot_fit, summarise_bins, summary_lines
+from shapesmith.cards import card_nuisances
 from shapesmith.config import RunConfig
-from shapesmith.datacards import bin_name
-from shapesmith.limits import collect, limit_commands, write_summary
+from shapesmith.datacards import bin_categories
+from shapesmith.limits import collect, limit_commands, write_summary, xs_frozen
 from shapesmith.model import Analysis
 
 logger = logging.getLogger(__name__)
@@ -43,9 +49,14 @@ class Run:
         return self.analysis.era
 
 
-def run_card(config: RunConfig, final_state: str) -> Path:
-    """The datacard of a final state of a run: <output_dir>/datacards/<final state>/combined.txt."""
-    return Path(config.output_dir) / "datacards" / final_state / CARD
+def datacard_dir(config: RunConfig, variant: str | None = None) -> Path:
+    """The datacards of a run: <output_dir>/datacards/, of a variant <output_dir>/datacards/<variant>/."""
+    return Path(config.output_dir) / "datacards" / (variant or "")
+
+
+def run_card(config: RunConfig, final_state: str, variant: str | None = None) -> Path:
+    """The datacard of a final state of a run: <output_dir>/datacards[/<variant>]/<final state>/combined.txt."""
+    return datacard_dir(config, variant) / final_state / CARD
 
 
 def check_runs(runs: list[Run]) -> None:
@@ -67,17 +78,6 @@ def combine_cards_command(cards: list[Path], output: str = CARD) -> str:
 def validate_command(card: str = CARD) -> str:
     """CombineHarvester's ValidateDatacards.py on the combined card, its findings in validation.json."""
     return f"ValidateDatacards.py {card} --jsonFile {VALIDATION} --printLevel 1"
-
-
-def card_nuisances(card: Path) -> list[str]:
-    """The nuisance names of a text datacard (lnN, shape and the like; rateParams and autoMCStats excluded)."""
-    kinds = {"lnN", "shape", "shapeN", "shape?", "lnU", "gmN", "param"}
-    names = []
-    for line in Path(card).read_text().splitlines():
-        tokens = line.split()
-        if len(tokens) > 1 and tokens[1] in kinds and not line.startswith(("bin ", "process ", "rate ", "observation ")):
-            names.append(tokens[0])
-    return names
 
 
 def foreign_token(name: str, era: str, eras: list[str]) -> str | None:
@@ -119,31 +119,46 @@ def write_nuisance_report(runs: list[Run], output: Path) -> Path:
 
 
 def bin_map(runs: list[Run]) -> dict[str, tuple[str, str]]:
-    """Combined bin -> (channel label `<channel> <era>`, category) of every run."""
-    return {
-        bin_name(run.analysis, channel, index): (f"{channel} {run.era}", category.name)
-        for run in runs for channel in run.analysis.channels for index, category in enumerate(run.analysis.channel(channel).categories)
-    }
+    """Combined bin -> (channel label `<channel> <era>`, category) of every run, the parts of a blinded category as
+    `<category> lo` and `<category> hi` (datacards.bin_categories)."""
+    return {card_bin: (f"{channel} {run.era}", category) for run in runs for card_bin, (channel, category) in bin_categories(run.analysis).items()}
 
 
-def run_combination(runs: list[Run], output: Path, background_only: bool = False, skip_combine: bool = False, validate: bool = False) -> dict:
-    """Combine the cards of the runs into <output>/combined.txt and run the limits or the background-only fit there;
-    the summary (limits.json/md/pdf or background_fit.json/md) next to it."""
+def combined_blinding(runs: list[Run], output: Path) -> masking.Blinding:
+    """<output>/blinding.json from those of the runs' cards, each checked against its card."""
+    for run in runs:
+        masking.check(masking.read(run.card.parent), run.card)
+    return masking.write_merged([run.card.parent for run in runs], output)
+
+
+def run_combination(runs: list[Run], output: Path, background_only: bool = False, skip_combine: bool = False, validate: bool = False, unblind: bool = False, limits_only: bool = False) -> dict:
+    """Combine the cards of the runs into <output>/combined.txt and run the limits (`limits_only`: without the
+    significance and the best fit) or the background-only fit there (the blinded channels of all cards masked unless
+    `unblind`); the summary (limits.json/md/pdf or background_fit.json/md and the fit plots) next to it."""
     check_runs(runs)
     output = Path(output)
     output.mkdir(parents=True, exist_ok=True)
     write_nuisance_report(runs, output)
+    blinding = combined_blinding(runs, output)
+    if unblind and background_only:
+        masking.warn_unblind(output, blinding)
+    masks = [] if unblind else blinding.assignments(1)
     combine = runs[0].config.combine
+    cross_section = runs[0].analysis.signal_cross_section
+    frozen = xs_frozen(cross_section, combine, [name for run in runs for name in card_nuisances(run.card)])
     if not skip_combine:
         logger.info(f"combining {len(runs)} cards ({', '.join(run.era for run in runs)}) into {output / CARD}")
         commands = [combine_cards_command([run.card for run in runs])] + ([f"{validate_command()} > validate.log 2>&1"] if validate else [])
-        commands += fit_commands() if background_only else limit_commands()
+        commands += fit_commands(combine=combine, masks=masks) if background_only else limit_commands(combine=combine, frozen=frozen, limits_only=limits_only)
         cmssw.run(commands, combine, output)
     if background_only:
-        result = {"combination": summarise_bins(json.loads((output / f"{FIT_OUTPUT}.json").read_text()), bin_map(runs))}
+        values = json.loads((output / f"{FIT_OUTPUT}.json").read_text())
+        result = {"combination": summarise_bins(values, bin_map(runs), [] if unblind else blinding.masked)}
+        result["combination"].update({"masked": [] if unblind else list(blinding.masked), **({"unblinded": True} if unblind else {})})
         (output / "background_fit.json").write_text(json.dumps(result, indent=2))
         (output / "background_fit.md").write_text("\n".join(summary_lines("combination", result["combination"])))
+        plot_fit(values, result["combination"], runs[0].analysis, output, [] if unblind else blinding.masked, "combination")
         return result
-    result = {"combination": collect(output)}
+    result = {"combination": collect(output, cross_section=cross_section, frozen=frozen, limits_only=limits_only)}
     write_summary(result, output)
     return result

@@ -6,6 +6,7 @@ import json
 import numpy as np
 import pytest
 import uproot
+from rich.text import Text
 from typer.testing import CliRunner
 
 from shapesmith import cmssw
@@ -67,7 +68,8 @@ def test_the_commands_and_the_nuisance_checks(tmp_path):
     assert foreign_token("CMS_x_2018", "2018", eras) is None and foreign_token("lumi_13TeV_15161718_l", "2018", eras) is None
 
 
-def test_combine_runs_the_limits_on_the_combined_card(runs, monkeypatch):
+@pytest.mark.parametrize("error_color", [False, True], ids=["plain-errors", "colored-errors"])
+def test_combine_runs_the_limits_on_the_combined_card(runs, monkeypatch, error_color):
     directory, configs = runs
     calls = []
 
@@ -88,6 +90,15 @@ def test_combine_runs_the_limits_on_the_combined_card(runs, monkeypatch):
     report = (output / "nuisances.md").read_text()
     assert "CMS_ff_QCDStatShift_mt_2017 (2018 card): ends in the era 2017 of another run" in report
     assert "| lumi_13TeV_15161718_l | x | x |" in report and "| CMS_ff_QCDStatShift_mt_2018 |  | x |" in report
+    with uproot.recreate(output / "higgsCombine.Significance.Significance.mH125.root") as f:  # of an earlier combination
+        f["limit"] = {"quantileExpected": np.array([-1.0], dtype=np.float32), "limit": np.array([0.42])}
+    limits_only = CliRunner().invoke(app, ["combine", *[a for c in configs for a in ("-c", str(c))], "-o", str(output), "--limits-only"])
+    assert limits_only.exit_code == 0, limits_only.output
+    assert calls[-1][0][1:] == limit_commands(limits_only=True) and "| combination | 4.00 | [3.00, 6.00] | [2.00, 8.00] | - | - |" in limits_only.output
+    assert "significance" not in json.loads((output / "limits.json").read_text())["combination"]
+    refused = CliRunner().invoke(app, ["combine", *[a for c in configs for a in ("-c", str(c))], "-o", str(output), "--limits-only", "--background-only"], color=error_color,
+                                 env={"FORCE_COLOR": "1" if error_color else None, "NO_COLOR": None, "TERM": "xterm-256color" if error_color else "dumb"})
+    assert refused.exit_code == 2 and "--limits-only applies to the limits" in Text.from_ansi(refused.output).plain
 
 
 def test_combine_background_only_maps_the_bins_of_every_era(runs, monkeypatch):
@@ -139,3 +150,40 @@ def test_two_runs_of_one_era_or_a_missing_card_are_refused(runs, monkeypatch):
     assert result.exit_code != 0 and "appear in more than one run" in str(result.exception)
     result = CliRunner().invoke(app, ["combine", "-c", str(configs[0]), "-c", str(configs[1]), "-o", str(directory / "y"), "--final-state", "et"])
     assert result.exit_code != 0 and "datacards missing" in str(result.exception)
+
+
+def test_the_combination_masks_the_blinded_channels_of_every_era_in_the_fit_to_data(runs, monkeypatch):
+    """blinding.json of the variant's cards merge into <output>/blinding.json; the background-only fit masks them all
+    (spec 6.4), the limits on the Asimov dataset do not, and --unblind drops the masks."""
+    directory, configs = runs
+    for era in ERAS:
+        variant = directory / era / "datacards" / "s0" / "all"
+        variant.mkdir(parents=True)
+        (variant / "combined.txt").write_text(_card(era))
+        (variant / "blinding.json").write_text(json.dumps({"edge_rule": "S/B(mu=1) > 0.005", "masked": [f"htt_mt_2_{era}"], "categories": {}, "asimov_data": True}))
+    values = {
+        "status": 0, "covariance_quality": 3, "prefit": {"CMS_pu": [0.0, 1.0]}, "postfit": {"CMS_pu": [0.5, 0.9]},
+        "norm_prefit": {f"htt_mt_{i}_{era}/total_background": [4.0, 1.0] for era in ERAS for i in (1, 2)},
+        "norm_fit_b": {f"htt_mt_{i}_{era}/total_background": [5.0, 1.0] for era in ERAS for i in (1, 2)},
+        "data": {f"htt_mt_{i}_{era}": 6.0 for era in ERAS for i in (1, 2)},
+    }
+    calls = []
+
+    def fake_run(commands, combine, cwd, timeout=None):
+        calls.append(commands)
+        (cwd / "fitDiagnostics.BackgroundOnly.json").write_text(json.dumps(values))
+        with uproot.recreate(cwd / "higgsCombine.Limit.AsymptoticLimits.mH125.root") as f:
+            f["limit"] = {"quantileExpected": np.array([0.025, 0.16, 0.5, 0.84, 0.975], dtype=np.float32), "limit": np.array([2.0, 3.0, 4.0, 6.0, 8.0])}
+
+    monkeypatch.setattr(cmssw, "run", fake_run)
+    arguments = ["combine", *[a for c in configs for a in ("-c", str(c))], "--variant", "s0"]
+    result = CliRunner().invoke(app, [*arguments, "-o", str(directory / "run2_bonly"), "--background-only"])
+    assert result.exit_code == 0, result.output
+    assert calls[-1][0] == combine_cards_command([directory / era / "datacards" / "s0" / "all" / "combined.txt" for era in ERAS])
+    assert calls[-1][1].endswith("--channel-masks") and "--setParameters r=0,mask_htt_mt_2_2017=1,mask_htt_mt_2_2018=1 --freezeParameters r" in calls[-1][2]
+    assert json.loads((directory / "run2_bonly" / "blinding.json").read_text())["masked"] == ["htt_mt_2_2017", "htt_mt_2_2018"]
+    assert "Masked (blinded) channels, not in the fit: htt_mt_2_2017, htt_mt_2_2018" in result.output
+    assert CliRunner().invoke(app, [*arguments, "-o", str(directory / "run2"), "--validate"]).exit_code == 0
+    assert all("mask_" not in command for command in calls[-1])  # prefit Asimov limits
+    result = CliRunner().invoke(app, [*arguments, "-o", str(directory / "run2_unblind"), "--background-only", "--unblind"])
+    assert result.exit_code == 0 and all("mask_" not in command for command in calls[-1]) and "UNBLINDED" in result.output

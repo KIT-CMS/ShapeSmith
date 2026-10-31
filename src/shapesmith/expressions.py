@@ -11,7 +11,7 @@ import pandas as pd
 from shapesmith.model import ColumnVariation
 
 FUNCTIONS = frozenset(
-    "abs sqrt exp log log10 sin cos tan arctan2 arcsin arccos arctan sinh cosh tanh expm1 log1p".split()
+    "abs sqrt exp log log10 sin cos tan arctan2 arcsin arccos arctan sinh cosh tanh expm1 log1p floor ceil".split()
 )
 KEYWORDS = frozenset({"and", "or", "not", "True", "False", "inf", "nan"})
 _IDENTIFIER = re.compile(r"(?<![\w.])[A-Za-z_][A-Za-z0-9_]*")
@@ -46,7 +46,10 @@ def evaluate(frame: pd.DataFrame, expr: str) -> np.ndarray:
     series = ({name: frame[name] for name in columns},)
     try:
         result = pd.eval(expr, engine="numexpr", resolvers=series)
-    except NotImplementedError as error:  # numexpr lacks an opcode (e.g. bool * bool): the python engine is slower but complete
+    except (NotImplementedError, ValueError) as error:
+        # numexpr lacks an opcode (e.g. bool * bool), or a long expression on float32 columns exceeds its limits of
+        # inputs and registers (pandas passes every literal as a float32 constant then): the python engine is slower but
+        # complete, and an expression it cannot evaluate either fails below
         logger.debug(f"numexpr cannot evaluate {expr!r} ({error}); using the python engine")
         try:
             result = pd.eval(expr, engine="python", resolvers=series)

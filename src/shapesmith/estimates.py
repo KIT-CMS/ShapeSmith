@@ -10,6 +10,9 @@ every template variation of `process`.
 VariationSum: `name`Up/Down = nominal + the sum of (part - nominal) over its parts, for every histogram with a part;
 place it after the estimators whose outputs should get the summed variation (DataMinus builds its output for the
 parts as for any column variation).
+ScoreBinning categories: the outputs of DataMinus (with clip_negative) and ABCD are not clipped in their fine bins,
+datacards clip them after the rebinning; the unweighted counts (histogram.raw_variable) stay out of the estimators,
+and every DataMinus or ABCD output gets those of the data it is made of (DataMinus: its region, ABCD: region b).
 """
 from __future__ import annotations
 
@@ -18,8 +21,8 @@ from collections import defaultdict
 
 from dataclasses import replace
 
-from shapesmith.histogram import NOMINAL_VARIATION, HistKey, Histogram, HistogramSet, is_template, on_template, part_of
-from shapesmith.model import ABCD, NOMINAL, Analysis, Channel, ColumnVariation, DataMinus, TemplateShift, VariationSum
+from shapesmith.histogram import NOMINAL_VARIATION, HistKey, Histogram, HistogramSet, is_raw, is_template, on_template, part_of
+from shapesmith.model import ABCD, NOMINAL, Analysis, Channel, ColumnVariation, DataMinus, ScoreBinning, TemplateShift, VariationSum
 
 logger = logging.getLogger(__name__)
 
@@ -51,6 +54,11 @@ def categories_and_variables(hset: HistogramSet, channel: Channel, region: str) 
     return sorted({(k.category, k.variable) for k in hset.select(channel=channel.name, process=channel.data(), region=region, variation=NOMINAL_VARIATION)})
 
 
+def deferred_clipping(channel: Channel) -> set[tuple[str, str]]:
+    """The (category, variable) pairs of the ScoreBinning categories, whose estimator outputs datacards clip."""
+    return {(c.name, c.variable.name) for c in channel.categories if isinstance(c.variable.edges, ScoreBinning)}
+
+
 def estimate_data_minus(hset: HistogramSet, channel: Channel, estimator: DataMinus) -> list[HistKey]:
     column_variations = {v.name for v in channel.variations if isinstance(v, ColumnVariation)}
     inputs = {channel.data(), *estimator.subtract}
@@ -59,12 +67,13 @@ def estimate_data_minus(hset: HistogramSet, channel: Channel, estimator: DataMin
         if k.channel == channel.name and k.region == estimator.region and k.process in inputs:
             present[k.category, k.variable].add(k.variation)
     added = []
+    deferred = deferred_clipping(channel)
     for category, variable in categories_and_variables(hset, channel, estimator.region):
         variations = (NOMINAL_VARIATION, *sorted(present[category, variable] & column_variations))
         for variation in variations:
             h = data_minus(hset, channel, category, variable, estimator.region, estimator.subtract, variation).scale(estimator.scale)
             key = HistKey(channel.name, category, estimator.output, estimator.target, variation, variable)
-            hset[key] = clip_negative_bins(h) if estimator.clip_negative else h
+            hset[key] = clip_negative_bins(h) if estimator.clip_negative and (category, variable) not in deferred else h
             added.append(key)
         nominal = hset[HistKey(channel.name, category, estimator.output, estimator.target, NOMINAL_VARIATION, variable)]
         logger.debug(f"{channel.name}/{category}/{variable}: {estimator.output} in {estimator.target} = data - {' - '.join(estimator.subtract)} in {estimator.region}, yield {nominal.sum():.2f}, {len(variations) - 1} variations")
@@ -100,7 +109,7 @@ def estimate_abcd(hset: HistogramSet, channel: Channel, estimator: ABCD) -> list
             factor = yield_c / yield_d
         logger.debug(f"{channel.name}/{category}/{variable}: ABCD {estimator.output} in {estimator.target}, B={b.sum():.2f}, C={yield_c:.2f}, D={yield_d:.2f}, C/D={factor:.4f}")
         key = HistKey(channel.name, category, estimator.output, estimator.target, NOMINAL_VARIATION, variable)
-        hset[key] = clip_negative_bins(b.scale(factor))
+        hset[key] = b.scale(factor) if (category, variable) in deferred_clipping(channel) else clip_negative_bins(b.scale(factor))
         added.append(key)
     return added
 
@@ -146,7 +155,22 @@ def estimate_variation_sum(hset: HistogramSet, channel: Channel, estimator: Vari
 ESTIMATES = {DataMinus: estimate_data_minus, ABCD: estimate_abcd, TemplateShift: estimate_template_shift, VariationSum: estimate_variation_sum}
 
 
+def raw_counts_of_outputs(raw: dict[HistKey, Histogram], channel: Channel) -> dict[HistKey, Histogram]:
+    """The unweighted counts of the DataMinus and ABCD outputs of a channel: those of the data in the region the
+    output is made of (DataMinus: its region, ABCD: b), in its target region."""
+    result = {}
+    for estimator in channel.estimators:
+        if not isinstance(estimator, (DataMinus, ABCD)):
+            continue
+        region = estimator.region if isinstance(estimator, DataMinus) else estimator.b
+        for key, h in raw.items():
+            if key.channel == channel.name and key.process == channel.data() and key.region == region and key.variation == NOMINAL_VARIATION:
+                result[replace(key, process=estimator.output, region=estimator.target)] = h.copy()
+    return result
+
+
 def run_estimates(hset: HistogramSet, analysis: Analysis, channels: list[str]) -> list[HistKey]:
+    raw = {key: hset.pop(key) for key in [key for key in hset if is_raw(key.variable)]}
     added: list[HistKey] = []
     for name in channels:
         channel = analysis.channel(name)
@@ -154,4 +178,8 @@ def run_estimates(hset: HistogramSet, analysis: Analysis, channels: list[str]) -
             keys = ESTIMATES[type(estimator)](hset, channel, estimator)
             logger.info(f"{name}: {type(estimator).__name__} {getattr(estimator, 'output', None) or estimator.name}, {len(keys)} histograms")
             added += keys
+        outputs = raw_counts_of_outputs(raw, channel)
+        raw.update(outputs)
+        added += list(outputs)
+    hset.update(raw)
     return added

@@ -32,7 +32,7 @@ from pathlib import Path
 from shapesmith import __version__
 from shapesmith.config import VARIANT_PATTERN, RunConfig, WebConfig
 from shapesmith.histogram import INCLUSIVE, NOMINAL_VARIATION, HistogramSet
-from shapesmith.model import NOMINAL, Analysis
+from shapesmith.model import NOMINAL, Analysis, ScoreBinning
 from shapesmith.plotting.stack import stack
 from shapesmith.plotting.style import axis_label, label, plain_text
 from shapesmith.provenance import record
@@ -207,7 +207,9 @@ def _yields(config: RunConfig, analysis: Analysis, plots: dict[str, dict[Cell, d
             logger.warning(f"{path} is missing: no yields for {len(wanted)} plots")
             continue
         keys = {(*cell, variable) for cell, tried in wanted.items() for variable in tried}
-        hset = HistogramSet.load(path, keep=lambda key: key.variation == NOMINAL_VARIATION and (key.channel, key.category, key.region, key.variable) in keys)
+        # a ScoreBinning category resolves its bins from its nominal templates and their unweighted counts
+        scored = {(name, c.name) for name in analysis.channels for c in analysis.channel(name).categories if isinstance(c.variable.edges, ScoreBinning)}
+        hset = HistogramSet.load(path, keep=lambda key: key.variation == NOMINAL_VARIATION and ((key.channel, key.category, key.region, key.variable) in keys or ((key.channel, key.category) in scored and key.region == NOMINAL)))
         for (channel, category, region), tried in wanted.items():
             for variable in tried:
                 shown = stack(hset, analysis, channel, category, variable, region)

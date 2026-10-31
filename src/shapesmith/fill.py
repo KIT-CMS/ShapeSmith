@@ -8,6 +8,7 @@ that).
 """
 from __future__ import annotations
 
+import dataclasses
 import logging
 import time
 from dataclasses import dataclass
@@ -19,12 +20,12 @@ import numpy as np
 from shapesmith import logs
 from shapesmith.binning import RECORD, resolve, write_record
 from shapesmith.config import RunConfig
-from shapesmith.events import event_weights, lumi, select
+from shapesmith.events import REPEATED, event_weights, lumi, read_events, repeated_record, select, write_repeated
 from shapesmith.expressions import columns_of, evaluate, mask, shift
-from shapesmith.histogram import INCLUSIVE, NOMINAL_VARIATION, HistKey, Histogram, HistogramSet
-from shapesmith.model import ABCD, NOMINAL, Analysis, Channel, ColumnVariation, DataMinus, EqualData, Process, Variable, Variation, applies
+from shapesmith.histogram import INCLUSIVE, NOMINAL_VARIATION, HistKey, Histogram, HistogramSet, raw_variable
+from shapesmith.model import ABCD, NOMINAL, Analysis, Channel, ColumnVariation, DataMinus, EqualData, Process, ScoreBinning, Variable, Variation, applies
 from shapesmith.parallel import run_jobs
-from shapesmith.store import SKIM_COLUMNS, read_skims, schema
+from shapesmith.store import SKIM_COLUMNS, schema
 
 logger = logging.getLogger(__name__)
 
@@ -141,7 +142,7 @@ def fill_booking(config: RunConfig, analysis: Analysis, channel_name: str, booki
     exprs = []
     for f in fills:
         exprs += f.cuts + f.weights + [e for _, cut, var in f.targets for e in (cut, var) if e]
-    frame = read_skims(config.skim_dir, channel_name, nicks, set(SKIM_COLUMNS) | columns_of(exprs))
+    frame = read_events(config, analysis, channel, nicks, set(SKIM_COLUMNS) | columns_of(exprs))
     lumi_pb = lumi(analysis, channel, process)
     result: dict[HistKey, Histogram] = {}
     for f in fills:
@@ -158,7 +159,10 @@ def fill_booking(config: RunConfig, analysis: Analysis, channel_name: str, booki
                 logger.warning(f"{process.name}/{f.region}/{target.variable.name}: {(in_category & ~finite).sum()} events with NaN/inf skipped")
             keep = in_category & finite
             key = HistKey(channel_name, target.category, process.name, f.region, f.variation.name if f.variation else NOMINAL_VARIATION, target.variable.name)
-            result[key] = Histogram.fill(target.variable.edges, values[keep], w[keep])
+            result[key] = Histogram.fill(target.variable.fill_edges, values[keep], w[keep])
+            if f.variation is None and isinstance(target.variable.edges, ScoreBinning):
+                raw = keep & (w != 0.0)
+                result[dataclasses.replace(key, variable=raw_variable(key.variable))] = Histogram.fill(target.variable.fill_edges, values[raw])
     logger.debug(
         f"{channel_name}/{process.name}: {len(result)} histograms from {len(frame)} events of {len(nicks)} samples "
         f"({len(fills)} fills in {len(booking.regions)} regions), {logs.duration(time.monotonic() - start)}"
@@ -175,8 +179,10 @@ def run_hist(config: RunConfig, analysis: Analysis, channels: list[str] | None, 
 
     The requested scopes (channel, process, region, category, variable) are always filled; histograms of other
     scopes already in `output` are kept. The edges of EqualData variables are computed from the data first and
-    recorded in binning.json next to `output`."""
+    recorded in binning.json next to `output`, the repeated events of the data and embedding samples, which are not
+    filled (events.read_events), in repeated_events.json."""
     output = Path(output)
+    repeated = repeated_record(config, analysis, channels or config.channels)
     jobs, scopes, record = [], set(), {}
     for channel_name in channels or config.channels:
         channel = analysis.channel(channel_name)
@@ -185,6 +191,7 @@ def run_hist(config: RunConfig, analysis: Analysis, channels: list[str] | None, 
         for booking in chosen:
             jobs.append((config, analysis, channel_name, booking, targets_))
             scopes |= {(channel_name, booking.process.name, region, t.category, t.variable.name) for region in booking.regions for t in targets_}
+            scopes |= {(channel_name, booking.process.name, region, t.category, raw_variable(t.variable.name)) for region in booking.regions for t in targets_ if isinstance(t.variable.edges, ScoreBinning)}
         logger.info(
             f"{channel_name}: {len(chosen)} processes, {len(targets_)} {'control variables' if control else 'categories'}, "
             f"regions {', '.join(dict.fromkeys(r for b in chosen for r in b.regions))}, {'with' if systematics else 'without'} systematics"
@@ -204,4 +211,6 @@ def run_hist(config: RunConfig, analysis: Analysis, channels: list[str] | None, 
     record = {channel: entries for channel, entries in record.items() if entries}
     if record:
         logger.info(f"equal-data bin edges recorded in {write_record(output.parent / RECORD, record)}")
+    if (path := write_repeated(output.parent / REPEATED, analysis, repeated)) is not None:
+        logger.info(f"repeated events recorded in {path}")
     return hset

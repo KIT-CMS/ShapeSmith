@@ -1,11 +1,12 @@
 """Native combine datacards: text card + shapes file, optional rebinning.
 
 One card per final state lists every bin (channel x category); processes with a non-positive rate in a bin are left
-out of that bin. Systematics: lnN from Analysis.lnn (entries with the same name make one line; at most one of them may
-apply to a column), `shape` for every Up/Down pair of variations present (names without a direction are templates and
-never become shape lines; parts of summed variations are left out of the shapes file), except the variations of
-Analysis.lnn_variations, which become an lnN of the varied to the nominal yield and stay out of the shapes file,
-`* autoMCStats 0`.
+out of that bin (score_bins.card_processes; listed under "left_out_processes" in template_changes.json and logged, at
+WARNING if one is negative). Systematics: lnN from Analysis.lnn (entries with the same name make one line; at most one
+of them may apply to a column), `shape` for every Up/Down pair of variations present (names without a direction are
+templates and never become shape lines; parts of summed variations are left out of the shapes file), except the
+variations of Analysis.lnn_variations, which become an lnN of the varied to the nominal yield and stay out of the
+shapes file, `* autoMCStats 0`.
 
 No-op nuisances: an Up/Down pair equal to the nominal in every bin of every process of a card (e.g. a shift of a
 fake factor taken from MC without subtraction) is left out of the card and the shapes file, and logged.
@@ -21,22 +22,40 @@ and robustHesse can find negative eigenvalues there. The replacement is symmetri
     delta_i = s_i * max(|u_i|, |d_i|), s_i = sign(u_i - d_i)  otherwise (the larger shift; s_i = sign(u_i + d_i) when
                                                               u_i = d_i),
     Up'_i = N_i + delta_i, Down'_i = N_i - delta_i, each clipped at 0;
-the variances of Up and Down stay. Every replacement and no-op is listed in <card dir>/template_changes.json.
+the variances of Up and Down stay. Every replacement and no-op is listed in <card dir>/template_changes.json. A pair
+with a side whose sum is not positive after that (a process of a few simulated events, a Down clipped at 0 everywhere)
+is left out, since combine rejects its norm ("Bogus norm"); such pairs are listed under "empty_pairs".
+
+ScoreBinning categories (score_bins.py, e.g. the NN categories): their edges are resolved from the nominal templates
+(data-blind rules or the thesis AutoRebin) instead of the --min-background merging, recorded per channel and category
+in <card dir>/nn_binning.json; negative bins left after the rebinning of the clipped processes are set to zero and
+listed under "clipped" in template_changes.json. With blinding (N14) a category becomes two card channels,
+htt_<channel>_<k>lo_<era> with the data and htt_<channel>_<k>hi_<era> from the first bin with S/B(mu=1) above the
+threshold, whose data_obs is the sum of its nominal background templates (Asimov). <card dir>/blinding.json, the
+contract with every fit and limit on the card:
+    {"edge_rule": "S/B(mu=1) > 0.005", "masked": [<hi bins>], "categories": {<hi bin>: {"lo": <lo bin or null>,
+     "edge": <score>, "s_over_b_first_hi_bin": <S/B>}}, "asimov_data": true}
+"masked" lists exactly the bins with Asimov data_obs; a fit on real data must set mask_<bin>=1 for each of them, a
+prefit Asimov fit (-t -1) needs none. A card without a category with blinding has no blinding.json (nothing is
+masked); one whose categories have no bin above the threshold masks nothing ("masked": []).
 """
 from __future__ import annotations
 
 import json
 import logging
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 import numpy as np
 
 from shapesmith.histogram import NOMINAL_VARIATION, HistKey, Histogram, HistogramSet, is_part
-from shapesmith.model import NOMINAL, Analysis, Category, LnN
+from shapesmith.model import NOMINAL, Analysis, Category, LnN, ScoreBinning
+from shapesmith.score_bins import HI, LO, asimov, card_parts, card_processes, log_left_out, log_record, part, rebinned_variations, resolve_category
 from shapesmith.shapes import shape_name, write_shapes
 
 logger = logging.getLogger(__name__)
+NN_RECORD = "nn_binning.json"
+BLINDING = "blinding.json"
 
 
 @dataclass
@@ -46,10 +65,25 @@ class Bin:
     data: Histogram
     processes: dict[str, Histogram]  # the processes with a positive rate, rebinned, in card order
     variations: dict[str, dict[str, Histogram]]  # process -> variation -> rebinned histogram
+    left_out: dict[str, float] = field(default_factory=dict)  # the processes left out for a rate <= 0 -> their rate
 
 
-def bin_name(analysis: Analysis, channel: str, category_index: int) -> str:
-    return f"htt_{channel}_{category_index + 1}_{analysis.era}"
+def bin_name(analysis: Analysis, channel: str, category_index: int, part_name: str = "") -> str:
+    """The card bin of a category, htt_<channel>_<index + 1>_<era>; of a part of a blinded category (LO, HI)
+    htt_<channel>_<index + 1><part>_<era>."""
+    return f"htt_{channel}_{category_index + 1}{part_name}_{analysis.era}"
+
+
+def bin_categories(analysis: Analysis) -> dict[str, tuple[str, str]]:
+    """Every card bin name the categories of the analysis can have -> (channel, category); the parts of a category
+    with blinding are `<category> lo` and `<category> hi` (for the summaries of fits)."""
+    result = {}
+    for channel in analysis.channels:
+        for index, category in enumerate(analysis.channel(channel).categories):
+            result[bin_name(analysis, channel, index)] = (channel, category.name)
+            if isinstance(category.variable.edges, ScoreBinning) and category.variable.edges.blinding is not None:
+                result.update({bin_name(analysis, channel, index, p): (channel, f"{category.name} {p}") for p in (LO, HI)})
+    return result
 
 
 def rebin_edges(total_background: Histogram, min_background: float | None) -> list[float]:
@@ -70,35 +104,76 @@ def rebin_edges(total_background: Histogram, min_background: float | None) -> li
     return edges
 
 
-def collect_bin(hset: HistogramSet, analysis: Analysis, channel_name: str, index: int, category: Category, min_background: float | None) -> Bin | None:
-    """The rebinned data, processes and variations of one bin; None without data or processes."""
+def collect_bin(hset: HistogramSet, analysis: Analysis, channel_name: str, index: int, category: Category, min_background: float | None, region: str = NOMINAL,
+                edges: list[float] | None = None) -> Bin | None:
+    """The rebinned data, processes and variations of one bin, from the histograms of `region` (the nominal one by
+    default, e.g. a control region for the GoF of a control variable); `edges` replaces the merging to
+    `min_background` (a subset of the filled edges). None without data or processes."""
     channel = analysis.channel(channel_name)
     variable = category.variable.name
 
     def key_of(process: str, variation: str = NOMINAL_VARIATION) -> HistKey:
-        return HistKey(channel_name, category.name, process, NOMINAL, variation, variable)
+        return HistKey(channel_name, category.name, process, region, variation, variable)
 
     nominal = {p: hset[key_of(p)] for p in (analysis.signal, *channel.backgrounds()) if key_of(p) in hset}
     if not nominal or key_of(channel.data()) not in hset:
-        logger.warning(f"{channel_name}/{category.name}/{variable}: no {'processes' if not nominal else 'data'}, bin {bin_name(analysis, channel_name, index)} left out")
+        logger.warning(f"{channel_name}/{category.name}/{variable}#{region}: no {'processes' if not nominal else 'data'}, bin {bin_name(analysis, channel_name, index)} left out")
         return None
     total = None
     for process, h in nominal.items():
         if process != analysis.signal:
             total = h.copy() if total is None else total.add(h)
-    edges = rebin_edges(total, min_background) if total is not None else list(hset[key_of(channel.data())].edges)
+    if edges is None:
+        edges = rebin_edges(total, min_background) if total is not None else list(hset[key_of(channel.data())].edges)
     result = Bin(channel_name, bin_name(analysis, channel_name, index), hset[key_of(channel.data())].rebin(edges), {}, {})
     if len(edges) < len(hset[key_of(channel.data())].edges):
-        logger.debug(f"{result.name}: {len(hset[key_of(channel.data())].edges) - 1} -> {len(edges) - 1} bins (background >= {min_background:g} per bin)")
-    for process, h in nominal.items():
-        rebinned = h.rebin(edges)
-        if rebinned.sum() <= 0.0:
-            logger.debug(f"{result.name}: {process} left out, rate {rebinned.sum():.3g}")
-            continue
-        result.processes[process] = rebinned
-        keys = hset.select(channel=channel_name, category=category.name, process=process, region=NOMINAL, variable=variable)
+        logger.debug(f"{result.name}: {len(hset[key_of(channel.data())].edges) - 1} -> {len(edges) - 1} bins" + (f" (background >= {min_background:g} per bin)" if min_background is not None else ""))
+    result.processes, result.left_out = card_processes({process: h.rebin(edges) for process, h in nominal.items()})
+    for process in result.processes:
+        keys = hset.select(channel=channel_name, category=category.name, process=process, region=region, variable=variable)
         result.variations[process] = {key.variation: hset[key].rebin(edges) for key in keys if key.variation != NOMINAL_VARIATION and not is_part(key.variation)}
     return result
+
+
+def _card_bin(view_templates: dict[str, Histogram], channel: str, name: str, data: Histogram, variations: dict[str, dict[str, Histogram]], start: int, stop: int | None) -> Bin:
+    """The bins start..stop - 1 of a resolved category as one card bin: the processes with a positive rate there."""
+    processes, left_out = card_processes(view_templates, start, stop)
+    return Bin(channel, name, part(data, start, stop), processes, {process: {variation: part(varied, start, stop) for variation, varied in variations[process].items()} for process in processes}, left_out)
+
+
+def collect_score_bins(hset: HistogramSet, analysis: Analysis, channel_name: str, index: int, category: Category) -> tuple[list[Bin], dict | None, list[dict]]:
+    """The card bins of a ScoreBinning category (one, or the lo and hi parts with blinding), its record for
+    nn_binning.json and the clipped bins; no bins without data or processes."""
+    channel = analysis.channel(channel_name)
+    data_key = HistKey(channel_name, category.name, channel.data(), NOMINAL, NOMINAL_VARIATION, category.variable.name)
+    view = resolve_category(hset, analysis, channel_name, category) if data_key in hset else None
+    if view is None:
+        logger.warning(f"{channel_name}/{category.name}/{category.variable.name}: no {'data' if data_key not in hset else 'processes'}, bin {bin_name(analysis, channel_name, index)} left out")
+        return [], None, []
+    data = hset[data_key].rebin(view.edges)
+    variations = {process: rebinned_variations(hset, view, channel_name, category, process) for process in view.templates}
+    clipped = [{"channel": channel_name, "category": category.name, **entry} for entry in view.clipped]
+    bins = [_card_bin(view.templates, channel_name, bin_name(analysis, channel_name, index, name), data, variations, start, stop) for name, start, stop in card_parts(view)]
+    if view.split is not None:
+        hi = bins[-1]
+        hi.data = asimov(hi.processes, analysis.signal, hi.data.edges)
+        view.record["blinding"].update(lo=bins[0].name if len(bins) > 1 else None, hi=hi.name)
+    view.record["card_bins"] = [b.name for b in bins]
+    log_record(f"{channel_name}/{category.name}/{category.variable.name}", view.record)
+    return bins, view.record, clipped
+
+
+def blinding_record(records: dict[str, dict[str, dict]]) -> dict:
+    """blinding.json (module docstring) from the nn_binning.json records of the card's categories."""
+    thresholds = sorted({r["blinding"]["s_over_b"] for categories in records.values() for r in categories.values() if "blinding" in r})
+    categories = {}
+    for entries in records.values():
+        for record in entries.values():
+            blinding = record.get("blinding")
+            if blinding and blinding.get("hi"):
+                first = blinding["first_hi_bin"]
+                categories[blinding["hi"]] = {"lo": blinding["lo"], "edge": blinding["edge"], "s_over_b_first_hi_bin": blinding["s_over_b_per_bin"][first]}
+    return {"edge_rule": "; ".join(f"S/B(mu=1) > {t:g}" for t in thresholds), "masked": list(categories), "categories": categories, "asimov_data": True}
 
 
 def _value(lnn: LnN) -> str:
@@ -166,6 +241,13 @@ def shape_lines(bins: list[Bin]) -> list[str]:
     return lines
 
 
+def observation(data: Histogram) -> str:
+    """The sum of data_obs as the shortest decimal that reads back as the same number: an event count as before
+    (118.0), the Asimov data of a hi channel exactly. combine rejects a card whose observation differs from the sum
+    of data_obs by more than 0.5 % (one decimal wrote 4.2 for 4.243)."""
+    return repr(float(data.sum()))
+
+
 def card_text(analysis: Analysis, bins: list[Bin], systematics: bool) -> str:
     backgrounds = list(dict.fromkeys(p for b in bins for p in analysis.channel(b.channel).backgrounds()))
     index = {name: i for i, name in enumerate((analysis.signal, *backgrounds))}
@@ -174,7 +256,7 @@ def card_text(analysis: Analysis, bins: list[Bin], systematics: bool) -> str:
     lines += [f"shapes * {b.name} common/htt_input_{analysis.era}.root {b.name}/$PROCESS {b.name}/$PROCESS_$SYSTEMATIC" for b in bins]
     lines.append("-" * 60)
     lines.append("bin " + " ".join(b.name for b in bins))
-    lines.append("observation " + " ".join(f"{b.data.sum():.1f}" for b in bins))
+    lines.append("observation " + " ".join(observation(b.data) for b in bins))
     lines.append("-" * 60)
     lines.append("bin " + " ".join(name for name, _ in columns))
     lines.append("process " + " ".join(process for _, process in columns))
@@ -270,14 +352,42 @@ def _record_line(record: Symmetrised) -> str:
     return f"{record.nuisance} {record.bin}/{record.process} ({record.reason}): {record.before[0]:.4f}/{record.before[1]:.4f} -> {record.after[0]:.4f}/{record.after[1]:.4f}" + (f", {record.clipped} bins clipped at 0" if record.clipped else "")
 
 
+def drop_empty_pairs(bins: list[Bin]) -> list[str]:
+    """Remove the Up/Down pairs of a process with a side whose sum is not positive, whose norm combine rejects; returns
+    them as `<bin>/<process>: <nuisance>`."""
+    dropped = []
+    for b in bins:
+        for process, variations in b.variations.items():
+            names = {name[:-2] for name in variations if name.endswith("Up")} | {name[:-4] for name in variations if name.endswith("Down")}
+            for name in sorted(names):
+                if any(h is not None and h.sum() <= 0.0 for h in (variations.get(f"{name}Up"), variations.get(f"{name}Down"))):
+                    for direction in ("Up", "Down"):
+                        variations.pop(f"{name}{direction}", None)
+                    dropped.append(f"{b.name}/{process}: {name}")
+    return dropped
+
+
 def write_datacard(hset: HistogramSet, analysis: Analysis, channels: list[str], output_dir: Path, systematics: bool = True, min_background: float | None = 1.0) -> Path:
+    bins, score_records, clipped = [], {}, []
+    for channel in channels:
+        for index, category in enumerate(analysis.channel(channel).categories):
+            if isinstance(category.variable.edges, ScoreBinning):
+                score_bins, record, clips = collect_score_bins(hset, analysis, channel, index, category)
+                bins += score_bins
+                clipped += clips
+                if record is not None:
+                    score_records.setdefault(channel, {})[category.name] = record
+            elif (b := collect_bin(hset, analysis, channel, index, category, min_background)) is not None:
+                bins.append(b)
+    return write_bins(analysis, bins, output_dir, systematics, score_records, clipped)
+
+
+def write_bins(analysis: Analysis, bins: list[Bin], output_dir: Path, systematics: bool = True, score_records: dict[str, dict[str, dict]] | None = None, clipped: list[dict] | None = None) -> Path:
+    """The card of collected bins: no-op nuisances left out, pairs symmetrised, pairs with an empty side left out,
+    the processes the bins left out for a rate <= 0 logged, template_changes.json, the score records (nn_binning.json,
+    blinding.json), the shapes file and combined.txt in `output_dir`."""
     output_dir = Path(output_dir)
-    bins = [
-        b
-        for channel in channels
-        for index, category in enumerate(analysis.channel(channel).categories)
-        if (b := collect_bin(hset, analysis, channel, index, category, min_background)) is not None
-    ]
+    score_records, clipped = score_records or {}, clipped or []
     no_ops = no_op_variations(bins)
     drop_variations(bins, no_ops)
     if no_ops:
@@ -285,8 +395,24 @@ def write_datacard(hset: HistogramSet, analysis: Analysis, channels: list[str], 
     records = symmetrise(analysis, bins)
     if records:
         logger.info(f"{output_dir.name}: {len(records)} templates symmetrised (one-sided or asymmetry > {analysis.asymmetry_ratio:g}), Down/Up yield ratios before -> after:\n" + "\n".join(_record_line(r) for r in records))
+    empty = drop_empty_pairs(bins)
+    if empty:
+        logger.warning(f"{output_dir.name}: {len(empty)} shape pairs with a side whose sum is not positive left out (combine rejects their norm): {', '.join(empty)}")
+    left_out = [{"bin": b.name, "process": process, "rate": rate} for b in bins for process, rate in b.left_out.items()]
+    log_left_out(output_dir.name, left_out)
     output_dir.mkdir(parents=True, exist_ok=True)
-    (output_dir / "template_changes.json").write_text(json.dumps({"asymmetry_ratio": analysis.asymmetry_ratio, "no_ops": no_ops, "symmetrised": [asdict(r) for r in records]}, indent=1))
+    changes = {"asymmetry_ratio": analysis.asymmetry_ratio, "no_ops": no_ops, "symmetrised": [asdict(r) for r in records]}
+    if empty:
+        changes["empty_pairs"] = empty
+    if left_out:
+        changes["left_out_processes"] = left_out
+    if score_records:  # only cards with ScoreBinning categories list them, the others stay as they were
+        changes["clipped"] = clipped
+        if clipped:
+            logger.info(f"{output_dir.name}: {len(clipped)} templates with negative bins after the rebinning clipped at 0 (integral kept):\n"
+                        + "\n".join(f"{c['channel']}/{c['category']}/{c['process']} {c['variation']}: bins {c['bins']}, {', '.join(f'{v:.3g}' for v in c['values'])}" for c in clipped))
+    (output_dir / "template_changes.json").write_text(json.dumps(changes, indent=1))
+    write_score_records(output_dir, score_records)
     entries = []
     for b in bins:
         entries.append((b.name, "data_obs", b.data))
@@ -300,6 +426,19 @@ def write_datacard(hset: HistogramSet, analysis: Analysis, channels: list[str], 
     nuisances = sum(1 for line in text.splitlines() if " lnN " in line or " shape " in line)
     logger.info(f"{output_dir.name}: {len(bins)} bins, {sum(len(b.processes) for b in bins)} process columns, {nuisances} nuisances -> {card}")
     return card
+
+
+def write_score_records(output_dir: Path, records: dict[str, dict[str, dict]]) -> None:
+    """nn_binning.json and, with a category with blinding, blinding.json in the card directory; the files of an
+    earlier card without them are removed (a stale blinding.json would mask bins the card does not have)."""
+    for name, content in ((NN_RECORD, records), (BLINDING, blinding_record(records) if any("blinding" in r for c in records.values() for r in c.values()) else None)):
+        path = output_dir / name
+        if content:
+            path.write_text(json.dumps(content, indent=1))
+            logger.info(f"{output_dir.name}: {path}" + (f", masked {', '.join(content['masked']) or 'nothing'}" if name == BLINDING else ""))
+        elif path.exists():
+            path.unlink()
+            logger.info(f"{output_dir.name}: {path} of an earlier card removed")
 
 
 def run_datacards(hset: HistogramSet, analysis: Analysis, final_states: dict[str, list[str]], output_dir: Path, systematics: bool, min_background: float | None) -> dict[str, Path]:

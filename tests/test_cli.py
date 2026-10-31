@@ -58,7 +58,9 @@ def test_full_chain(tmp_path):
     _run("plot", "-c", str(config), "--category", "sig", "--blind")
     assert (tmp_path / "out" / "plots" / "mt" / "sig_score.pdf").exists()
     _run("ml-export", "-c", str(config))
-    assert (tmp_path / "ml" / "mt" / "fold0_training.feather").exists()
+    assert (tmp_path / "ml" / "mt" / "events.feather").exists() and (tmp_path / "ml" / "classes.json").exists()
+    _run("ml-merge", "-c", str(config), "-o", str(tmp_path / "ml_run2"))  # one era: a copy with its classes
+    assert (tmp_path / "ml_run2" / "mt" / "events.feather").exists() and (tmp_path / "ml_run2" / "logs").is_dir()
     result = _run("inspect", str(tmp_path / "out" / "shapes.root"))
     assert "jetFakes" in result.output
     assert _run("inspect", "--unchanged", str(tmp_path / "out" / "shapes.root")).output == ""

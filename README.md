@@ -1,7 +1,7 @@
 # ShapeSmith
 
 From CROWN ntuples to histograms, background estimates, combine datacards, fits, plots,
-ML training folds and measurements (correctionlib payloads). Columnar (uproot, pandas,
+ML training data and measurements (correctionlib payloads). Columnar (uproot, pandas,
 numexpr, numpy), no ROOT needed except for `shapesmith fit`, which calls combine in a CMSSW
 subshell.
 
@@ -26,24 +26,39 @@ shapesmith skim      -c run.yaml [--channels mt] [--samples TT,SingleMuon] [--fo
 shapesmith hist      -c run.yaml [--control] [--regions all] [--skip-systematics] [--processes ZTT,data]  # histograms (ROOT + JSON index)
 shapesmith estimate  -c run.yaml [--control]  # estimated processes and variations (Channel.estimators)
 shapesmith measure   -c run.yaml [--suggest-binning] [--merge] [--refit]   # Analysis.measurement -> <output_dir>/<measurement>/<era>/
-shapesmith plot      -c run.yaml [--control] [--region nominal] [--blind] [--log]
+shapesmith plot      -c run.yaml [--control] [--region nominal] [--blind] [--log] [--normalize-by-bin-width]
 shapesmith publish   -c run.yaml --to DIR --variant KEY [--label TEXT] [--description TEXT] [--channels et,mt]   # plots + yields -> static web gallery DIR/index.html
 shapesmith sync      -c run.yaml              # combine-style shape files per channel
-shapesmith datacards -c run.yaml [--min-background 1.0] [--no-systematics]
-shapesmith fit       -c run.yaml [--final-states mt,all] [--skip-combine]   # limits, significance, best fit
-shapesmith fit       -c run.yaml --background-only [--final-states all]   # background-only fit to the data, pulls, yields
-shapesmith combine   -c run_2017.yaml -c run_2018.yaml ... -o DIR [--final-state all] [--background-only] [--validate]   # cards of several eras combined
+shapesmith datacards -c run.yaml [--min-background 1.0] [--no-systematics] [--variant stat_only]
+shapesmith fit       -c run.yaml [--final-states mt,all] [--skip-combine] [--variant V] [--limits-only]   # limits (mu, sigma), significance, best fit
+shapesmith fit       -c run.yaml --background-only [--final-states all] [--variant V]   # background-only fit to the data, pulls, yields, plots
+shapesmith combine   -c run_2017.yaml -c run_2018.yaml ... -o DIR [--final-state all] [--background-only] [--validate] [--variant V] [--limits-only]   # cards of several eras combined
 shapesmith combine   -c run.yaml --era 2017 --era 2018 ... -o DIR   # the same with one run YAML loaded per era ({era} filled)
-shapesmith ml-export -c run.yaml              # Feather training folds
+shapesmith gof       -c run.yaml [--final-states mt,all | --combination DIR] [--toys 500] [--variant V]   # saturated GoF against toys
+shapesmith impacts   -c run.yaml [--final-states all | --combination DIR] [--asimov] [--variant V]   # combineTool.py -M Impacts, plotImpacts.py
+shapesmith limit-aposteriori -c run.yaml [--final-states ... | --combination DIR] [--variant V]   # masked background-only fit, then the Asimov limit
+shapesmith injection -c run.yaml [... | --combination DIR] [--mu 0,1,limit] [--toys 200] [--a-posteriori]   # signal injection and bias
+shapesmith limit-hybridnew -c run.yaml [... | --combination DIR] [--toys 500] [--rel-acc 0.02] [--abs-acc 0.05] [--a-posteriori]   # toy-based expected limit
+shapesmith limit-overview -c run.yaml --era 2017 --era 2018 ... [--combination DIR] [--aposteriori] [--variant V] -o OUT   # Brazil plot per channel, era, combined
+shapesmith input-gof -c run.yaml --era 2017 --era 2018 ... [--region R] [--variables a,b] [--toys 500] [--exclude REGEX] -o DIR   # saturated GoF per control variable
+shapesmith ml-export -c run.yaml              # training data: <ml_dir>/<channel>/events.feather + classes.json
+shapesmith ml-merge  -c run.yaml --era 2017 --era 2018 ... -o DIR   # the exports of several eras in one per channel
 shapesmith inspect   output/shapes.root [--unchanged]   # what a histogram file contains; variations equal to their nominal
 ```
 
 `skim` reads the ntuples once into `<skim_dir>/<channel>/<nick>/*.parquet` plus a
-`manifest.json`; everything else works on the skims. `skim`, `hist`, `measure` and `ml-export`
+`manifest.json`; everything else works on the skims. With `Analysis.event_key` (e.g. `("run", "lumi", "event")`)
+every data and embedding sample is read without the skim rows that repeat the event of an earlier row of the same
+sample, in file order (`events.read_events`), e.g. an event that two n-tuple files of a sample both hold: `hist`,
+`measure`, the equal-data binning and `ml-export` count it once; the skims keep every row and the key columns (read
+for these samples). `hist`, `measure` and `ml-export` list the dropped rows per channel, sample and skim file in
+`repeated_events.json` next to their output (`<ml_dir>/` for the export; `ml-merge` merges the eras) and log each
+sample with repeats as a warning. `skim`, `hist`, `measure` and `ml-export`
 record what produced their outputs in `<directory>/versions/<analysis name>.json` (versions,
 git hashes of core, analysis and sample database, the full run configuration and its hash).
 
-`datacards` writes one card per final state, `<output_dir>/datacards/<final state>/combined.txt`;
+`datacards` writes one card per final state, `<output_dir>/datacards/<final state>/combined.txt` (with `--variant V`
+`<output_dir>/datacards/V/<final state>/`, see "Limits and statistical checks");
 `fit` runs combine on them in CMSSW (`combine.cmssw_dir`) and summarises the results in
 `<output_dir>/datacards/limits.{json,md,pdf}`. `fit --background-only` instead fits the data with
 r frozen to 0 (`combine -M FitDiagnostics --setParameters r=0 --freezeParameters r --skipSBFit
@@ -54,7 +69,13 @@ the selected channels (`all`, or the only final state), and writes
 (`--skip-combine`: from the stored values): per final state the fit status, per nuisance the prefit [mean, width] of its Gaussian constraint, postfit
 [value, error], pull and constraint, and per channel, category and process the data and the
 prefit and postfit [value, error] yields (with the totals `total_background`, `total_signal`,
-`total`). It fits the observed data of every bin of the card.
+`total`; the parts of a blinded category as `<category> lo` and `<category> hi`, `datacards.bin_categories`). It
+fits the observed data of every bin of the card that blinding.json does not mask (see below); a masked bin, whose
+data_obs is the Asimov prediction, is marked (`"masked": true`; "masked" in place of its data in the markdown). It
+plots the pulls (`<card dir>/plots/pulls.pdf`) and the prefit and postfit stack of every card bin
+(`plots/{prefit,postfit}/<bin>.pdf/.png`, in the bins of its data histogram in the card, no data in a masked bin;
+FitDiagnostics pads the shapes of a bin to the binning of the largest one, and the plot cuts the padding off; the bins
+of a score on [0, 1] are drawn with equal widths, in events per bin, with the edges as tick labels, as in `plot`).
 
 `combine` (the combination of eras, one run YAML each, or one run YAML loaded once per `--era`) runs `combineCards.py` over the card of one final state of
 every run (the bin names stay, they carry the era; two runs of one era are refused) into `DIR/combined.txt`, optionally
@@ -84,6 +105,132 @@ link, the most recent by default; channel, region, category, variable and column
 other era has them). Each publish rewrites the site's era list (`site.json`, `site.js`) from its
 subdirectories; each era stays a complete gallery of its own. A gallery without a site stays as it is.
 
+## Limits and statistical checks
+
+The commands of the limits and fits (spec of the NN phase, 7.2 and 8) work on the datacards of a final state,
+`<output_dir>/datacards[/<variant>]/<final state>/combined.txt`, or with `--combination DIR` on a combination of
+`shapesmith combine`. Each check runs in its own subdirectory of the card directory and writes its summary next to the
+cards (`<datacards>/<check>.json/.md`, of a combination in `DIR`); a summary keeps the cards of earlier runs.
+
+- **Variants** (`--variant KEY`, `[a-z0-9_]+`, not a channel or `all`): `datacards --variant stat_only --no-systematics`
+  writes `<output_dir>/datacards/stat_only/<final state>/`, so that "stat only", S0 and other card variants sit side by
+  side; `fit`, `combine` (the cards of the variant of every era), the checks and `limit-overview` take the same option.
+  Without it the layout is `<output_dir>/datacards/<final state>/` as before.
+- **Blinding** (`<card dir>/blinding.json`, written by `datacards` next to `combined.txt`, also under `--variant`; its
+  contract is in "Score categories"; a missing file masks nothing): `masked` lists the card bins whose data_obs is the
+  Asimov background prediction. Every fit to the real data (`fit --background-only`, `combine --background-only`, `gof`,
+  `impacts`, the fit of `limit-aposteriori`, the toys of `injection --a-posteriori`) builds the workspace with
+  `--channel-masks` and adds `--setParameters mask_<bin>=1` for each of them; a masked bin that is no bin of the card is
+  an error. Fits to the prefit Asimov dataset (the limits of `fit` and `combine`, `impacts --asimov`, `injection`,
+  `limit-hybridnew`) need no masks. `combine` merges the `masked` lists of the cards of every era into
+  `DIR/blinding.json` (the bin names carry the era). `--unblind` drops the masks (off by default, logged loudly and
+  marked in the summaries).
+- **Units** (spec N23): the limits are on the signal strength mu; with `Analysis.signal_cross_section`
+  (`CrossSection(name, value_fb, theory_nuisances)`, e.g. `ggF HH`, 30.40 fb, `QCDscale_HH` and `PDF_alphas_HH`) also on
+  sigma(<name>) in fb = r x value_fb, from a second AsymptoticLimits (`-n .LimitXS`) with the theory nuisances of the
+  cross section frozen at 0 (the acceptance, shape and BR uncertainties of the signal stay; a card without them, e.g.
+  only statistics, needs no second call). `combine.xs_theory_nuisances` replaces the analysis's list. The summaries name
+  the quantity: `xs_limit: {quantity: "sigma(ggF HH)", unit: fb, fb_per_r, frozen, limit}`; `limits.md` gets a column
+  and `limits_xs.pdf`.
+- `fit --limits-only` and `combine --limits-only`: the limits on mu and the cross section without the significance and
+  the best fit (`-` in `limits.md`, absent from `limits.json`), for comparisons of models by their limits. The two
+  converged AsymptoticLimits dominate the time of a card with systematics: the four final states of a 2018 NN run
+  took 5 min 36 s instead of 6 min 10 s (stat only 13 s instead of 18 s for one channel).
+- `gof`: the saturated GoF of the background-only model (r frozen at 0) to the data against frequentist toys (jobs of
+  25 toys with the seeds 1000, 1001, ..., `combine.parallel` at a time), per final state (channel x era) or of the
+  combination: statistic, p-value (fraction of toys at least as large), `gof/gof.pdf`.
+- `impacts`: `combineTool.py -M Impacts` (initial fit, one fit per nuisance with `--parallel combine.parallel`,
+  `impacts.json`) and `plotImpacts.py` (`impacts/impacts.pdf` with the pulls; the POI value hidden with `--blind`) on
+  the data, or with `--asimov` on the Asimov dataset with r = 1 (`impacts_asimov/`); `impacts.md` ranks the nuisances.
+- `limit-aposteriori`: the background-only fit (MultiDimFit, r = 0) to the data with the blinded channels masked saves
+  its snapshot; `combine -M AsymptoticLimits -t -1 --toysFrequentist --bypassFrequentistFit --snapshotName MultiDimFit`
+  on it, with the masks set to 0, gives the expected limit of the postfit nuisances in every bin, on mu and the cross
+  section, compared with the prefit one of `limits.json` (`aposteriori.json/.md/.pdf`).
+- `injection`: toys with r = mu for every `--mu` (`limit`: the median expected limit of the card, a-posteriori if
+  there, else prefit), each fitted with FitDiagnostics; per mu the mean and median fitted r, the pulls (r - mu) /
+  sigma_r with the error towards mu (mean, its error, width; biased when the mean is more than 2 errors off 0) and the
+  straight line of the mean r against mu (`injection/injection.pdf`). Toys of the prefit model, or with
+  `--a-posteriori` frequentist toys around the snapshot of the masked background-only fit (`injection_aposteriori/`).
+- `limit-hybridnew`: `combine -M HybridNew --LHCmode LHC-limits -t -1` on the Asimov dataset (prefit, or with
+  `--a-posteriori` of the snapshot): the toy-based median expected limit against the asymptotic median, for bins down
+  to one background event. `--toys` is `-T`, `--rel-acc`/`--abs-acc` its accuracy; r from 0 to the upper end of
+  `combine.r_range`.
+- `limit-overview`: the `limits.json` (or `aposteriori.json`) of every era (`-c`/`--era`) and of the combinations in
+  one table and Brazil plot, rows `<final state> <era>` and `combined`: `OUT/limit_overview.{json,md,pdf}` and
+  `limit_overview_xs.pdf`.
+
+The options of the combine calls come from `combine` of the run YAML (all optional besides `cmssw_dir`):
+
+```yaml
+combine:
+  cmssw_dir: /work/USER/CMSSW_14_1_9
+  r_range: [-40, 40]         # --setParameterRanges r=low,high of every fit and limit (HybridNew: 0 to high)
+  precise: true              # AsymptoticLimits with --rAbsAcc 0.00001 --rRelAcc 0.00001 --cminDefaultMinimizerTolerance 0.0001
+  minimizer: ""              # e.g. "--cminDefaultMinimizerStrategy 1 --X-rtd MINIMIZER_analytic": replaces built-in options of the same name
+  timeout: 21600             # seconds per CMSSW step: a hung fit or xrootd read is killed (null: none)
+  parallel: 8                # combine processes at a time (toy jobs, impact fits)
+  xs_theory_nuisances: null  # the frozen nuisances of the cross-section limit (null: Analysis.signal_cross_section)
+```
+
+`precise` is the default since the NN phase: combine's default accuracy puts the median of AsymptoticLimits on a 1/32
+grid and hides effects below about 0.3 % (thesis card 10.90625 at the defaults, 10.9048 converged), too coarse for
+paired comparisons of models; `-s combine.precise=false` gives the earlier limits. It applies to AsymptoticLimits only
+(HybridNew reads `--rAbsAcc`/`--rRelAcc` as the accuracy of its toy search). `minimizer` takes minimizer and
+robust-fit options only (`--cmin...`, `--X-rt...`, `--robust...`, `--setRobustFit...`, `--stepSize`,
+`--setCrossingTolerance`), never parameters, data or toys. Fields left at their defaults stay out of the resolved
+configuration, so the hash of an existing run YAML in `versions/` does not change.
+
+## GoF of single variables (input validation)
+
+`input-gof` (`shapesmith.input_gof`, NN spec 7.1, NV1) tests the data against the prediction of one control variable in
+one region per card, with every nuisance of the run: the saturated GoF of `gof` on each card, the cards of every era,
+channel and variable in parallel (`combine.parallel` at a time), and the failure rule of the spec over all of them.
+
+- Inputs: `hist --control` with the variations (`--regions <region>` for a control region; it books the signal there
+  too) and `estimate --control`. Fill the variables in fine bins: the cards merge them.
+- Cards: `DIR/<region>/<era>/<channel>/<variable>/combined.txt` (+ `record.json`, `plot.png`), one bin with the signal and
+  every background of the channel (`datacards.collect_bin` in the region with explicit edges, `datacards.write_bins`:
+  lnN, shapes, no-op nuisances left out, the symmetrisation of the analysis, autoMCStats). The fine bins are merged to
+  bins of about equal total background (`equal_prediction_edges`): at most `--bins` bins with at least
+  `--min-prediction` events each; an integer variable (fine bins of width 1 around the integers) keeps one bin per value
+  with its sparse tails merged. The edges come from the nominal prediction, never from the data (data quantiles flatten
+  the data by construction and bias the statistic low). `--exclude` (regular expressions) leaves nuisances out, e.g. a
+  card variant without some shapes; a shape pair with a side whose sum is not positive after the symmetrisation is left
+  out of that process (`datacards.write_bins`: combine rejects its norm) and listed in `record.json`. A variable whose prediction fits into one bin (constant or
+  undefined in the region, e.g. the b pair under a b veto) gets no card: one bin tests the normalisation only.
+- GoF: workspace, observed statistic and `--toys` frequentist toys in one job per card, a seed per card
+  (`GOF_SEED` + crc32 of `<region>/<era>/<channel>/<variable>`), so that the toys of different cards are independent.
+  `combine.minimizer` applies to every fit; set a fallback such as `--cminFallbackAlgo Minuit2,Migrad,0:0.1`: with
+  combine's defaults a failed observed fit (Migrad status -1) is reported as it is (a statistic of 10^2-10^3) and the
+  frequentist toys are generated around it.
+  Neither the analytic minimization of the autoMCStats bin parameters (combine's default) nor the plain one
+  (`--X-rtd MINIMIZER_no_analytic`) converges on every card: `--alt-minimizer OPTIONS` computes the observed statistic of
+  every card also with OPTIONS added; a failed background-only fit leaves its minimum too high while the saturated fit
+  converges in both, so a card whose statistic is lower there by more than 0.1 runs its GoF again with OPTIONS
+  (`<card>/gof/minimizer.json`, used by its tail toys too; `alt_statistic` and `minimizer` in the results).
+- p-values: the fraction of toys at least as large as the observed statistic while at least 10 toys are (`p_toys`, with
+  its binomial error); below, toys cannot resolve thresholds like 0.05 / N, and the p-value is the tail of a scaled
+  chi-square s chi2(k) matched to the median and the 90 % quantile of the toys (`p_fit`, `chi2_sf` of the regularized
+  incomplete gamma function, exact to 1e-14 against scipy; quantiles, because a failed toy fit lies far in the tail).
+  From few toys the fitted quantiles are noisy (from 300 toys p_fit erred by up to a factor 14 at p ~ 1e-4): with
+  `--tail-toys N` every card below `--tail-below` (1e-3) gets toy jobs of 500 toys (seeds apart from its first toys,
+  continuing earlier tail toys) until it holds N toys, and its p-value comes from all of them; this runs combine also
+  with `--skip-combine`. The summary compares p_fit with p_toys wherever the toys resolve both
+  (`calibration`: mean and rms of the pulls (p_fit - p_toys) / error).
+- Failure rule: a variable fails with p < alpha / N in any test (N: every test of the summary) or with p < alpha in at
+  least two eras of one channel and region; the Kolmogorov-Smirnov test of all p-values against the uniform
+  distribution (`ks_uniform`; correlated tests make it approximate).
+- Summary: `DIR/input_gof.json` keeps the results of earlier runs into the same `DIR` (by card), so that the rule counts
+  the tests of every region and run YAML; `input_gof.md` (the verdict per variable, the p-values per region as a table
+  variable x channel and era) and `pvalues.pdf` (histogram and quantiles). `--skip-cards` reuses the cards of an earlier
+  run, `--skip-combine` its combine outputs.
+
+Building blocks of the same module for other validations: `flatness(data, prediction, ranges)` (data / prediction flat
+within each range, e.g. the working-point bins of a b-tag score: the prediction scaled to the data of the range, chi2 of
+bins of equal prediction and the slope across the range, optionally with shift templates as shape uncertainties),
+`shape_compatibility(first, second, shifts)` (two unit-sum shapes with their statistical covariances and the shifts of
+the second as d d^T, n - 1 degrees of freedom) and `merge_low_statistics(edges, histograms, min_effective)`.
+
 ## The analysis model
 
 Everything that differs by channel lives in its `Channel`: samples, cuts, processes, regions,
@@ -99,7 +246,8 @@ categories, control variables, variations and estimators.
   era's share of that luminosity (e.g. 2016preVFP in a 2016 measurement of both halves; 1 otherwise).
 - `Variable(name, expr, edges)`: fixed edges, or `EqualData(n_bins, low, high, cut)`, edges with equal data counts
   computed whenever histograms are filled, from the data of the category or, with `cut`, of that cut (common edges of
-  a pass and a fail category).
+  a pass and a fail category), or, for a category, `ScoreBinning(fine, rules | thesis, blinding, clip)`, edges that
+  `datacards` resolves from the nominal templates (see "Score categories").
 - `Process(name, group, role, plot_group, selection)`: role `data`, `signal`, `background` or
   `auxiliary` (booked in the nominal region only, for an estimator; never in datacards, plots or
   the ML export). A process owns its whole weight set.
@@ -120,9 +268,10 @@ categories, control variables, variations and estimators.
   variation `<name>Up%p` / `<name>Down%p` (`histogram.part_of`), e.g. one nuisance from CROWN
   shifts produced per decay mode (exact where no event is changed by two parts). Parts never
   become datacard shapes; place the sum after the estimators whose outputs should carry it.
-- `MLExportConfig(variables, processes, label_of, region_of)`: `ml-export` writes, per channel, the
-  `processes` the channel has as signal, background or estimator output (`exported(channel)`);
-  an estimator output is the data of its `region_of` region, which must not be the nominal one.
+- `MLExportConfig(variables, classes, class_of, region_of, identifiers, mc_only, subtraction, profile)`: `ml-export`
+  writes, per channel, the processes of `class_of` the channel has as signal, background or estimator output
+  (`exported(channel)`), each in its class (`classes` in order: the class index); an estimator output is the data of
+  its `region_of` region, which must not be the nominal one (see "ML export").
 - `Analysis.control_channels`: channels that `datacards` and `fit` put into every final state
   (each selected channel and `all`) but never make a final state themselves, e.g. a ttbar
   control channel fitted together with the signal channels; `ml-export` skips them.
@@ -146,6 +295,67 @@ histogram (elsewhere it equals the nominal). `DataMinus` builds its output for e
 variation of data or a subtracted process, taking the nominal of inputs that lack it; weight
 variations are not propagated, ABCD is nominal only. `--skip-systematics` skips weight and column
 variations. `hist` always refills the requested scopes and keeps the other histograms of its file.
+
+## Score categories (NN binning and blinding)
+
+A category whose variable has a `ScoreBinning` (e.g. an NN score) gets its edges in `datacards`, after `estimate`, from
+the nominal templates; data are never read for them (`shapesmith.nn_binning`, `shapesmith.score_bins`).
+
+- `hist` fills the `fine` edges (e.g. 1000 equal bins on [0, 1]) and, for the nominal histograms of every booked region,
+  the unweighted counts of the events with a non-zero weight under the variable `<name>%raw`
+  (`histogram.raw_variable`); `estimate` keeps them out of the estimators and gives a `DataMinus` or `ABCD` output
+  those of the data it is made of.
+- `rules` (`nn_binning.BinningRules`): the data-blind algorithm of the NN spec 6.3, by default its rule set C'
+  (2026-10-26). Start bins of equal signal (`start: signal`, `n_start` 50) or equal total background (`background`, 5)
+  in [`low`, upper fine edge] (`low` = 1/K for an argmax category of K classes), merged from the top until every bin has
+  a total background >= `min_background` (1), a relative statistical uncertainty of the total background <=
+  `max_rel_uncertainty` (0.50; background categories 0.10), >= `min_raw` (1) unweighted events of every group of
+  `required` (label -> background names, e.g. Top, tautau, jetFakes) whose share of the category's background (nominal
+  templates, scores >= `low`) is >= `raw_min_share` (0.10; 0: every group), and no template (signal, every background)
+  below -`negative_share` (0.01) times the bin's total background (0: none below 0; None: no such rule); at most
+  `max_bins` (15; background categories 5) bins, the rest (and the scores below `low`) in the lowest accepted bin, one
+  bin where none passes. The rules before C' are `max_rel_uncertainty=0.3, raw_min_share=0, negative_share=0`.
+  `nn_binning.resolve_edges(fine_edges, signal_sumw, {name: (sumw, sumw2, raw_count)}, rules) -> edges` is the pure
+  numpy function (`resolve` adds the record, `Resolution.record()` its JSON form), `category_rules(n_classes, signal,
+  required)` the rules of an HH or a background category (`SIGNAL_RULES`, `BACKGROUND_RULES`).
+- `thesis` (start edges, e.g. `nn_binning.THESIS_HH_EDGES`): the fine bins rebinned to them, then the AutoRebin of the
+  master's thesis on the total background (`nn_binning.auto_rebin`, CombineHarvester's `AutoRebin` with
+  SetBinThreshold(1.0), SetBinUncertFraction(0.9), SetRebinMode(1); tested against CombineHarvester).
+- `clip`: processes whose negative bins left after the rebinning are set to zero (each template keeps its integral,
+  nominal and variations); the outputs of estimators that clip (`ABCD`, `DataMinus(clip_negative=True)`) are clipped
+  there too instead of in their fine bins. Every clipped bin is listed under `clipped` in `template_changes.json`.
+- `blinding` (S/B(mu=1), 0.005 for N14): the bins from the first one with S/B above it (nominal templates, final
+  edges) become the card channel `htt_<channel>_<k>hi_<era>` with `data_obs` = the sum of its background templates
+  (Asimov), the bins below `htt_<channel>_<k>lo_<era>` with the data; no lo channel if the first bin is above, one
+  unsplit channel if no bin is.
+
+`datacards` writes per card `nn_binning.json` (per channel and category: method, rules, the share of every raw-count
+group and the groups exempt from its rule, start and final edges, per bin the signal, background, uncertainty, raw
+counts and failed rules, the blinding edge and S/B per bin, the card bins)
+and `blinding.json`, the contract with every fit and limit:
+
+```json
+{"edge_rule": "S/B(mu=1) > 0.005", "masked": ["htt_mt_1hi_2018"],
+ "categories": {"htt_mt_1hi_2018": {"lo": "htt_mt_1lo_2018", "edge": 0.912, "s_over_b_first_hi_bin": 0.0071}},
+ "asimov_data": true}
+```
+
+`masked` lists exactly the card bins with Asimov `data_obs`: a fit or limit on real data sets `mask_<bin>=1` for each,
+a prefit Asimov fit (`-t -1`) needs none. A card without a category with `blinding` has no `blinding.json` (a stale
+one is removed): nothing is masked; one whose categories have no bin above the threshold has `"masked": []`. The fits
+read it as described in "Limits and statistical checks" (`masking.py`). `datacards.bin_categories(analysis)` maps
+every possible card bin, the lo/hi parts included, to its channel and category (the summaries of the background-only
+fits of a run and of a combination). A card bin leaves out a process whose nominal sum on its bins is not positive
+(combine rejects its norm; `score_bins.card_processes`), lists it under `left_out_processes` in `template_changes.json`
+and logs it, at WARNING when the sum is negative. `plot` and the yields of `publish` show a score category in the bins
+of its card, each part (the category, or its lo and hi part) without the processes its card bin leaves out (logged as
+by `datacards`), with the prediction in place of the data in the blinded bins (shaded in the plot); the plot draws these
+bins with equal widths, in events per bin, with the edges as tick labels (`plotting.style.card_bin_axis`; with
+`--normalize-by-bin-width` as dN/dx on the score axis). Not blinded: `sync` writes the fine bins with the full data,
+and `shapes.root` holds the data of every bin, its index `shapes.json` the sum of every histogram (none of them is read
+by combine). `plot --control` of a score variable over every event (e.g. the NN score in the inclusive category) shows
+the data of every event its expression keeps: an analysis blinds it there (the bbtautau analysis moves the events of
+its signal category in the nominal region below the axis).
 
 ## Skims
 
@@ -174,6 +384,41 @@ variations and friends serves every subset. Incompatible skims are listed togeth
 in place is not detected). The manifest is written before the first file of a sample and after
 every finished file, so an interrupted skim resumes with only the unfinished files. Parquet
 files and manifests are replaced atomically.
+
+## ML export
+
+`ml-export` writes the training data of a run (`ml_dir`): per exported channel one flat Feather file
+`<ml_dir>/<channel>/events.feather`, one row per event and exported process, and `<ml_dir>/classes.json`. The rows
+are the selected events of every process of `MLExportConfig.class_of` in the nominal region, in its order; an
+estimator output is the data of its `region_of` region with that region's weights (e.g. the fake factor) times the
+scale of its `DataMinus`. With `subtraction` (default) the processes a `DataMinus` output subtracts follow, in its
+region, with negated weights, in the class of the output (`is_subtraction`): the output's rows then add up to its
+estimate. `--workers` loads the processes in parallel; the row order does not depend on it. The skims of a channel
+hold the columns of the export (`skim.needed_columns`), except in a control channel, which is never exported.
+
+| Column | Type | Content |
+|---|---|---|
+| identifiers (`MLExportConfig.identifiers`, e.g. `run`, `lumi`, `event`) | as in the n-tuple (e.g. uint32, uint32, uint64) | the event; (`era`, `channel`, `sample_nick`, identifiers) is its key |
+| `era`, `channel`, `sample_nick`, `process` | category (dictionary-encoded string) | `process`: the exported process or estimator output; of a subtraction row the subtracted process |
+| `row` | int64 | the position in the file (0, 1, ...): (`era`, `channel`, `row`) is unique |
+| `class_index` | int8 | the position of the class in `classes` |
+| `weight` | float64 | the event weight with its sign (normalisation, luminosity, every process and region weight) |
+| `is_subtraction` | bool | a subtraction row |
+| `thesis_training` | bool | the training half of a parity fold in the previous smhtt_ul export: the pattern True, True, False, False over the rows of each process (its `fold<k>_training` of K folds was `event % K == (k + 1) % K` and `thesis_training`) |
+| the variables (`MLExportConfig.variables`) | float32 | the column, or the expression of a channel or category variable of that name; NaN for an `mc_only` variable in data and embedded rows |
+
+There are no folds and no class weights in the files: a trainer takes its folds from the event number (`event % n`
+on uint64) and its class weights from `weight`. `classes.json`: `profile`, `classes` (in class-index order),
+`variables`, `mc_only`, `identifiers`, `regions` (`region_of`), `eras`, and per channel `processes` (class -> its
+exported processes) and `subtraction` (estimator output -> the subtracted processes). A second export into the same
+`ml_dir` must have the same class scheme (it adds its channels and eras), else it fails. The log lists the rows and the
+signed weight of every class and warns about event keys that occur more than once.
+
+`ml-merge` (one run YAML per era, or one run YAML with `--era` per era, like `combine`) concatenates the files of
+every era's `ml_dir` per channel into `DIR/<channel>/events.feather` (the eras one after the other, `row` that of its
+era) and writes `DIR/classes.json` with the eras and, per channel and class, the processes of any era. The eras must
+have the same class scheme and the requested channels, and no era may occur twice. Weights keep the luminosity of
+their era. The provenance records of each era (`versions/`) are copied to `DIR/versions/<era>/`.
 
 ## Samples
 
@@ -262,7 +507,7 @@ output_dir: output/TAG
 ml_dir: /ceph/USER/shapesmith_ml/TAG
 workers: 16
 log_level: INFO                           # DEBUG | INFO | WARNING | ERROR
-combine: {cmssw_dir: /work/USER/CMSSW_14_1_9, scram_arch: el9_amd64_gcc12}
+combine: {cmssw_dir: /work/USER/CMSSW_14_1_9, scram_arch: el9_amd64_gcc12}   # + fit options, see "Limits and statistical checks"
 web: {dir: /web/USER/public_html/TAG, variant: emb_ff, label: "embedding + FF"}   # shapesmith publish
 ```
 
@@ -291,7 +536,10 @@ number (`era: 2018`, `-s era=2017`) is read as text.
 ## Notes
 
 - Expressions (cuts, weights, variables) are pandas `eval` syntax on ntuple columns, evaluated
-  with numexpr: `(pt_1 > 25) & (abs(eta_1) < 2.1)`, `id_wgt_tau_1 * trg_wgt`.
+  with numexpr: `(pt_1 > 25) & (abs(eta_1) < 2.1)`, `id_wgt_tau_1 * trg_wgt`; the functions of numexpr including
+  `floor` and `ceil`. An expression numexpr cannot evaluate (an opcode it lacks, or a long expression on float32
+  columns beyond its inputs and registers: pandas passes every literal as a float32 constant there) falls back to the
+  python engine.
 - The edges of a variable are numbers or `EqualData(n_bins, low, high)`: `n_bins` bins with equal
   data counts in (low, high), as smhtt_ul `gof/build_binning.py` (`binning.py`). Every fill
   (`hist`, a measurement) computes them from the data of the category in the nominal region, uses
@@ -305,3 +553,5 @@ number (`era: 2018`, `-s era=2017`) is read as text.
   `if __name__ == "__main__":` guard; `--workers 1` runs everything inline for debugging.
 - `tests/golden/` holds the mini-dataset outputs of core `aa5daa5`; the rebuilt core reproduces
   them bitwise (`tests/test_golden.py`).
+- `shapesmith.readme_check.problems(text, app)` lists the `shapesmith` commands and options a text names that the CLI
+  lacks (`tests/test_readme.py` for this README; an analysis checks its own README and run YAML comments with it).

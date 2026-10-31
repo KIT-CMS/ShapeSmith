@@ -10,6 +10,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Literal, Mapping, get_args
 
+from shapesmith.nn_binning import BinningRules
+
 if TYPE_CHECKING:
     from shapesmith.measurements import Measurement
 
@@ -105,10 +107,32 @@ class EqualData:
 
 
 @dataclass(frozen=True)
+class ScoreBinning:
+    """Edges that `datacards` resolve after `estimate` from the nominal templates, never from data (nn_binning.py),
+    e.g. of an NN score: `hist` fills the `fine` edges and, for the nominal histograms, the unweighted event counts
+    (histogram.raw_variable). With `rules` the data-blind algorithm merges the fine bins; with `thesis` they are
+    rebinned to those start edges and the AutoRebin of the master's thesis merges them. With `blinding`, the bins from
+    the first one with S/B(mu=1) above it become a card channel of their own with Asimov data (datacards, N14); None:
+    no split. `clip`: processes whose negative bins left after the rebinning are set to zero, keeping the integral of
+    each template (besides the estimator outputs that clip, whose clipping waits for the rebinning here)."""
+
+    fine: tuple[float, ...]
+    rules: BinningRules | None = None
+    thesis: tuple[float, ...] | None = None
+    blinding: float | None = None
+    clip: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
 class Variable:
     name: str
     expr: str
-    edges: tuple[float, ...] | EqualData
+    edges: tuple[float, ...] | EqualData | ScoreBinning
+
+    @property
+    def fill_edges(self) -> tuple[float, ...] | EqualData:
+        """The edges `hist` fills: the fine edges of a ScoreBinning, else `edges`."""
+        return self.edges.fine if isinstance(self.edges, ScoreBinning) else self.edges
 
 
 @dataclass(frozen=True)
@@ -281,18 +305,59 @@ class Style:
 
 @dataclass(frozen=True)
 class MLExportConfig:
+    """What `ml-export` writes (ml_export.py): one row per event of the exported processes with its class.
+
+    `class_of` maps every exported process or estimator output to one of `classes`, whose order is the class index.
+    `variables` are columns or the names of channel or category variables (their expressions); `mc_only` among them
+    exist for simulated samples only (generator truth) and are NaN in the rows of data and embedded processes.
+    `identifiers` are copied with their n-tuple types. With `subtraction`, an exported DataMinus output also brings the
+    processes it subtracts, in its region with negative weights (rows flagged is_subtraction)."""
+
     variables: tuple[str, ...]
-    processes: tuple[str, ...]
-    label_of: Mapping[str, str]
+    classes: tuple[str, ...]
+    class_of: Mapping[str, str]
     region_of: Mapping[str, str] = field(default_factory=dict)
-    fold_column: str = "event"
-    folds: int = 2
+    identifiers: tuple[str, ...] = ("event",)
+    mc_only: tuple[str, ...] = ()
+    subtraction: bool = True
+    profile: str = ""  # the name of the class scheme, recorded in classes.json
+
+    def __post_init__(self):
+        for name in ("class_of", "region_of"):
+            object.__setattr__(self, name, _frozen(getattr(self, name)))
+
+    @property
+    def processes(self) -> tuple[str, ...]:
+        """The exported processes and estimator outputs, in the order of `class_of`."""
+        return tuple(self.class_of)
+
+    def class_index(self, name: str) -> int:
+        return self.classes.index(self.class_of[name])
 
     def exported(self, channel: Channel) -> tuple[str, ...]:
         """The processes a channel exports: those of `processes` that are its signal or background processes or
         estimator outputs; a name the channel lacks (e.g. a process of another channel) is left out there."""
         own = {p.name for p in channel.processes if p.role == "signal"} | set(channel.backgrounds())
         return tuple(name for name in self.processes if name in own)
+
+    def columns(self, kind: str) -> tuple[str, ...]:
+        """The variables a process of a sample kind has: without `mc_only` for data and embedding."""
+        return tuple(v for v in self.variables if kind == "mc" or v not in self.mc_only)
+
+
+@dataclass(frozen=True)
+class CrossSection:
+    """The cross section that the signal strength r scales: limits in its unit are r x value_fb. `name` is the process
+    as every output names it (e.g. "ggF HH": sigma(ggF HH)); the limit on the cross section freezes its
+    `theory_nuisances` (scale, PDF, m_t of the prediction) at 0 and keeps the acceptance and shape uncertainties."""
+
+    name: str
+    value_fb: float
+    theory_nuisances: tuple[str, ...] = ()
+
+    @property
+    def quantity(self) -> str:
+        return f"sigma({self.name})"
 
 
 @dataclass(frozen=True)
@@ -316,6 +381,11 @@ class Analysis:
     # the asymmetry above which a pair of symmetrised_variations is symmetrised: the larger relative yield effect of Up
     # and Down over the smaller one
     asymmetry_ratio: float = 2.0
+    signal_cross_section: CrossSection | None = None  # limits also on the cross section (limits.py); None: on r only
+    # the columns that identify an event (e.g. run, lumi, event): every data and embedding sample is read without the
+    # skim rows that repeat the event of an earlier row of the sample, in file order (events.read_events), e.g. an event
+    # that two n-tuple files of a sample both hold; the skims of these samples keep the columns. (): every row
+    event_key: tuple[str, ...] = ()
 
     def channel(self, name: str) -> Channel:
         return self.channels[name]
