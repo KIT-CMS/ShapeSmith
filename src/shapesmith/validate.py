@@ -1,8 +1,13 @@
 """Consistency checks of an Analysis; every problem is collected and reported at once."""
 from __future__ import annotations
 
+import math
+
 from shapesmith.histogram import part_of
-from shapesmith.model import ABCD, NOMINAL, ROLES, SAMPLE_KINDS, Analysis, AnalysisError, Channel, ColumnVariation, DataMinus, EqualData, ScoreBinning, TemplateShift, VariationSum, WeightVariation
+from shapesmith.model import (
+    ABCD, NOMINAL, ROLES, SAMPLE_KINDS, Analysis, AnalysisError, Channel, ColumnVariation, DataMinus, EqualData, QuadratureSum, ScoreBinning, TemplateShift, VariationSum,
+    WeightVariation,
+)
 
 
 def _duplicates(what: str, names: list[str]) -> list[str]:
@@ -46,11 +51,29 @@ def _region_problems(channel: Channel) -> list[str]:
     return problems
 
 
+def _share_a_sample(a, b) -> bool:
+    """Whether the samples of some kind and group can carry both variations."""
+    if not set(a.applies_to) & set(b.applies_to):
+        return False
+    groups = [v.groups for v in (a, b) if isinstance(v, ColumnVariation) and v.groups is not None]
+    return len(groups) < 2 or bool(set(groups[0]) & set(groups[1]))
+
+
+def _duplicate_variations(channel: Channel) -> list[str]:
+    """Variations of one name that a sample kind and group can both carry; column variations of disjoint groups may
+    share a name (one nuisance read from differently named shifts)."""
+    by_name: dict[str, list] = {}
+    for variation in channel.variations:
+        by_name.setdefault(variation.name, []).append(variation)
+    clashing = [name for name, same in by_name.items() if any(_share_a_sample(a, b) for i, a in enumerate(same) for b in same[i + 1:])]
+    return [f"duplicate variation {name}" for name in sorted(clashing)]
+
+
 def _variation_problems(channel: Channel, region_names: set[str]) -> list[str]:
     weights = _weight_names(channel)
     groups = {s.group for s in channel.samples}
     names = [v.name for v in channel.variations]
-    problems = _duplicates("variation", names)
+    problems = _duplicate_variations(channel)
     for variation in channel.variations:
         partner = _partner(variation.name)
         if partner is not None and partner not in names:
@@ -63,6 +86,8 @@ def _variation_problems(channel: Channel, region_names: set[str]) -> list[str]:
             problems += [f"variation {variation.name}: replaces unknown weight {w}" for w in variation.replace_weights if w not in weights]
         elif bool(variation.suffix) == bool(variation.derived):
             problems.append(f"variation {variation.name}: needs exactly one of suffix and derived")
+        elif variation.required and not variation.suffix:
+            problems.append(f"variation {variation.name}: required columns need a suffix (the shifted branches of a production)")
     return problems
 
 
@@ -70,6 +95,9 @@ def _estimator_problems(channel: Channel, region_names: set[str]) -> list[str]:
     roles = {p.name: p.role for p in channel.processes}
     problems = _duplicates("estimator output", [f"{e.output} in {e.target}" for e in channel.estimators if isinstance(e, (DataMinus, ABCD))])
     column_variations = {v.name for v in channel.variations if isinstance(v, ColumnVariation)}
+    variations = {v.name for v in channel.variations}
+    sums = [e.name for e in channel.estimators if isinstance(e, (VariationSum, QuadratureSum))]
+    problems += _duplicates("summed variation", sums)
     for estimator in channel.estimators:
         if isinstance(estimator, TemplateShift):
             problems += [f"template shift {estimator.name}: unknown process {name}" for name in (estimator.process, estimator.template) if name not in roles]
@@ -79,8 +107,18 @@ def _estimator_problems(channel: Channel, region_names: set[str]) -> list[str]:
                 problems.append(f"variation sum {estimator.name}: the name carries a direction")
             if not estimator.parts:
                 problems.append(f"variation sum {estimator.name}: no parts")
-            parts = [part_of(f"{estimator.name}{d}", p) for p in estimator.parts for d in ("Up", "Down")]
+            if not math.isfinite(estimator.scale) or estimator.scale == 0.0:
+                problems.append(f"variation sum {estimator.name}: the scale must be finite and not 0")
+            parts = [part_of(f"{estimator.source or estimator.name}{d}", p) for p in estimator.parts for d in ("Up", "Down")]
             problems += [f"variation sum {estimator.name}: part {part} is not a column variation" for part in parts if part not in column_variations]
+            continue
+        if isinstance(estimator, QuadratureSum):
+            if _partner(estimator.name) is not None:
+                problems.append(f"quadrature sum {estimator.name}: the name carries a direction")
+            if not estimator.parts:
+                problems.append(f"quadrature sum {estimator.name}: no parts")
+            parts = [part_of(estimator.name, p) for p in estimator.parts]
+            problems += [f"quadrature sum {estimator.name}: part {part} is not a variation" for part in parts if part not in variations]
             continue
         regions = (estimator.region, estimator.target) if isinstance(estimator, DataMinus) else (estimator.b, estimator.c, estimator.d, estimator.target)
         problems += [f"estimator {estimator.output}: region {r} does not exist" for r in regions if r not in region_names]
@@ -193,7 +231,7 @@ def validate(analysis: Analysis) -> None:
     processes = {p.name: p.role for channel in analysis.channels.values() for p in channel.processes}
     problems += [f"control channel {name} is not a channel of the analysis" for name in analysis.control_channels if name not in analysis.channels]
     varied = {v.name for channel in analysis.channels.values() for v in channel.variations}
-    varied |= {f"{e.name}{d}" for channel in analysis.channels.values() for e in channel.estimators if isinstance(e, (TemplateShift, VariationSum)) for d in ("Up", "Down")}
+    varied |= {f"{e.name}{d}" for channel in analysis.channels.values() for e in channel.estimators if isinstance(e, (TemplateShift, VariationSum, QuadratureSum)) for d in ("Up", "Down")}
     problems += [f"lnN variation {name}: no variations {name}Up and {name}Down" for name in analysis.lnn_variations if not {f"{name}Up", f"{name}Down"} <= varied]
     if analysis.signal is not None and processes.get(analysis.signal) != "signal":
         problems.append(f"signal {analysis.signal} is not a process with the role signal")

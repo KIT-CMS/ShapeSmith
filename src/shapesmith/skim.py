@@ -14,10 +14,15 @@ n-tuples of its era; its normalisation carries its share of the analysis luminos
 Base: a sample is read from the base of its kind (ntuples.bases, else ntuples.base); a kind with its own base records it
 in the contract (ntuple_base), so that a skim of another production is not reused for it.
 Checks, per file, where the channel declares CROWN shifts for the sample (its kind and group): every declared shift
-has a shifted branch, and every shifted branch `c__X` of a needed column has a declared suffix `__X`.
+has a shifted branch, and every shifted branch `c__X` of a needed column has a declared suffix `__X`. The columns a
+shift requires (ColumnVariation.required) must exist shifted where the sample reads them in a region of the shift:
+a friend produced without the shift fails here instead of entering nominal under it.
+Declared-only shifts (ColumnVariation.regions = (), model.declared_only): the shifts of a production that are no
+nuisance. Their suffix is declared for the check above, and a file must hold some branch with it, but no shifted
+column is read, no event is kept for them and the contract does not record them.
 Reuse: a stored skim serves when its skim cuts, normalisation, sample cut, n-tuple era and n-tuple base are equal, its
-column variations and friends contain the current ones and its Parquet schema holds the needed columns; see
-reuse_problems.
+column variations and friends contain the current ones and its Parquet schema holds the needed columns and the shifted
+columns the shifts require (a skim made from a friend without the shifts does not serve); see reuse_problems.
 """
 from __future__ import annotations
 
@@ -36,7 +41,7 @@ from shapesmith.events import UNIQUE_KINDS, select
 from shapesmith.expressions import columns_in, columns_of, mask, shift
 from shapesmith.ml_export import variable_columns
 from shapesmith.model import (
-    NOMINAL_REGION, Analysis, Channel, ColumnVariation, EqualData, MLExportConfig, Sample, WeightVariation, applies,
+    NOMINAL_REGION, Analysis, Channel, ColumnVariation, EqualData, MLExportConfig, Sample, WeightVariation, applies, declared_only,
 )
 from shapesmith.ntuples import NtupleFile, describe, discover, friend_bases, read_ntuple
 from shapesmith.parallel import run_jobs
@@ -60,7 +65,26 @@ class SkimResult:
 
 
 def column_variations(channel: Channel, sample: Sample) -> list[ColumnVariation]:
+    """Every column variation declared for the sample, the declared-only ones included."""
     return [v for v in channel.variations if isinstance(v, ColumnVariation) and applies(v, sample.kind, sample.group)]
+
+
+def read_variations(channel: Channel, sample: Sample) -> list[ColumnVariation]:
+    """The column variations of the sample whose columns and events the skim holds: all but the declared-only ones."""
+    return [v for v in column_variations(channel, sample) if not declared_only(v)]
+
+
+def region_columns(channel: Channel, sample: Sample, regions: tuple[str, ...] | None) -> set[str]:
+    """The columns the histograms of the sample's processes read in the regions (None: every region): the cuts and
+    weights of each process there, the skim cuts and every category and variable."""
+    chosen = [region for region in (NOMINAL_REGION, *channel.regions) if regions is None or region.name in regions]
+    exprs = [*channel.skim.values(), *(c.cut for c in channel.categories), *(c.variable.expr for c in channel.categories), *(v.expr for v in channel.variables.values())]
+    for process in channel.processes:
+        if process.group == sample.group:
+            for region in chosen:
+                cuts, weights = select(channel, process, region)
+                exprs += cuts + weights
+    return columns_of(exprs)
 
 
 def needed_columns(channel: Channel, sample: Sample, ml: MLExportConfig | None = None, event_key: tuple[str, ...] = ()) -> set[str]:
@@ -70,7 +94,7 @@ def needed_columns(channel: Channel, sample: Sample, ml: MLExportConfig | None =
     exprs = [*channel.skim.values(), *(c.cut for c in channel.categories), *(c.variable.expr for c in channel.categories)]
     exprs += [c.variable.edges.cut for c in channel.categories if isinstance(c.variable.edges, EqualData) and c.variable.edges.cut]
     exprs += [variable.expr for variable in channel.variables.values()]
-    exprs += [expr for variation in column_variations(channel, sample) for expr in variation.derived.values()]
+    exprs += [expr for variation in read_variations(channel, sample) for expr in variation.derived.values()]
     for process in channel.processes:
         if process.group != sample.group:
             continue
@@ -91,19 +115,47 @@ def needed_columns(channel: Channel, sample: Sample, ml: MLExportConfig | None =
     return columns
 
 
+def required_shifted(channel: Channel, sample: Sample) -> dict[str, list[str]]:
+    """Variation name -> the shifted columns `c + suffix` the sample must hold for it: every column the variation
+    requires that the sample reads in a region of the variation (ColumnVariation.required). Only the variations with
+    such columns are listed."""
+    result = {}
+    read: dict[tuple[str, ...] | None, set[str]] = {}  # regions -> the columns read there, the same for most shifts
+    for variation in read_variations(channel, sample):
+        if not (variation.required and variation.suffix):
+            continue
+        if variation.regions not in read:
+            read[variation.regions] = region_columns(channel, sample, variation.regions)
+        columns = sorted(c + variation.suffix for c in variation.required if c in read[variation.regions])
+        if columns:
+            result[variation.name] = columns
+    return result
+
+
 def exported_by(analysis: Analysis, channel: Channel) -> MLExportConfig | None:
     """The ML export configuration whose columns a channel's skims hold: none in a control channel."""
     return None if channel.name in analysis.control_channels else analysis.ml
 
 
 def check_shifts(channel: Channel, sample: Sample, columns: set[str], branches: set[str]) -> None:
-    """Both directions of the declared CROWN shifts, on one file; nothing is checked for a sample without any."""
-    declared = {v.suffix: v.name for v in column_variations(channel, sample) if v.suffix}
-    if not declared:
+    """Both directions of the declared CROWN shifts, on one file; nothing is checked for a sample without any. A
+    shift that is read needs a shifted branch of a needed column and its required columns shifted where a region of
+    the shift reads them (required_shifted); a declared-only one needs some branch with its suffix (its column may be
+    one the sample does not read)."""
+    variations = [v for v in column_variations(channel, sample) if v.suffix]
+    if not variations:
         return
-    problems = [f"declared shift {name} ({suffix}) has no shifted branch" for suffix, name in declared.items() if not any(c + suffix in branches for c in columns)]
+    required = required_shifted(channel, sample)
+    problems = []
+    for variation in variations:
+        name, suffix = variation.name, variation.suffix
+        present = any(branch.endswith(suffix) for branch in branches) if declared_only(variation) else any(c + suffix in branches for c in columns)
+        if not present:
+            problems.append(f"declared shift {name} ({suffix}) has no shifted branch")
+        missing = [column for column in required.get(name, ()) if column not in branches]
+        problems += [f"declared shift {name} ({suffix}): the required column {column.removesuffix(suffix)} has no shifted branch" for column in missing]
     found = {"__" + branch.split("__", 1)[1] for branch in branches if "__" in branch and branch.split("__", 1)[0] in columns}
-    problems += [f"undeclared shift {suffix}" for suffix in sorted(found - set(declared))]
+    problems += [f"undeclared shift {suffix}" for suffix in sorted(found - {v.suffix for v in variations})]
     if problems:
         raise ValueError("; ".join(problems))
 
@@ -112,7 +164,7 @@ def skim_one(ntuple: NtupleFile, sample: Sample, channel: Channel, columns: set[
     """Read one file, keep the events that pass the skim cuts under any variation and the sample cut, add the
     bookkeeping columns and write Parquet. Every column in `columns` must exist; `optional` ones may be absent."""
     start = time.monotonic()
-    variations = column_variations(channel, sample)
+    variations = read_variations(channel, sample)
     shifted = {column + v.suffix for v in variations if v.suffix for column in columns}
     frame, metadata, branches = read_ntuple(ntuple, columns | shifted, set(optional) | shifted)
     read = time.monotonic() - start
@@ -171,9 +223,12 @@ def contract(config: RunConfig, channel: Channel, sample: Sample, columns: set[s
         result["ntuple_era"] = sample.era
     if sample.kind in config.ntuples.bases:  # only a kind with its own base, so that the skims of a single base stay reusable
         result["ntuple_base"] = config.ntuples.base_of(sample.kind)
-    variations = {v.name: v.suffix or dict(v.derived) for v in column_variations(channel, sample)}
+    variations = {v.name: v.suffix or dict(v.derived) for v in read_variations(channel, sample)}
     if variations:
         result["column_variations"] = variations
+    required = sorted(column for columns in required_shifted(channel, sample).values() for column in columns)
+    if required:
+        result["required_shifted"] = required
     friends = friend_bases(config.ntuples, sample.kind, channel.name)
     if friends:
         result["friends"] = friends
@@ -193,6 +248,9 @@ def reuse_problems(stored: dict, expected: dict, stored_columns: set[str]) -> li
     columns = sorted(set(expected["required_columns"]) - stored_columns)
     if columns:
         problems.append(f"columns missing: {', '.join(columns[:10])}{' ...' if len(columns) > 10 else ''}")
+    shifted = sorted(set(expected.get("required_shifted", [])) - stored_columns)
+    if shifted:
+        problems.append(f"required shifted columns missing: {', '.join(shifted[:10])}{' ...' if len(shifted) > 10 else ''}")
     return problems
 
 

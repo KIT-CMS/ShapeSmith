@@ -44,13 +44,13 @@ def on_template(variation: str, template: str) -> str:
 
 
 def part_of(variation: str, part: str) -> str:
-    """The name of the part `part` of the summed variation `variation` (a VariationSum). It ends in the part's name,
-    so datacards and template shifts never read it."""
+    """The name of the part `part` of the summed variation `variation` (of a VariationSum with its direction, of a
+    QuadratureSum without one). It ends in the part's name, so datacards and template shifts never read it."""
     return f"{variation}{PART_SEPARATOR}{part}"
 
 
 def is_part(variation: str) -> bool:
-    """A part of a summed variation: an input of the VariationSum, never written to a shapes file."""
+    """A part of a summed variation: an input of a VariationSum or QuadratureSum, never written to a shapes file."""
     return PART_SEPARATOR in variation
 
 

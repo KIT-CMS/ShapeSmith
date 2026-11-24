@@ -7,9 +7,11 @@ ABCD: (data - MC)(B) * (data - MC)(C).sum() / (data - MC)(D).sum(), nominal only
 Both write their output to their target region (the nominal one by default, or e.g. a diagnostic region).
 TemplateShift: `process` +/- `fraction` * `template`, e.g. the ttbar contamination of the embedded sample; also on top of
 every template variation of `process`.
-VariationSum: `name`Up/Down = nominal + the sum of (part - nominal) over its parts, for every histogram with a part;
-place it after the estimators whose outputs should get the summed variation (DataMinus builds its output for the
-parts as for any column variation).
+VariationSum: `name`Up/Down = nominal + scale * the sum of (part - nominal) over its parts, for every histogram with a
+part; place it after the estimators whose outputs should get the summed variation (DataMinus builds its output for the
+parts as for any column variation). With `source` it reads the parts of another summed variation.
+QuadratureSum: `name`Up/Down = nominal +/- sqrt(sum of (part - nominal)^2) per bin over its parts (templates without a
+direction), Down clipped at zero.
 ScoreBinning categories: the outputs of DataMinus (with clip_negative) and ABCD are not clipped in their fine bins,
 datacards clip them after the rebinning; the unweighted counts (histogram.raw_variable) stay out of the estimators,
 and every DataMinus or ABCD output gets those of the data it is made of (DataMinus: its region, ABCD: region b).
@@ -21,8 +23,10 @@ from collections import defaultdict
 
 from dataclasses import replace
 
+import numpy as np
+
 from shapesmith.histogram import NOMINAL_VARIATION, HistKey, Histogram, HistogramSet, is_raw, is_template, on_template, part_of
-from shapesmith.model import ABCD, NOMINAL, Analysis, Channel, ColumnVariation, DataMinus, ScoreBinning, TemplateShift, VariationSum
+from shapesmith.model import ABCD, NOMINAL, Analysis, Channel, ColumnVariation, DataMinus, QuadratureSum, ScoreBinning, TemplateShift, VariationSum
 
 logger = logging.getLogger(__name__)
 
@@ -133,26 +137,49 @@ def estimate_template_shift(hset: HistogramSet, channel: Channel, estimator: Tem
 
 
 def estimate_variation_sum(hset: HistogramSet, channel: Channel, estimator: VariationSum) -> list[HistKey]:
-    """The summed variation of every nominal histogram of the channel that has a part; the variances stay the
-    nominal ones."""
+    """The summed variation of every nominal histogram of the channel that has a part (of `source`, by default its
+    own): the nominal plus `scale` times the summed differences; the variances stay the nominal ones."""
     added = []
+    source = estimator.source or estimator.name
     for key in hset.select(channel=channel.name, variation=NOMINAL_VARIATION):
         for direction in ("Up", "Down"):
             name = f"{estimator.name}{direction}"
-            parts = [replace(key, variation=part_of(name, part)) for part in estimator.parts]
+            parts = [replace(key, variation=part_of(f"{source}{direction}", part)) for part in estimator.parts]
             parts = [part for part in parts if part in hset]
             if not parts:
                 continue
             nominal = hset[key]
             varied = nominal.copy()
             for part in parts:
-                varied.values += hset[part].values - nominal.values
+                varied.values += estimator.scale * (hset[part].values - nominal.values)
             hset[replace(key, variation=name)] = varied
             added.append(replace(key, variation=name))
     return added
 
 
-ESTIMATES = {DataMinus: estimate_data_minus, ABCD: estimate_abcd, TemplateShift: estimate_template_shift, VariationSum: estimate_variation_sum}
+def estimate_quadrature_sum(hset: HistogramSet, channel: Channel, estimator: QuadratureSum) -> list[HistKey]:
+    """`name`Up/Down of every nominal histogram of the channel that has a part: per bin the nominal plus and minus
+    the root of the summed squared differences of its parts, Down clipped at zero; the variances stay the nominal ones."""
+    added = []
+    for key in hset.select(channel=channel.name, variation=NOMINAL_VARIATION):
+        parts = [replace(key, variation=part_of(estimator.name, part)) for part in estimator.parts]
+        parts = [part for part in parts if part in hset]
+        if not parts:
+            continue
+        nominal = hset[key]
+        width = np.sqrt(sum((hset[part].values - nominal.values) ** 2 for part in parts))
+        for direction, sign in (("Up", 1.0), ("Down", -1.0)):
+            varied = nominal.copy()
+            varied.values = np.clip(nominal.values + sign * width, 0.0, None)
+            hset[replace(key, variation=f"{estimator.name}{direction}")] = varied
+            added.append(replace(key, variation=f"{estimator.name}{direction}"))
+    return added
+
+
+ESTIMATES = {
+    DataMinus: estimate_data_minus, ABCD: estimate_abcd, TemplateShift: estimate_template_shift, VariationSum: estimate_variation_sum,
+    QuadratureSum: estimate_quadrature_sum,
+}
 
 
 def raw_counts_of_outputs(raw: dict[HistKey, Histogram], channel: Channel) -> dict[HistKey, Histogram]:

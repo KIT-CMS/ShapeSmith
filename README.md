@@ -257,17 +257,30 @@ categories, control variables, variations and estimators.
   `ColumnVariation(name, suffix | derived, applies_to, regions, groups)`: a column variation reads
   column `c` as `c + suffix` where that branch exists (a CROWN shift), or replaces it by
   `derived[c]`, an expression of nominal columns; `groups` restricts it to the samples of some
-  groups (a CROWN shift produced for some samples only). Names ending in `Up`/`Down` need their
-  partner and become datacard shapes; other names are templates.
+  groups (a CROWN shift produced for some samples only); column variations of disjoint groups may
+  share a name (one nuisance read from differently named shifts, e.g. for samples borrowed from
+  another era). Names ending in `Up`/`Down` need their
+  partner and become datacard shapes; other names are templates. `regions=()` only declares a
+  CROWN shift (a shift of the production that is no nuisance): the skim accepts its shifted
+  branches and demands that a file has some, but reads none of them, and nothing is filled or
+  written to a datacard. `required` names columns that must exist shifted wherever a region of
+  the variation reads them (the columns of a friend that has to be produced with the shift);
+  the skim fails on a missing one instead of reading the nominal column under the shift.
 - Estimators, run in order by `estimate`: `DataMinus(output, region, subtract, scale,
   clip_negative, target)`, `ABCD(output, b, c, d, subtract, target)`, both writing their output to
   the region `target` (default the nominal one; e.g. QCD in a diagnostic region),
   `TemplateShift(name, process, template, fraction)`, which also varies every template variation
-  `t` of the process (as `<name>Up@t`), and `VariationSum(name, parts)`: `<name>Up/Down` =
-  nominal + the sum of (part - nominal) for every histogram with a part, the part `p` being the column
-  variation `<name>Up%p` / `<name>Down%p` (`histogram.part_of`), e.g. one nuisance from CROWN
-  shifts produced per decay mode (exact where no event is changed by two parts). Parts never
-  become datacard shapes; place the sum after the estimators whose outputs should carry it.
+  `t` of the process (as `<name>Up@t`), `VariationSum(name, parts, scale, source)`: `<name>Up/Down` =
+  nominal + `scale` times the sum of (part - nominal) for every histogram with a part, the part `p`
+  being the column variation `<name>Up%p` / `<name>Down%p` (`histogram.part_of`), e.g. one nuisance
+  from CROWN shifts produced per decay mode (exact where no event is changed by two parts). With
+  `source` the sum reads the parts of another summed variation, so that one shift serves two
+  nuisances with their own scales (a partial correlation: 0.5 of the shift for the shared and
+  0.866 for the own nuisance). And `QuadratureSum(name, parts)`: `<name>Up/Down` = nominal ± the
+  root of the summed squared (part - nominal) per bin, the part `p` being the template `<name>%p`
+  (no direction), Down clipped at zero, e.g. a Hessian PDF uncertainty from the templates of the
+  eigenvector weights. Parts never become datacard shapes; place a sum after the estimators whose
+  outputs should carry it.
 - `MLExportConfig(variables, classes, class_of, region_of, identifiers, mc_only, subtraction, profile)`: `ml-export`
   writes, per channel, the processes of `class_of` the channel has as signal, background or estimator output
   (`exported(channel)`), each in its class (`classes` in order: the class index); an estimator output is the data of
@@ -366,7 +379,12 @@ bookkeeping columns `sample_nick`, `norm_weight`, `is_data`, `is_mc` and `is_emb
 flags exist before the skim cuts, so a cut may depend on the kind (e.g. a trigger cut the
 embedded sample does without). Where the channel
 declares CROWN shifts for a sample (its kind and group), every file must carry a shifted branch for each of them,
-and every shifted branch `c__X` of a needed column must be declared; otherwise the skim fails.
+and every shifted branch `c__X` of a needed column must be declared; otherwise the skim fails. It fails as well
+where a column a shift requires (`ColumnVariation.required`) has no shifted branch although a region of the shift
+reads it: a friend produced without the shift would otherwise enter nominal under it (a stored skim without
+those shifted columns is not reused either). A declared-only shift
+(`regions=()`) takes part in these checks (any branch with its suffix counts), but none of its columns is read
+and no event is kept for it.
 
 A friend is read for the samples of its kinds (`applies_to`) in its channels (`channels`, default
 all), so a channel without that friend production (e.g. a control channel) does not look for it.

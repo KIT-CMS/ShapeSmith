@@ -4,7 +4,8 @@ Bookings: the signal in the nominal region, auxiliary processes in the nominal r
 other process in the nominal region and the regions the estimators read and write (or the explicitly requested
 regions). A variation is filled for the processes whose sample kind it applies to, in its regions; a column variation
 only where it changes an expression of the histogram (elsewhere it equals the nominal, and consumers fall back to
-that).
+that). A variation without regions (`regions=()`, a declared-only CROWN shift) is never filled, so no datacard line
+comes of it.
 """
 from __future__ import annotations
 

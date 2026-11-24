@@ -160,7 +160,17 @@ class ColumnVariation:
     """Columns read shifted: `c + suffix` wherever that branch exists (a CROWN shift), or `derived[c]`, an expression
     of nominal columns (a shift computed in ShapeSmith). A name ending in Up/Down is one side of a shape nuisance;
     any other name is a template that datacards never turn into a shape line. `groups` restricts it to the samples of
-    some groups, e.g. a CROWN shift produced for some samples only."""
+    some groups, e.g. a CROWN shift produced for some samples only. Column variations of disjoint groups may share a
+    name: one nuisance read from differently named shifts, e.g. for the samples borrowed from another era.
+
+    `regions=()` only declares a CROWN shift: the skim accepts its shifted branches (and demands that the files have
+    some), but reads none of them and keeps no event for it, no histogram is filled and no datacard line written; for
+    the shifts of a production that are no nuisance (declared_only).
+
+    `required`: columns that must exist shifted (`c + suffix`) in every file of a sample of the variation whose
+    expressions read `c` in a region the variation is filled in; the skim fails on a missing one instead of reading the
+    nominal column under the shift, e.g. the columns of a friend that has to be produced with the shift (the score of
+    an NN under a kinematic shift)."""
 
     name: str
     suffix: str = ""
@@ -168,6 +178,7 @@ class ColumnVariation:
     applies_to: tuple[SampleKind, ...] = ("mc",)
     regions: tuple[str, ...] | None = None  # None: every booked region where the rewrite changes an expression
     groups: tuple[str, ...] | None = None  # None: the samples of every group of those kinds
+    required: tuple[str, ...] = ()
 
     def __post_init__(self):
         object.__setattr__(self, "derived", _frozen(self.derived))
@@ -181,6 +192,11 @@ def applies(variation: Variation, kind: str, group: str) -> bool:
     if kind not in variation.applies_to:
         return False
     return not isinstance(variation, ColumnVariation) or variation.groups is None or group in variation.groups
+
+
+def declared_only(variation: Variation) -> bool:
+    """A variation without regions: declared for the skim's check of the shifted branches, never read or filled."""
+    return variation.regions is not None and not variation.regions
 
 
 @dataclass(frozen=True)
@@ -222,16 +238,33 @@ class TemplateShift:
 
 @dataclass(frozen=True)
 class VariationSum:
-    """Variation `name`Up/Down of every process with a histogram of one of its parts: the nominal plus the sum over
-    `parts` of the part's difference to the nominal, e.g. one nuisance from CROWN shifts produced per decay mode.
-    The part `p` of a direction is the column variation `histogram.part_of(f"{name}{direction}", p)`. Exact where no
-    event is changed by two parts; a process without a part histogram gets no variation."""
+    """Variation `name`Up/Down of every process with a histogram of one of its parts: the nominal plus `scale` times
+    the sum over `parts` of the part's difference to the nominal, e.g. one nuisance from CROWN shifts produced per
+    decay mode. The part `p` of a direction is the column variation `histogram.part_of(f"{source}{direction}", p)`,
+    `source` being `name` unless given: with `source`, the sum reads the parts of another summed variation, so that
+    one shift serves two nuisances with their own scales (a partial correlation: 0.5 of the shift for the nuisance
+    shared with another process, 0.866 for the own one). Exact where no event is changed by two parts and, with a
+    scale, to first order in the shift; a process without a part histogram gets no variation."""
+
+    name: str
+    parts: tuple[str, ...]
+    scale: float = 1.0
+    source: str | None = None
+
+
+@dataclass(frozen=True)
+class QuadratureSum:
+    """Variation `name`Up/Down of every process with a histogram of one of its parts, per bin: the nominal plus and
+    minus the square root of the sum over `parts` of the squared difference of the part to the nominal, e.g. the
+    Hessian PDF uncertainty from the templates of the eigenvector weights. The part `p` is the variation
+    `histogram.part_of(name, p)`, without a direction: one template per part serves both sides. Down is clipped at
+    zero; the variances stay the nominal ones. A process without a part histogram gets no variation."""
 
     name: str
     parts: tuple[str, ...]
 
 
-Estimator = DataMinus | ABCD | TemplateShift | VariationSum
+Estimator = DataMinus | ABCD | TemplateShift | VariationSum | QuadratureSum
 
 
 @dataclass(frozen=True)
